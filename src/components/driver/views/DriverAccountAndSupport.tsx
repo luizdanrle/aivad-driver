@@ -1,22 +1,33 @@
 import React, { useState } from 'react';
 import {
   Bell,
+  Compass,
+  Download,
   FileCheck2,
   Globe2,
   HelpCircle,
+  KeyRound,
+  Layers,
   Lightbulb,
+  LogOut,
   MapPin,
   MessageSquare,
   Navigation,
+  Plug,
+  Power,
   RotateCcw,
   Settings,
   Shield,
+  Sliders,
+  Smartphone,
   ThumbsUp,
+  UserCheck,
 } from 'lucide-react';
 import { PLATFORM_ADAPTERS } from '../../../adapters/platformAdapters';
 import { formatMoney } from '../../../core/localization';
 import type { DriverDocument, TicketRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import { PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ConfirmModal,
@@ -24,12 +35,23 @@ import {
   StatusLabel,
 } from '../../ui/DesignSystem';
 
+const SUPPORT_SUB_TABS = [
+  { id: 'suporte', label: 'Tickets & Suporte' },
+  { id: 'legislacao', label: 'Legislação' },
+  { id: 'documentos', label: 'Documentos' },
+  { id: 'avaliacao-rapida', label: 'Avaliação Rápida' },
+  { id: 'dashcam', label: 'Dashcam' },
+  { id: 'notificacoes', label: 'Notificações' },
+  { id: 'sugestoes', label: 'Sugestões' },
+];
+
 export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
     activeDriver,
     activeDriverPlan,
     activeMarket,
+    activeVehicle,
     requestBrowserGeolocation,
     simulateOrSelectLocation,
     setProfessionalMarkets,
@@ -42,13 +64,17 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     updateDriverPrivacyConsent,
     toggleTheme,
     resetDemoData,
+    setDriverNav,
+    logoutSession,
+    toggleDriverPlatformActivation,
+    getPlatformLifecycleState,
   } = useEcosystem();
 
   const [docForm, setDocForm] = useState({
     title: 'Registo Criminal TVDE Atualizado',
     category: 'Motorista' as DriverDocument['category'],
-    expiryDate: '2027-06-30',
-    referenceCode: 'RC-PT-2026',
+    expiryDate: `${new Date().getFullYear() + 1}-06-30`,
+    referenceCode: `RC-PT-${new Date().getFullYear()}`,
   });
 
   const [ticketForm, setTicketForm] = useState({
@@ -73,9 +99,153 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
 
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
+  const renderSupportSubNav = () => (
+    <div className="flex flex-wrap items-center gap-1.5 pb-3 border-b border-slate-200 dark:border-slate-800">
+      {SUPPORT_SUB_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => setDriverNav(t.id)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            activeTab === t.id
+              ? 'bg-blue-700 text-white shadow-xs'
+              : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-blue-500'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  // ==========================================================
+  // APPS E INTEGRAÇÕES (Gestão Individual de Plataformas)
+  // ==========================================================
+  if (activeTab === 'apps-integracoes') {
+    const activeCount = state.platforms.filter(
+      (pl) => getPlatformLifecycleState(pl.id) === 'Ativa e operacional'
+    ).length;
+
+    return (
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Aplicações & Integrações Multi-Plataforma"
+          description="Ative ou desative individualmente cada plataforma no seu perfil de motorista. Desativar remove a app dos menus operacionais mantendo 100% do seu histórico e relatórios históricos intactos."
+          demoNotice="Ligações externas sem API oficial ligada exibem INTEGRAÇÃO A VALIDAR e não armazenam credenciais de terceiros."
+        />
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <Card className="p-4">
+            <p className="text-slate-500 font-medium">Apps Ativas no Perfil</p>
+            <p className="text-2xl font-extrabold font-mono-tabular mt-1 text-blue-700 dark:text-blue-400">
+              {activeCount} / {state.platforms.length}
+            </p>
+          </Card>
+          <Card className="p-4">
+            <p className="text-slate-500 font-medium">Desativadas pelo Motorista</p>
+            <p className="text-2xl font-extrabold font-mono-tabular mt-1">
+              {state.driverDeactivatedPlatformIds.length}
+            </p>
+          </Card>
+          <Card className="p-4">
+            <p className="text-slate-500 font-medium">Histórico Preservado</p>
+            <p className="text-2xl font-extrabold font-mono-tabular mt-1 text-emerald-600 dark:text-emerald-400">
+              {state.trips.length} viagens
+            </p>
+          </Card>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {state.platforms.map((pl) => {
+            const lifecycle = getPlatformLifecycleState(pl.id);
+            const isDriverDeactivated = state.driverDeactivatedPlatformIds.includes(pl.id);
+            const isAdminBlocked = pl.status !== 'Ativa';
+            const tripsCount = state.trips.filter((t) => t.platformId === pl.id).length;
+
+            return (
+              <Card key={pl.id} className="p-5 flex flex-col justify-between gap-4 text-xs">
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <PlatformBadge
+                        platformId={pl.id}
+                        name={pl.name}
+                        shortCode={pl.shortCode}
+                        brandColor={pl.brandColor}
+                        size="md"
+                      />
+                      <div>
+                        <h3 className="text-base font-bold">{pl.name}</h3>
+                        <p className="text-[11px] text-slate-500">
+                          Comissão base {pl.commissionPct}% · {tripsCount} viagens registadas
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    <StatusLabel
+                      tone={
+                        lifecycle === 'Ativa e operacional'
+                          ? 'success'
+                          : lifecycle === 'Desativada pelo motorista'
+                          ? 'neutral'
+                          : 'danger'
+                      }
+                      text={lifecycle}
+                    />
+                    <StatusLabel tone="warning" text={pl.integrationLabel} />
+                  </div>
+
+                  <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    <p>
+                      <strong>Mercados:</strong> {pl.countryScope.join(', ')}
+                      {pl.citiesScope?.length ? ` (${pl.citiesScope.slice(0, 3).join(', ')})` : ''}
+                    </p>
+                    <p>
+                      <strong>Categorias:</strong> {pl.categories.join(' · ')}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isAdminBlocked}
+                    onClick={() => toggleDriverPlatformActivation(pl.id)}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg font-semibold transition-colors ${
+                      isAdminBlocked
+                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                        : isDriverDeactivated
+                        ? 'bg-blue-700 hover:bg-blue-800 text-white'
+                        : 'border border-slate-300 dark:border-slate-700 hover:border-red-500 hover:text-red-600 dark:hover:text-red-400'
+                    }`}
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>
+                      {isAdminBlocked
+                        ? 'Indisponível pela Administração'
+                        : isDriverDeactivated
+                        ? 'Reativar no Perfil'
+                        : 'Desativar no Perfil'}
+                    </span>
+                  </button>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // DOCUMENTOS
+  // ==========================================================
   if (activeTab === 'documentos') {
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title="Documentos do Motorista & Veículo"
           description="Ligado diretamente às obrigações da Central de Legislação e aos alertas do Dashboard."
@@ -148,12 +318,16 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     );
   }
 
+  // ==========================================================
+  // NOTIFICAÇÕES
+  // ==========================================================
   if (activeTab === 'notificacoes') {
     const myNotifs = state.notifications.filter(
       (n) => n.targetUserId === 'ALL' || n.targetUserId === activeDriver.id
     );
     return (
       <div className="space-y-4">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title="Central de Notificações"
           description="Alertas de conformidade, comunicados administrativos e atualizações de campanhas entregues ao motorista."
@@ -185,13 +359,17 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     );
   }
 
+  // ==========================================================
+  // SUPORTE & TICKETS
+  // ==========================================================
   if (activeTab === 'suporte') {
     const myTickets = state.tickets.filter((t) => t.userId === activeDriver.id);
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
-          title="Comunicação e Suporte (Ligado à Caixa do Administrador)"
-          description="Os tickets criados aqui aparecem imediatamente no painel Tickets do Modo Administrador para resposta bidirecional."
+          title="Comunicação e Suporte"
+          description="Os tickets criados aqui são encaminhados para a equipa de suporte AIVAD com acompanhamento por estado e SLA."
         />
 
         <Card className="p-5 space-y-3">
@@ -305,9 +483,13 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     );
   }
 
+  // ==========================================================
+  // SUGESTÕES
+  // ==========================================================
   if (activeTab === 'sugestoes') {
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title="Sugestões de Melhorias do Produto"
           description="Envie ideias diretamente para a equipa de produto e vote nas propostas prioritárias."
@@ -376,18 +558,84 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     );
   }
 
-  // PERFIL, INTERNACIONALIZAÇÃO, CONFIGURAÇÕES, ADAPTADORES, PRIVACIDADE & GLOSSÁRIO
+  // ==========================================================
+  // CONFIGURAÇÕES COMPLETAS (15 SECÇÕES ESTRUTURADAS)
+  // ==========================================================
   const loc = state.localization;
+  const activePlatformsCount = state.platforms.filter(
+    (p) => getPlatformLifecycleState(p.id) === 'Ativa e operacional'
+  ).length;
+
   return (
     <div className="space-y-6">
-      {/* Separated International Profile & Location Card */}
+      <ContextualHelpBanner
+        title="Configurações Gerais do AIVAD Driver"
+        description="Central única organizada em 15 áreas operacionais: conta, perfil internacional, localização GPS, estratégia, aplicações, veículo, rotina, cartões flutuantes, conformidade e privacidade."
+      />
+
+      {/* Quick Section Directory */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <Card className="p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <UserCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            <div>
+              <p className="font-bold">1. Conta &amp; Sessão Ativa</p>
+              <p className="text-slate-500">{activeDriver.name} · {activeDriverPlan.name}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={logoutSession}
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sair</span>
+          </button>
+        </Card>
+
+        <Card className="p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Plug className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            <div>
+              <p className="font-bold">6. Apps &amp; Integrações</p>
+              <p className="text-slate-500">{activePlatformsCount} plataformas ativas no perfil</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDriverNav('apps-integracoes')}
+            className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-white font-semibold"
+          >
+            Gerir Apps
+          </button>
+        </Card>
+
+        <Card className="p-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Smartphone className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            <div>
+              <p className="font-bold">9. Cartões Flutuantes</p>
+              <p className="text-slate-500">Posição {state.overlayConfig.position} · {state.overlayConfig.durationSeconds}s</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDriverNav('cartoes-flutuantes')}
+            className="px-2.5 py-1.5 rounded-lg bg-blue-700 text-white font-semibold"
+          >
+            Configurar
+          </button>
+        </Card>
+      </div>
+
+      {/* Section 2, 3, 4: International Profile, Location & Language/Currency */}
       <Card className="p-5 space-y-4 text-xs border-blue-200 dark:border-blue-900">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Globe2 className="w-5 h-5 text-blue-700 dark:text-blue-400" />
             <div>
               <h2 className="text-sm font-bold">
-                Perfil Internacional &amp; Separação Residência / Mercado / Localização Atual
+                2–4. Perfil Internacional, Localização GPS &amp; Idioma / Moeda
               </h2>
               <p className="text-[11px] text-slate-500">
                 Viajar ou detetar novo país nunca destrói a sua residência fiscal nem converte receitas passadas.
@@ -516,11 +764,84 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
         </div>
       </Card>
 
+      {/* Sections 5, 7, 8, 10, 11, 13: Modular Operational Shortcuts */}
+      <Card className="p-5 space-y-3 text-xs">
+        <h3 className="text-sm font-bold flex items-center gap-2">
+          <Sliders className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+          5–13. Acesso Direto às Configurações Modulares
+        </h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {[
+            {
+              num: '5',
+              title: 'Estratégia & AutoPilot',
+              desc: `Modo ativo: ${state.autoPilot.strategyMode ?? state.autoPilot.mode}`,
+              nav: 'estrategia',
+              icon: Layers,
+            },
+            {
+              num: '7',
+              title: 'Veículo & Tarifa de Energia',
+              desc: `${activeVehicle.brand} ${activeVehicle.model} · ${activeVehicle.energyTariffProfile ?? 'Doméstico'}`,
+              nav: 'veiculos',
+              icon: Compass,
+            },
+            {
+              num: '8',
+              title: 'Rotina & Locais Guardados',
+              desc: `${state.savedPlaces.length} locais · Alvo €${state.routinePreferences.dailyNetTargetEur}/dia`,
+              nav: 'locais-rotas',
+              icon: MapPin,
+            },
+            {
+              num: '10',
+              title: 'Notificações & Alertas',
+              desc: `${state.notifications.filter((n) => !n.read).length} notificações por ler`,
+              nav: 'notificacoes',
+              icon: Bell,
+            },
+            {
+              num: '11',
+              title: 'Conformidade & Documentos',
+              desc: `${state.documents.length} documentos · ${state.obligations.length} normas`,
+              nav: 'documentos',
+              icon: FileCheck2,
+            },
+            {
+              num: '13',
+              title: 'Exportações & Relatórios',
+              desc: 'CSV / JSON / TXT e auditoria financeira',
+              nav: 'relatorios',
+              icon: Download,
+            },
+          ].map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.nav}
+                type="button"
+                onClick={() => setDriverNav(item.nav)}
+                className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 hover:border-blue-600 text-left flex items-start gap-2.5 transition-colors"
+              >
+                <Icon className="w-4 h-4 text-blue-700 dark:text-blue-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">
+                    {item.num}. {item.title}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">{item.desc}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* Sections 1, 12, 14, 15: Account, Privacy, Multiplatform Adapters, Theme & Reset */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-5 space-y-4 text-xs">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <Settings className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Conta, Plano &amp; Privacidade RGPD
+            12 &amp; 15. Conta, Plano, Privacidade RGPD &amp; Tema
           </h3>
           <div className="space-y-1.5">
             <p><strong>Motorista:</strong> {activeDriver.name} ({activeDriver.email})</p>
@@ -537,7 +858,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
                 onChange={(e) => updateDriverPrivacyConsent(e.target.checked)}
               />
               <span>
-                <strong>Autorização Explícita de Suporte:</strong> Permitir que administradores autorizados consultem métricas operacionais deste perfil durante resolução de tickets (caso contrário permanecem ocultas por privacidade).
+                <strong>Autorização Explícita de Suporte (RGPD):</strong> Permitir consulta temporária de métricas operacionais durante resolução de tickets (caso contrário permanecem ocultas).
               </span>
             </label>
           </div>
@@ -549,6 +870,14 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
               className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-medium"
             >
               Alternar Tema ({state.theme === 'light' ? 'Claro → Escuro' : 'Escuro → Claro'})
+            </button>
+            <button
+              type="button"
+              onClick={logoutSession}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-medium hover:border-red-500"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Terminar Sessão
             </button>
             <button
               type="button"
@@ -564,7 +893,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
         <Card className="p-5 space-y-3 text-xs">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <Shield className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Estado dos Adaptadores Multi-Plataforma (Web, Android, iOS)
+            14. Adaptadores Multi-Plataforma (Web, Android, iOS)
           </h3>
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
             {PLATFORM_ADAPTERS.map((ad, idx) => (
@@ -585,7 +914,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
       <Card className="p-5 space-y-3 text-xs">
         <h3 className="text-sm font-bold flex items-center gap-2">
           <HelpCircle className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-          Glossário &amp; Ajuda Contextual AIVAD
+          15. Glossário &amp; Ajuda Contextual AIVAD
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Bell, Globe2, MapPin, Plus, Scale } from 'lucide-react';
 import { evaluateVehicleEligibility } from '../../../core/intelligence';
-import { CURRENCY_META } from '../../../core/localization';
+import { CURRENCY_META, getTodayIso } from '../../../core/localization';
 import type {
   ComplianceObligation,
   MarketStatus,
@@ -508,7 +508,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {state.vehicles.map((v) => {
               const mkt = state.countries.find((c) => c.code === v.countryCode);
-              const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
+              const el = evaluateVehicleEligibility(v, new Date().getFullYear(), state.platforms, mkt?.vehicleMaxAgeYears);
               return (
                 <tr key={v.id}>
                   <td className="p-3 font-semibold">{v.brand} {v.model} ({v.fuelType})</td>
@@ -559,7 +559,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                 category: newLawForm.category,
                 officialSource: newLawForm.officialSource,
                 articleRef: newLawForm.articleRef,
-                publishedDate: '2026-11-14',
+                publishedDate: getTodayIso(),
                 effectiveDate: 'A definir',
                 adaptationDeadline: newLawForm.adaptationDeadline,
                 status: 'Em análise',

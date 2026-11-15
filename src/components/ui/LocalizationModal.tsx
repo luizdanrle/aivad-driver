@@ -23,20 +23,31 @@ export const LocalizationPromptOverlay: React.FC<{
   const isVisible = manualOpen || shouldShowFirstOpen || Boolean(prompt);
 
   const [selectedCountry, setSelectedCountry] = useState(
-    prompt?.newCountryCode ?? loc.currentLocation.countryCode
+    (prompt?.newCountryCode ?? loc.currentLocation.countryCode) === 'UNSET'
+      ? activeMarket.code
+      : (prompt?.newCountryCode ?? loc.currentLocation.countryCode)
   );
-  const [selectedCity, setSelectedCity] = useState(prompt?.newCity ?? loc.currentLocation.city);
+  const [selectedCity, setSelectedCity] = useState(
+    loc.currentLocation.countryCode === 'UNSET'
+      ? activeMarket.regions[0]?.cities[0] ?? activeMarket.name
+      : (prompt?.newCity ?? loc.currentLocation.city)
+  );
 
   useEffect(() => {
     if (!isVisible) return;
-    const nextCountry = prompt?.newCountryCode ?? loc.currentLocation.countryCode;
-    const nextCity = prompt?.newCity ?? loc.currentLocation.city;
+    const rawCountry = prompt?.newCountryCode ?? loc.currentLocation.countryCode;
+    const nextCountry = rawCountry === 'UNSET' ? activeMarket.code : rawCountry;
+    const nextCity =
+      rawCountry === 'UNSET'
+        ? activeMarket.regions[0]?.cities[0] ?? activeMarket.name
+        : (prompt?.newCity ?? loc.currentLocation.city);
     setSelectedCountry(nextCountry);
     setSelectedCity(nextCity);
-  }, [isVisible, prompt?.newCountryCode, prompt?.newCity, loc.currentLocation.countryCode, loc.currentLocation.city]);
+  }, [isVisible, prompt?.newCountryCode, prompt?.newCity, loc.currentLocation.countryCode, loc.currentLocation.city, activeMarket]);
 
   if (!isVisible) return null;
 
+  const isUnsetLocation = loc.currentLocation.countryCode === 'UNSET';
   const targetCountryObj =
     state.countries.find((c) => c.code === selectedCountry) ?? activeMarket;
   const rawCities = targetCountryObj?.regions.flatMap((r) => r.cities) ?? [];
@@ -71,6 +82,8 @@ export const LocalizationPromptOverlay: React.FC<{
               <h2 className="text-lg font-extrabold text-slate-900 dark:text-white leading-snug">
                 {prompt
                   ? `Detetada mudança de país: ${prompt.newCity} (${prompt.newCountryCode})`
+                  : isUnsetLocation
+                  ? 'Localização não detetada automaticamente — confirme país e cidade de operação.'
                   : `${translateUi(loc.languageCode, 'welcome_title')} Identificámos que está em ${loc.currentLocation.city}, ${loc.currentLocation.countryName}.`}
               </h2>
             </div>
@@ -198,7 +211,8 @@ export const LocalizationPromptOverlay: React.FC<{
 export const LocationPillButton: React.FC<{ onClick: () => void }> = ({ onClick }) => {
   const { state, activeMarket } = useEcosystem();
   const loc = state.localization.currentLocation;
-  const differs = loc.countryCode !== activeMarket.code;
+  const isUnset = loc.countryCode === 'UNSET';
+  const differs = !isUnset && loc.countryCode !== activeMarket.code;
   return (
     <button
       type="button"
@@ -208,7 +222,7 @@ export const LocationPillButton: React.FC<{ onClick: () => void }> = ({ onClick 
     >
       <Compass className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
       <span>
-        {loc.city}, {loc.countryCode}
+        {isUnset ? `Mercado ${activeMarket.code}` : `${loc.city}, ${loc.countryCode}`}
       </span>
       <span className="font-mono-tabular text-[11px] text-slate-500 dark:text-slate-400">
         {differs ? `· Merc. ${activeMarket.code} (${activeMarket.currency})` : `· ${activeMarket.currency}`}

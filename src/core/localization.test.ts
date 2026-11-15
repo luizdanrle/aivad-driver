@@ -149,3 +149,14 @@ test('Currency, unit conversion, and i18n adapt cleanly across countries', () =>
   assert.equal(translateUi('en-GB', 'nav_tacho'), 'Tachograph');
   assert.equal(translateUi('es-ES', 'welcome_title'), '¡Bienvenido a AIVAD!');
 });
+
+test('Unknown coordinates and unrecognized locale fallback return UNSET instead of fabricating US/New York', () => {
+  const ocean = resolveLocationFromCoordinates(0, -30);
+  assert.equal(ocean.countryCode, 'UNSET');
+  assert.equal(ocean.countryName, 'Localização não detetada');
+
+  const unknownFallback = detectFallbackLocation('xx-XX', 'Unknown/Zone');
+  assert.equal(unknownFallback.countryCode, 'UNSET');
+  assert.equal(unknownFallback.city, 'Não detetada');
+});
+

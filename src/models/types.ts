@@ -33,6 +33,17 @@ export type AdminRole =
   | 'Técnico'
   | 'Auditor';
 
+export type UserRole = 'Motorista' | 'Operador' | AdminRole;
+
+export interface AuthSession {
+  authenticated: boolean;
+  userId: string;
+  userName: string;
+  email: string;
+  role: UserRole;
+  signedInAt: string;
+}
+
 export type PlatformId =
   | 'uber'
   | 'bolt'
@@ -50,6 +61,13 @@ export type IntegrationAvailability =
   | 'Em análise'
   | 'Descontinuada';
 
+export type PlatformDriverLifecycleState =
+  | 'Ativa e operacional'
+  | 'Desativada pelo motorista'
+  | 'Suspensa/Indisponível por administração'
+  | 'Integração não configurada'
+  | 'Integração com erro';
+
 export interface PlatformRecord {
   id: PlatformId;
   name: string;
@@ -66,6 +84,7 @@ export interface PlatformRecord {
   status: PlatformStatus;
   integrationStatus: IntegrationAvailability;
   integrationLabel: string;
+  lastErrorNote?: string;
   isDemo: boolean;
 }
 
@@ -78,6 +97,15 @@ export type FuelType =
   | 'GPL'
   | 'Bi-fuel';
 
+export type VehicleOwnership = 'Própria' | 'Financiada' | 'Alugada';
+
+export type EnergyTariffProfile =
+  | 'Doméstico'
+  | 'Garagem'
+  | 'Público AC'
+  | 'Rápido DC'
+  | 'Combustível';
+
 export interface VehicleRecord {
   id: string;
   brand: string;
@@ -88,9 +116,16 @@ export interface VehicleRecord {
   powerKw: number;
   batteryKwh?: number;
   rangeKm: number;
+  homologatedRangeKm?: number;
+  realRangeKm?: number;
+  rangeStandard?: 'WLTP' | 'EPA' | 'NEDC' | 'Estimado';
+  rangeSource?: string;
+  rangeUpdatedAt?: string;
   consumptionPer100Km: number;
   consumptionUnit: 'kWh' | 'L' | 'kg';
   fuelType: FuelType;
+  ownership?: VehicleOwnership;
+  energyTariffProfile?: EnergyTariffProfile;
   seats: number;
   doors: number;
   trunkLiters: number;
@@ -153,6 +188,8 @@ export interface ProposalInput {
   tollsEur: number;
   bonusEur: number;
   region: string;
+  pickupAddress?: string;
+  destinationAddress?: string;
   notes?: string;
   vehicleCostPerKmEur: number;
   calculationBasis?: 'total_distance' | 'trip_distance_only';
@@ -200,14 +237,58 @@ export interface ProposalRecord {
   stateTimestamps: Partial<Record<ProposalLifecycleState, string>>;
   autoPilotDecision?: AutoPilotDecisionRecord;
   source: 'Manual' | 'Captura Simulada' | 'API Oficial (Pendente)';
+  isSimulatedSandbox?: boolean;
   isDemo: boolean;
 }
 
 export type AutoPilotMode = 'Manual' | 'Assistido' | 'Automático';
+export type StrategyMode = 'Manual' | 'Semiautomático' | 'Automático';
+
+export interface StrategyPreset {
+  id: string;
+  name: string;
+  mode: StrategyMode;
+  thresholds: ProposalThresholds;
+  semiAutoBounds?: {
+    minEurPerKmFloor: number;
+    minEurPerKmCeil: number;
+    minEurPerHourFloor: number;
+    minEurPerHourCeil: number;
+    maxPickupKmFloor: number;
+    maxPickupKmCeil: number;
+  };
+  updatedAt: string;
+}
+
+export interface StrategyAdjustmentLogEntry {
+  id: string;
+  timestamp: string;
+  mode: StrategyMode;
+  parameter: 'minEurPerKm' | 'minEurPerHour' | 'maxPickupKm' | 'minValueEur';
+  parameterLabel: string;
+  previousValue: number;
+  newValue: number;
+  conditionTriggered: string;
+  reason: string;
+  observedOutcome?: string;
+  reverted: boolean;
+}
 
 export interface AutoPilotConfig {
   mode: AutoPilotMode;
+  strategyMode?: StrategyMode;
   thresholds: ProposalThresholds;
+  modeConfigs?: Record<StrategyMode, ProposalThresholds>;
+  semiAutoBounds?: {
+    minEurPerKmFloor: number;
+    minEurPerKmCeil: number;
+    minEurPerHourFloor: number;
+    minEurPerHourCeil: number;
+    maxPickupKmFloor: number;
+    maxPickupKmCeil: number;
+  };
+  savedPresets?: StrategyPreset[];
+  adjustmentLogs?: StrategyAdjustmentLogEntry[];
   prioritizeCampaigns: boolean;
   includeBonusInThreshold: boolean;
   exceptions: string[];
@@ -220,24 +301,40 @@ export interface AutoPilotDecisionRecord {
   timestamp: string;
   platformId: PlatformId;
   modeAtDecision: AutoPilotMode;
-  action: 'Aceitar sugerido' | 'Recusar sugerido' | 'Aguardar decisão manual' | 'Bloqueado por ausência de API oficial';
+  action:
+    | 'Aceitar sugerido'
+    | 'Recusar sugerido'
+    | 'Aguardar decisão manual'
+    | 'Bloqueado por ausência de API oficial';
   rulesMatched: string[];
   platformConfirmed: boolean;
   reason: string;
 }
+
+export type FloatingMetricKey =
+  | 'eurPerKm'
+  | 'eurPerHour'
+  | 'eurPerMin'
+  | 'estimatedNet'
+  | 'emptyReturnRisk'
+  | 'totalTime'
+  | 'score';
 
 export interface AndroidOverlayConfig {
   position: 'Topo' | 'Centro' | 'Fundo';
   widthPercent: number;
   opacityPercent: number;
   fontSizePx: number;
+  fontFamily?: 'Sans' | 'Display' | 'Mono';
   bgColor: string;
   textColor: string;
   borderColor: string;
   themePreset: 'AIVAD Azul Noite' | 'Alto Contraste Dia' | 'Minimalista Escuro';
-  visibleMetrics: Array<'eurPerKm' | 'eurPerHour' | 'eurPerMin' | 'estimatedNet' | 'emptyReturnRisk'>;
+  visibleMetrics: FloatingMetricKey[];
   durationSeconds: number;
   autoDismiss: boolean;
+  allowManualClose?: boolean;
+  allowMinimize?: boolean;
   showHistoryFloatingButton: boolean;
 }
 
@@ -290,7 +387,20 @@ export interface SmartCaptureRecord {
   isDemo: boolean;
 }
 
-export type TripStatus = 'Concluída' | 'Cancelada' | 'Em curso' | 'Ajustada';
+export type TripStatus =
+  | 'Recebida'
+  | 'Aceite'
+  | 'Rejeitada'
+  | 'Ignorada ou expirada'
+  | 'Cancelada pelo passageiro'
+  | 'Cancelada pelo motorista'
+  | 'Passageiro não compareceu'
+  | 'Concluída'
+  | 'Ajustada'
+  | 'Em curso'
+  | 'Cancelada';
+
+export type CancellationBy = 'Motorista' | 'Passageiro' | 'Plataforma' | 'Desconhecida';
 
 export interface TripRecord {
   id: string;
@@ -315,9 +425,22 @@ export interface TripRecord {
   tripDistanceKm: number;
   durationMin: number;
   pickupZone: string;
+  pickupAddress?: string;
+  pickupCoords?: { lat: number; lng: number };
   destinationZone?: string;
+  destinationAddress?: string;
+  destinationCoords?: { lat: number; lng: number };
   category: string;
   status: TripStatus;
+  cancellationBy?: CancellationBy;
+  cancellationReason?: string;
+  isEstimatedBreakdown?: boolean;
+  preDecisionSnapshot?: {
+    predictedNetEur: number;
+    predictedDurationMin: number;
+    predictedClassification: ProposalClassification;
+    recommendedAction: string;
+  };
   source: CaptureSource;
   proposalId?: string;
   isDemo: boolean;
@@ -385,6 +508,39 @@ export interface ShiftRecord {
   notes: string;
   auditHistory: Array<{ at: string; change: string }>;
   isDemo: boolean;
+}
+
+export type SavedPlaceType =
+  | 'Casa'
+  | 'Garagem'
+  | 'Carregamento EV'
+  | 'Combustível'
+  | 'Refeição'
+  | 'Descanso'
+  | 'Oficina';
+
+export interface SavedPlace {
+  id: string;
+  name: string;
+  type: SavedPlaceType;
+  address: string;
+  zone: string;
+  isFavorite: boolean;
+  notes?: string;
+  coordinates?: { lat: number; lng: number };
+}
+
+export interface DriverRoutinePreferences {
+  preferredShiftStart: string;
+  preferredShiftEnd: string;
+  preferredMealWindow: string;
+  preferredChargingWindow: string;
+  garageClosingTime: string;
+  startBasePlaceId?: string;
+  endBasePlaceId?: string;
+  dailyNetTargetEur: number;
+  maxDailyLegalMinutes: number;
+  minBatteryReservePct: number;
 }
 
 // ============================================================
@@ -492,6 +648,62 @@ export interface TachographStateStore {
   offlineQueue: TachographOfflineQueueItem[];
   discrepancies: TachographDiscrepancy[];
   activeSessionId: string | null;
+}
+
+// ============================================================
+// AIVAD AI CORE — MULTI-AGENT OPERATIONAL BRAIN
+// ============================================================
+export type AiCoreAgentId =
+  | 'corridas'
+  | 'estrategia'
+  | 'financeiro'
+  | 'trafego'
+  | 'veiculos'
+  | 'rotina'
+  | 'conformidade'
+  | 'administrativo';
+
+export type EpistemicTag =
+  | 'Informação confirmada'
+  | 'Informação histórica'
+  | 'Estimativa'
+  | 'Previsão'
+  | 'Informação indisponível'
+  | 'Dados de demonstração';
+
+export interface AiCoreInsight {
+  id: string;
+  agentId: AiCoreAgentId;
+  agentName: string;
+  title: string;
+  inputsConsidered: string[];
+  analysisSteps: string[];
+  recommendation: string;
+  justification: string;
+  operationLog: string;
+  observedOutcome?: string;
+  confidencePct: number;
+  epistemicTag: EpistemicTag;
+  createdAt: string;
+}
+
+export interface AiPredictionRecord {
+  id: string;
+  driverId: string;
+  tripId?: string;
+  proposalId?: string;
+  createdAt: string;
+  agentId: AiCoreAgentId;
+  predictedNetEur: number;
+  predictedDurationMin: number;
+  predictedEurPerHour: number;
+  actualNetEur?: number;
+  actualDurationMin?: number;
+  deltaNetEur?: number;
+  deltaDurationMin?: number;
+  status: 'Pendente resultado' | 'Calibrado';
+  learningNote: string;
+  epistemicTag: EpistemicTag;
 }
 
 // ============================================================
@@ -636,7 +848,7 @@ export interface UserAccount {
   id: string;
   name: string;
   email: string;
-  role: 'Motorista' | 'Operador' | AdminRole;
+  role: UserRole;
   countryCode: string;
   city: string;
   status: 'Ativo' | 'Suspenso' | 'Inativo';
@@ -718,12 +930,29 @@ export interface AppVersionRecord {
   notes: string;
 }
 
+export type PortalSectionId = 'hero' | 'modules' | 'plans' | 'platforms' | 'markets' | 'faq' | 'updates';
+
 export interface CmsContentState {
+  brandTitle?: string;
+  brandTagline?: string;
+  primaryColor?: string;
+  accentColor?: string;
   heroTitle: string;
   heroSubtitle: string;
+  heroCtaDriverLabel?: string;
+  heroCtaPlansLabel?: string;
   announcementBanner: string;
   showAnnouncement: boolean;
   featuredCountriesCount: number;
+  seoTitle?: string;
+  seoDescription?: string;
+  contactEmail?: string;
+  supportHours?: string;
+  sectionOrder?: PortalSectionId[];
+  visibleSections?: Record<PortalSectionId, boolean>;
+  benefits?: Array<{ id: string; title: string; description: string }>;
+  faqs?: Array<{ id: string; question: string; answer: string }>;
+  draftSnapshot?: Partial<Omit<CmsContentState, 'revisionHistory' | 'draftSnapshot'>> | null;
   publications: Array<{
     id: string;
     title: string;
@@ -742,6 +971,15 @@ export interface CmsContentState {
       heroSubtitle: string;
       announcementBanner: string;
       showAnnouncement: boolean;
+      brandTitle?: string;
+      brandTagline?: string;
+      primaryColor?: string;
+      accentColor?: string;
+      heroCtaDriverLabel?: string;
+      seoTitle?: string;
+      seoDescription?: string;
+      contactEmail?: string;
+      visibleSections?: Record<PortalSectionId, boolean>;
     };
   }>;
 }
@@ -784,7 +1022,7 @@ export interface LocalizationProfile {
     timezone: string;
     latitude?: number;
     longitude?: number;
-    detectedBy: 'Geolocation API' | 'Browser Locale Fallback' | 'Seleção Manual';
+    detectedBy: 'Geolocation API' | 'Browser Locale Fallback' | 'Seleção Manual' | 'Indisponível';
     detectedAt: string;
   };
   residenceCountryCode: string;
@@ -819,7 +1057,9 @@ export interface EcosystemEvent {
     | 'TACHOGRAPH_RECORDED'
     | 'TACHOGRAPH_CORRECTED'
     | 'MARKET_STATUS_CHANGED'
-    | 'LOCATION_UPDATED';
+    | 'LOCATION_UPDATED'
+    | 'STRATEGY_ADJUSTED'
+    | 'AI_PREDICTION_CALIBRATED';
   source: string;
   target: string;
   userId: string;
@@ -848,3 +1088,4 @@ export interface RemoteConfigState {
   enableAiAssistantServerProxy: boolean;
   featureFlags: Record<string, boolean>;
 }
+

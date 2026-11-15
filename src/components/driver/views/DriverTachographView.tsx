@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ClipboardCheck,
   Clock,
   Download,
   Edit3,
@@ -20,11 +21,12 @@ import {
   exportToCsv,
   exportToXlsx,
 } from '../../../core/exportUtils';
-import { formatDistance } from '../../../core/localization';
+import { daysAgoIso, formatDistance, getTodayIso } from '../../../core/localization';
 import {
   buildTachographQrPayload,
   canTransitionTachographState,
   consolidateMultiPlatformJornada,
+  PORTARIA_7_2022_CHECKLIST,
   TACHOGRAPH_LEGAL_DISCLAIMER,
   TACHOGRAPH_STATES,
 } from '../../../core/tachograph';
@@ -55,12 +57,17 @@ export const DriverTachographView: React.FC = () => {
     activeVehicle,
     activeMarket,
     visibleDriverPlatforms,
+    rolling24hCompliance,
     startTachograph,
     transitionTachograph,
     correctTachographActivity,
     enqueueOfflineTachograph,
     syncOfflineTachograph,
   } = useEcosystem();
+
+  const todayIso = getTodayIso();
+  const weekStartIso = daysAgoIso(6);
+  const monthPrefix = todayIso.slice(0, 7);
 
   const tacho = state.tachograph;
   const activeSession = tacho.sessions.find(
@@ -85,12 +92,12 @@ export const DriverTachographView: React.FC = () => {
     null
   );
 
-  // Report Period Filters
+  // Report Period Filters (fully dynamic against current date)
   const [reportPeriod, setReportPeriod] = useState<'diario' | 'semanal' | 'mensal' | 'personalizado'>(
     'diario'
   );
-  const [customStartDate, setCustomStartDate] = useState('2026-11-10');
-  const [customEndDate, setCustomEndDate] = useState('2026-11-30');
+  const [customStartDate, setCustomStartDate] = useState(weekStartIso);
+  const [customEndDate, setCustomEndDate] = useState(todayIso);
 
   // Auditable Correction Modal State
   const [correctingRecord, setCorrectingRecord] = useState<TachographActivityRecord | null>(null);
@@ -103,24 +110,22 @@ export const DriverTachographView: React.FC = () => {
   const [corrError, setCorrError] = useState<string | null>(null);
 
   const filteredActivities = useMemo(() => {
-    const today = '2026-11-14';
     return tacho.activities.filter((a) => {
-      if (reportPeriod === 'diario') return a.date === today || a.date >= today;
-      if (reportPeriod === 'semanal') return a.date >= '2026-11-08';
-      if (reportPeriod === 'mensal') return a.date.startsWith('2026-11');
+      if (reportPeriod === 'diario') return a.date >= todayIso;
+      if (reportPeriod === 'semanal') return a.date >= weekStartIso;
+      if (reportPeriod === 'mensal') return a.date.startsWith(monthPrefix);
       return a.date >= customStartDate && a.date <= customEndDate;
     });
-  }, [tacho.activities, reportPeriod, customStartDate, customEndDate]);
+  }, [tacho.activities, reportPeriod, customStartDate, customEndDate, todayIso, weekStartIso, monthPrefix]);
 
   const filteredIntervals = useMemo(() => {
-    const today = '2026-11-14';
     return tacho.platformIntervals.filter((pi) => {
-      if (reportPeriod === 'diario') return pi.date === today || pi.date >= today;
-      if (reportPeriod === 'semanal') return pi.date >= '2026-11-08';
-      if (reportPeriod === 'mensal') return pi.date.startsWith('2026-11');
+      if (reportPeriod === 'diario') return pi.date >= todayIso;
+      if (reportPeriod === 'semanal') return pi.date >= weekStartIso;
+      if (reportPeriod === 'mensal') return pi.date.startsWith(monthPrefix);
       return pi.date >= customStartDate && pi.date <= customEndDate;
     });
-  }, [tacho.platformIntervals, reportPeriod, customStartDate, customEndDate]);
+  }, [tacho.platformIntervals, reportPeriod, customStartDate, customEndDate, todayIso, weekStartIso, monthPrefix]);
 
   const periodSummary = useMemo(
     () => consolidateMultiPlatformJornada(filteredActivities, filteredIntervals, tacho.sessions),
@@ -205,11 +210,19 @@ export const DriverTachographView: React.FC = () => {
     `${a.status} (${a.revisions.length} rev.)`,
   ]);
 
+  const rollingTone =
+    rolling24hCompliance.alertLevel === 'Limite 10h Atingido'
+      ? 'danger'
+      : rolling24hCompliance.alertLevel === 'Crítico 9h (540 min)' ||
+        rolling24hCompliance.alertLevel === 'Preventivo 8h (480 min)'
+      ? 'warning'
+      : 'success';
+
   return (
     <div className="space-y-6">
       <ContextualHelpBanner
         title="AIVAD TACÓGRAFO TVDE — Registo Digital Independente de Jornada"
-        description="Módulo autónomo com 10 estados validados, verificação de odómetro, consolidação multi-plataforma sem dupla contagem, fila offline auditável e QR verificável."
+        description="Módulo autónomo com 10 estados validados, verificação de odómetro, consolidação multi-plataforma em janela móvel de 24h (limite legal 10h), fila offline auditável e QR verificável."
         demoNotice="Módulo Independente (Agenda preservada separadamente)"
       />
 
@@ -220,10 +233,63 @@ export const DriverTachographView: React.FC = () => {
       >
         <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
         <div className="space-y-0.5">
-          <p className="font-bold">Aviso Legal e Regulamentar de Homologação</p>
+          <p className="font-bold">Aviso Legal e Regulamentar de Homologação (Portaria n.º 7/2022)</p>
           <p>{TACHOGRAPH_LEGAL_DISCLAIMER}</p>
         </div>
       </div>
+
+      {/* Rolling 24h 10h Legal Compliance Gauge Card */}
+      <Card className="p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-bold flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              Conformidade TVDE 10h em Janela Deslizante de 24 Horas
+            </h2>
+            <p className="text-xs text-slate-500">{rolling24hCompliance.platformBreakdownNote}</p>
+          </div>
+          <StatusLabel tone={rollingTone} text={rolling24hCompliance.alertLevel} />
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex justify-between text-xs font-mono-tabular font-semibold">
+            <span>
+              Atividade contável (24h): {formatMins(rolling24hCompliance.rolling24hWorkMinutes)} /{' '}
+              {formatMins(rolling24hCompliance.legalDailyLimitMinutes)}
+            </span>
+            <span>
+              Restante legal: {formatMins(rolling24hCompliance.remainingLegalMinutes)} ({rolling24hCompliance.utilizationPct}%)
+            </span>
+          </div>
+          <div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+            <div
+              className={`h-full transition-all duration-500 ${
+                rollingTone === 'danger'
+                  ? 'bg-red-600'
+                  : rollingTone === 'warning'
+                  ? 'bg-amber-500'
+                  : 'bg-blue-700'
+              }`}
+              style={{ width: `${rolling24hCompliance.utilizationPct}%` }}
+            />
+          </div>
+          <div className="flex flex-wrap justify-between text-[11px] text-slate-500">
+            <span>Pausas &amp; descanso acumulados (24h): {formatMins(rolling24hCompliance.rolling24hBreakMinutes)}</span>
+            <span>Patamares preventivos: 8h (480m) · 9h (540m) · Limite 10h (600m)</span>
+          </div>
+        </div>
+
+        {rolling24hCompliance.alerts.length > 0 && (
+          <div className="space-y-1 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            {rolling24hCompliance.alerts.map((al, i) => (
+              <p key={i} className="text-red-700 dark:text-red-300 font-medium flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span>{al}</span>
+              </p>
+            ))}
+          </div>
+        )}
+      </Card>
 
       {/* Live Tachograph Cockpit Hero */}
       <Card className="p-5 sm:p-6 bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 text-white border-blue-900 space-y-5">
@@ -303,7 +369,6 @@ export const DriverTachographView: React.FC = () => {
           </div>
         )}
 
-        {/* Controls: Start Shift OR 10 Validated State Controls */}
         {!activeSession ? (
           <div className="p-4 rounded-xl bg-white/10 border border-white/15 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs items-end">
             <div>
@@ -478,18 +543,6 @@ export const DriverTachographView: React.FC = () => {
         )}
       </Card>
 
-      {/* Alerts from Tachograph Consolidation Engine */}
-      {periodSummary.complianceAlerts.length > 0 && (
-        <Card className="p-4 border-red-300 dark:border-red-900 bg-red-50/70 dark:bg-red-950/30 space-y-1.5 text-xs">
-          {periodSummary.complianceAlerts.map((al, i) => (
-            <div key={i} className="flex items-center gap-2 text-red-800 dark:text-red-200 font-medium">
-              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-              <span>{al}</span>
-            </div>
-          ))}
-        </Card>
-      )}
-
       {/* Multi-Platform Consolidation + Chronological Timeline */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <Card className="lg:col-span-7 p-5 space-y-4">
@@ -631,6 +684,32 @@ export const DriverTachographView: React.FC = () => {
           </div>
         </Card>
       </div>
+
+      {/* Checklist Portaria 7/2022 */}
+      <Card className="p-5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <ClipboardCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            Checklist Técnico — Portaria n.º 7/2022 &amp; Lei n.º 45/2018 (PT)
+          </h3>
+          <StatusLabel tone="info" text="Alinhamento Técnico (Não Homologado)" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+          {PORTARIA_7_2022_CHECKLIST.map((chk) => (
+            <div
+              key={chk.id}
+              className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900 dark:text-white">{chk.requirement}</span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              </div>
+              <p className="text-blue-700 dark:text-blue-400 font-semibold">{chk.status}</p>
+              <p className="text-[11px] text-slate-500">{chk.portariaRef}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       {/* Offline Queue & Conflict Resolution + Reports & Exports */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -774,8 +853,8 @@ export const DriverTachographView: React.FC = () => {
         </Card>
       </div>
 
-      {/* Immutable Audited Activity Ledger */}
-      <Card className="overflow-x-auto">
+      {/* Responsive Activity Ledger (Mobile Cards + Desktop Table) */}
+      <Card className="overflow-hidden">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <History className="w-4 h-4 text-blue-700 dark:text-blue-400" />
@@ -783,77 +862,121 @@ export const DriverTachographView: React.FC = () => {
           </h3>
           <span className="text-xs text-slate-500">{filteredActivities.length} registo(s)</span>
         </div>
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
-            <tr>
-              <th className="p-3">Data / Hora</th>
-              <th className="p-3">Estado</th>
-              <th className="p-3">Duração</th>
-              <th className="p-3">Odómetro</th>
-              <th className="p-3">Origem / Plataforma</th>
-              <th className="p-3">Estado / Revisões</th>
-              <th className="p-3">Ação</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {filteredActivities.map((act) => (
-              <tr key={act.id}>
-                <td className="p-3 font-mono-tabular">
-                  {act.date} · {act.startIso.slice(11, 16)}
-                  {act.endIso ? `–${act.endIso.slice(11, 16)}` : ' (Ativo)'}
-                </td>
-                <td className="p-3">
-                  <span className="inline-flex items-center gap-1.5 font-semibold">
+
+        {/* Mobile Cards (< md) */}
+        <div className="md:hidden divide-y divide-slate-200 dark:divide-slate-800">
+          {filteredActivities.map((act) => (
+            <div key={act.id} className="p-4 space-y-2 text-xs">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-bold flex items-center gap-1.5">
                     <span
-                      className="w-2 h-2 rounded-full shrink-0"
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
                       style={{ backgroundColor: TACHO_STATE_COLOR[act.state] }}
                     />
                     {act.state}
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-0.5">{act.notes}</p>
-                </td>
-                <td className="p-3 font-mono-tabular font-semibold">{act.durationMinutes} min</td>
-                <td className="p-3 font-mono-tabular">
-                  {act.odometerStartKm} → {act.odometerEndKm ?? act.odometerStartKm} km
-                </td>
-                <td className="p-3">
-                  {act.platformId ? act.platformId.toUpperCase() : 'Jornada'} · {act.source}
-                </td>
-                <td className="p-3">
-                  <StatusLabel
-                    tone={
-                      act.status === 'Ativo'
-                        ? 'info'
-                        : act.status === 'Corrigido'
-                        ? 'warning'
-                        : 'success'
-                    }
-                    text={`${act.status}${
-                      act.revisions.length > 0 ? ` (${act.revisions.length} rev.)` : ''
-                    }`}
-                  />
-                  {act.revisions.length > 0 && (
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      Última rev.: {act.revisions[act.revisions.length - 1].reason} (era{' '}
-                      {act.revisions[act.revisions.length - 1].previousState})
-                    </p>
-                  )}
-                </td>
-                <td className="p-3">
-                  <button
-                    type="button"
-                    onClick={() => openCorrection(act)}
-                    aria-label={`Corrigir registo ${act.id}`}
-                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-medium"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>Corrigir</span>
-                  </button>
-                </td>
+                  </p>
+                  <p className="font-mono-tabular text-[11px] text-slate-500">
+                    {act.date} · {act.startIso.slice(11, 16)}
+                    {act.endIso ? `–${act.endIso.slice(11, 16)}` : ' (Ativo)'} · {act.durationMinutes} min
+                  </p>
+                </div>
+                <StatusLabel
+                  tone={act.status === 'Ativo' ? 'info' : act.status === 'Corrigido' ? 'warning' : 'success'}
+                  text={act.status}
+                />
+              </div>
+              <p className="text-slate-600 dark:text-slate-300">{act.notes}</p>
+              <div className="flex items-center justify-between pt-1">
+                <span className="font-mono-tabular text-[11px] text-slate-500">
+                  Odo: {act.odometerStartKm}→{act.odometerEndKm ?? act.odometerStartKm} km · {act.platformId?.toUpperCase() ?? 'Jornada'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => openCorrection(act)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 font-medium"
+                >
+                  <Edit3 className="w-3 h-3" /> Corrigir
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Desktop Table (>= md) */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+              <tr>
+                <th className="p-3">Data / Hora</th>
+                <th className="p-3">Estado</th>
+                <th className="p-3">Duração</th>
+                <th className="p-3">Odómetro</th>
+                <th className="p-3">Origem / Plataforma</th>
+                <th className="p-3">Estado / Revisões</th>
+                <th className="p-3">Ação</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {filteredActivities.map((act) => (
+                <tr key={act.id}>
+                  <td className="p-3 font-mono-tabular">
+                    {act.date} · {act.startIso.slice(11, 16)}
+                    {act.endIso ? `–${act.endIso.slice(11, 16)}` : ' (Ativo)'}
+                  </td>
+                  <td className="p-3">
+                    <span className="inline-flex items-center gap-1.5 font-semibold">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: TACHO_STATE_COLOR[act.state] }}
+                      />
+                      {act.state}
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{act.notes}</p>
+                  </td>
+                  <td className="p-3 font-mono-tabular font-semibold">{act.durationMinutes} min</td>
+                  <td className="p-3 font-mono-tabular">
+                    {act.odometerStartKm} → {act.odometerEndKm ?? act.odometerStartKm} km
+                  </td>
+                  <td className="p-3">
+                    {act.platformId ? act.platformId.toUpperCase() : 'Jornada'} · {act.source}
+                  </td>
+                  <td className="p-3">
+                    <StatusLabel
+                      tone={
+                        act.status === 'Ativo'
+                          ? 'info'
+                          : act.status === 'Corrigido'
+                          ? 'warning'
+                          : 'success'
+                      }
+                      text={`${act.status}${
+                        act.revisions.length > 0 ? ` (${act.revisions.length} rev.)` : ''
+                      }`}
+                    />
+                    {act.revisions.length > 0 && (
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Última rev.: {act.revisions[act.revisions.length - 1].reason} (era{' '}
+                        {act.revisions[act.revisions.length - 1].previousState})
+                      </p>
+                    )}
+                  </td>
+                  <td className="p-3">
+                    <button
+                      type="button"
+                      onClick={() => openCorrection(act)}
+                      aria-label={`Corrigir registo ${act.id}`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-medium"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Corrigir</span>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
       {/* Auditable Correction Modal */}

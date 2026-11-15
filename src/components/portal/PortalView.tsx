@@ -1,25 +1,33 @@
 import React, { useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   Calculator,
   Check,
   Compass,
   Download,
   ExternalLink,
-  FileSpreadsheet,
   Gauge,
   Globe,
+  HelpCircle,
+  KeyRound,
   Layers,
   Lock,
+  LogOut,
   Mail,
+  ShieldAlert,
   ShieldCheck,
   Smartphone,
   Sparkles,
+  UserCheck,
   Wallet,
+  X,
 } from 'lucide-react';
+import type { AdminRole, UserRole } from '../../models/types';
+import { canAccessMode, isAdminRole, ADMIN_ROLES } from '../../core/rbac';
 import { useEcosystem } from '../../services/EcosystemContext';
 import { PLATFORM_ADAPTERS } from '../../adapters/platformAdapters';
-import { PlatformBadge } from '../ui/ChartsAndVisuals';
+import { PlatformLogo } from '../ui/ChartsAndVisuals';
 import { LocationPillButton } from '../ui/LocalizationModal';
 import {
   Card,
@@ -31,84 +39,97 @@ import {
 
 const PORTAL_PAGES = [
   { id: 'inicio', label: 'Início' },
-  { id: 'sobre', label: 'Sobre' },
-  { id: 'solucoes', label: 'Soluções' },
   { id: 'funcionalidades', label: 'Funcionalidades' },
-  { id: 'aivad-driver', label: 'AIVAD Driver' },
-  { id: 'aivad-management', label: 'AIVAD Management' },
-  { id: 'web', label: 'Web' },
-  { id: 'android', label: 'Android' },
-  { id: 'ios', label: 'iOS' },
   { id: 'mercados', label: 'Mercados' },
   { id: 'plataformas', label: 'Plataformas' },
-  { id: 'planos', label: 'Planos' },
-  { id: 'precos', label: 'Preços' },
-  { id: 'downloads', label: 'Downloads' },
-  { id: 'atualizacoes', label: 'Atualizações' },
-  { id: 'tutoriais', label: 'Tutoriais' },
-  { id: 'ajuda', label: 'Ajuda' },
-  { id: 'seguranca', label: 'Segurança' },
-  { id: 'privacidade', label: 'Privacidade' },
+  { id: 'planos', label: 'Planos & Preços' },
+  { id: 'downloads', label: 'Plataformas Web/Mobile' },
+  { id: 'tutoriais', label: 'Tutoriais & FAQ' },
+  { id: 'seguranca', label: 'Segurança & RGPD' },
   { id: 'contacto', label: 'Contacto' },
 ];
 
 const FEATURED_CAPABILITIES = [
   {
+    id: 'ai-core',
+    icon: Sparkles,
+    title: 'AIVAD AI CORE Multi-Agente',
+    desc: '8 agentes especializados que explicam entradas, passos, confiança (%) e calibragem isolada por motorista.',
+  },
+  {
     id: 'tacografo',
     icon: Gauge,
-    title: 'Tacógrafo TVDE Auditável',
-    desc: '10 estados com validação de odómetro, eliminação de duplicação multi-app, fila offline e QR verificável.',
+    title: 'Registo TVDE 10h / 24h',
+    desc: 'Monitorização em janela deslizante de 24h multi-app, fila offline idempotente e QR verificável.',
   },
   {
     id: 'calculadora',
     icon: Calculator,
-    title: 'Calculadora Inteligente',
-    desc: 'Avalia €/km, €/h, retorno vazio e custos reais por motorização antes de aceitar qualquer viagem.',
+    title: 'Cartão Flutuante & Decisão',
+    desc: 'Avalia €/km, €/h, retorno em vazio e alternativas operacionais antes de aceitar qualquer corrida.',
   },
   {
     id: 'financeiro',
     icon: Wallet,
-    title: 'Gestão Financeira Real',
-    desc: 'Cruza bruto, gorjetas reconciliadas, comissões, energia e despesas com preservação da moeda original.',
+    title: 'Transparência Financeira Real',
+    desc: 'Exclui canceladas dos ganhos, separa propriedade/tarifa do veículo e explica cada KPI passo a passo.',
   },
   {
     id: 'planeador',
     icon: Compass,
-    title: 'Planeador de Metas',
-    desc: 'Recalcula horas produtivas, metas líquidas e paragens de carregamento EV conforme ritmo histórico.',
-  },
-  {
-    id: 'relatorios',
-    icon: FileSpreadsheet,
-    title: 'Relatórios Multiformato',
-    desc: 'Drill-down de mês até à viagem individual com exportação real em CSV, XLSX, PDF e PNG.',
+    title: 'Estratégia 3 Modos & Rotina',
+    desc: 'Manual, Semiautomático com limites e reversão auditável, e Automático com proteção oficial.',
   },
   {
     id: 'plataformas',
     icon: Layers,
-    title: 'Gestão Multi-Plataforma',
-    desc: 'Uber, Bolt, POP, VLOZ, Frenalty, Cabify, FREE NOW e novos parceiros unificados sem misturar regras.',
-  },
-  {
-    id: 'internacional',
-    icon: Globe,
-    title: 'Adaptação Internacional',
-    desc: 'Geolocalização, moedas, idiomas e métricas adaptados sem sobrescrever país de residência nem histórico.',
-  },
-  {
-    id: 'inteligencia',
-    icon: Sparkles,
-    title: 'Inteligência Operacional',
-    desc: 'Captura idempotente, assistente fundamentado nos dados reais e alertas legais validados.',
+    title: 'Independência Multi-App',
+    desc: 'Uber, Bolt, Cabify, FREE NOW, POP e VLOZ com gestão individual sem perder histórico ao desativar.',
   },
 ];
 
 export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
   onOpenLocationModal,
 }) => {
-  const { state, availableMarketsForPortal, setMode, setPortalPage, toggleTheme } =
-    useEcosystem();
+  const {
+    state,
+    availableMarketsForPortal,
+    setMode,
+    loginAsRole,
+    logoutSession,
+    clearRbacDenied,
+    setPortalPage,
+    toggleTheme,
+  } = useEcosystem();
+
   const page = state.activePortalPage;
+  const cms = state.cms;
+  const primaryColor = cms.primaryColor || '#1D4ED8';
+  const accentColor = cms.accentColor || '#DC2626';
+  const visibleSections = cms.visibleSections ?? {
+    hero: true,
+    modules: true,
+    platforms: true,
+    plans: true,
+    markets: true,
+    faq: true,
+    updates: true,
+  };
+  const sectionOrder = cms.sectionOrder ?? [
+    'hero',
+    'modules',
+    'platforms',
+    'plans',
+    'markets',
+    'faq',
+    'updates',
+  ];
+
+  const [authModalOpen, setAuthModalOpen] = useState<'driver' | 'admin' | null>(null);
+  const [selectedDriverId, setSelectedDriverId] = useState(state.activeDriverUserId);
+  const [selectedAdminRole, setSelectedAdminRole] = useState<AdminRole>(state.activeAdminRole);
+  const [adminPinInput, setAdminPinInput] = useState('AIVAD-ADMIN');
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [contactForm, setContactForm] = useState({
     name: '',
@@ -129,29 +150,52 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
     setContactSent(true);
   };
 
+  const handleEnterDriver = () => {
+    if (canAccessMode(state.session, 'driver')) {
+      setMode('driver');
+    } else {
+      setAuthError(null);
+      setAuthModalOpen('driver');
+    }
+  };
+
+  const handleEnterAdmin = () => {
+    if (canAccessMode(state.session, 'admin')) {
+      setMode('admin');
+    } else {
+      setAuthError(null);
+      setAuthModalOpen('admin');
+    }
+  };
+
   const pipelineMarkets = state.countries.filter((c) => c.marketStatus !== 'Disponível');
+  const benefitsList = cms.benefits ?? [];
+  const faqList = cms.faqs ?? [];
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
-      {/* Top Bar Contract */}
+      {/* Top Bar */}
       <header className="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-6">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <button
             type="button"
             onClick={() => setPortalPage('inicio')}
-            className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
+            className="flex items-center gap-2.5 text-lg font-display font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
           >
-            <PhoenixLogo size={28} />
-            <span>AIVAD</span>
+            <PhoenixLogo size={30} />
+            <span>{cms.brandTitle ?? 'AIVAD'}</span>
           </button>
 
-          <nav aria-label="Navegação principal do portal" className="hidden md:flex items-center gap-5 text-sm font-medium text-slate-600 dark:text-slate-300">
+          <nav
+            aria-label="Navegação principal do portal"
+            className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-600 dark:text-slate-300"
+          >
             {[
               ['funcionalidades', 'Funcionalidades'],
               ['mercados', 'Mercados'],
               ['plataformas', 'Plataformas'],
               ['planos', 'Planos'],
-              ['downloads', 'Downloads'],
+              ['downloads', 'Web/Mobile'],
               ['contacto', 'Contacto'],
             ].map(([id, label]) => (
               <button
@@ -159,7 +203,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 type="button"
                 onClick={() => setPortalPage(id)}
                 className={`hover:text-blue-700 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 ${
-                  page === id ? 'text-blue-700 dark:text-blue-400 underline underline-offset-4' : ''
+                  page === id ? 'text-blue-700 dark:text-blue-400 font-bold underline underline-offset-4' : ''
                 }`}
               >
                 {label}
@@ -169,76 +213,123 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
 
           <div className="flex items-center gap-2 shrink-0">
             {onOpenLocationModal && (
-              <div className="hidden sm:block">
+              <div className="hidden md:block">
                 <LocationPillButton onClick={onOpenLocationModal} />
               </div>
             )}
+            <ThemeToggleButton theme={state.theme} onToggle={toggleTheme} />
             <button
               type="button"
-              onClick={() => setMode('driver')}
-              className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0"
+              onClick={handleEnterDriver}
+              style={{ backgroundColor: primaryColor }}
+              className="px-4 py-2 rounded-lg hover:opacity-95 text-white text-xs font-semibold transition-opacity whitespace-nowrap shrink-0"
             >
-              Abrir Modo Motorista
+              {cms.heroCtaDriverLabel || 'Entrar como Motorista'}
             </button>
           </div>
         </div>
       </header>
 
-      {/* Workspace Switcher */}
-      <div className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-900/70">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 mr-1">
-              Ambientes AIVAD:
+      {/* Portal Session & Access Strip */}
+      <div className="border-b border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-900/70">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-slate-500 dark:text-slate-400">
+              Sessão &amp; Perfis:
             </span>
+            {state.session.authenticated ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-medium">
+                <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                <span>{state.session.userName}</span>
+                <span className="text-slate-400">·</span>
+                <span className="font-semibold text-blue-700 dark:text-blue-400">{state.session.role}</span>
+              </span>
+            ) : (
+              <span className="text-slate-500">Visitante não autenticado</span>
+            )}
             <button
               type="button"
-              onClick={() => setMode('portal')}
-              className="px-2.5 py-1 rounded-md bg-blue-700 text-white text-xs font-medium whitespace-nowrap"
+              onClick={() => setAuthModalOpen('driver')}
+              className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-600 font-medium"
             >
-              Site Oficial
+              Acesso Motorista
             </button>
             <button
               type="button"
-              onClick={() => setMode('driver')}
-              className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:border-blue-500 whitespace-nowrap"
+              onClick={handleEnterAdmin}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-red-600 font-medium"
             >
-              Modo Motorista
+              <Lock className="w-3 h-3 text-red-600" />
+              <span>Acesso Administrativo</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setMode('admin')}
-              className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:border-red-500 whitespace-nowrap"
-            >
-              Modo Administrador
-            </button>
+            {state.session.authenticated && (
+              <button
+                type="button"
+                onClick={logoutSession}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-slate-500 hover:text-red-600"
+              >
+                <LogOut className="w-3 h-3" />
+                <span>Terminar Sessão</span>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
             <PWAInstallButton />
-            <ThemeToggleButton theme={state.theme} onToggle={toggleTheme} />
           </div>
         </div>
       </div>
 
+      {/* RBAC Guard Banner if redirected */}
+      {state.rbacDeniedMessage && (
+        <div className="bg-red-700 text-white px-4 py-3 text-xs">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 shrink-0" />
+              <span>{state.rbacDeniedMessage}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  clearRbacDenied();
+                  setAuthModalOpen('admin');
+                }}
+                className="px-3 py-1 rounded bg-white text-red-700 font-bold"
+              >
+                Autenticar Admin
+              </button>
+              <button
+                type="button"
+                onClick={clearRbacDenied}
+                aria-label="Dispensar aviso RBAC"
+                className="p-1 hover:bg-red-800 rounded"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Live CMS Announcement Banner */}
-      {state.cms.showAnnouncement && (
-        <div className="bg-blue-900 text-white text-xs py-2 px-4 text-center">
-          <span className="font-medium">{state.cms.announcementBanner}</span>
+      {cms.showAnnouncement && (
+        <div style={{ backgroundColor: primaryColor }} className="text-white text-xs py-2 px-4 text-center">
+          <span className="font-medium">{cms.announcementBanner}</span>
           <span className="mx-2 opacity-50">·</span>
           <button
             type="button"
-            onClick={() => setPortalPage('atualizacoes')}
-            className="underline font-semibold hover:text-blue-200"
+            onClick={() => setPortalPage('downloads')}
+            className="underline font-semibold hover:opacity-80"
           >
-            Ver notas de lançamento
+            Ver atualizações do ecossistema
           </button>
         </div>
       )}
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-8 space-y-10">
-        {/* Clean 20-Page Portal Directory Strip */}
+        {/* Portal Directory Strip */}
         <div className="flex flex-wrap items-center gap-1.5 pb-3 border-b border-slate-200 dark:border-slate-800">
           {PORTAL_PAGES.map((p) => (
             <button
@@ -256,176 +347,270 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           ))}
         </div>
 
-        {/* PAGE: INÍCIO */}
+        {/* PAGE: INÍCIO (100% Controlled by CMS sectionOrder & visibleSections) */}
         {page === 'inicio' && (
           <div className="space-y-12">
-            <section className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-              <div className="lg:col-span-6 flex flex-col justify-center space-y-5">
-                <p className="text-xs font-semibold text-red-600 dark:text-red-400 tracking-wide">
-                  AIVAD Driver Intelligence &amp; Management Ecosystem
-                </p>
-                <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight [text-wrap:balance]">
-                  {state.cms.heroTitle}
-                </h1>
-                <p className="text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
-                  {state.cms.heroSubtitle}
-                </p>
-                <div className="flex flex-wrap items-center gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setMode('driver')}
-                    className="inline-flex items-center gap-2 px-5 py-3 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold transition-colors"
-                  >
-                    <span>Iniciar Modo Motorista</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode('admin')}
-                    className="inline-flex items-center gap-2 px-5 py-3 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                  >
-                    <span>Consola Administrativa</span>
-                  </button>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Ecossistema internacional dinâmico e independente de plataformas de transporte · Sem promessa de ganhos garantidos.
-                </p>
-              </div>
+            {sectionOrder.map((secId) => {
+              if (!visibleSections[secId]) return null;
 
-              <div className="lg:col-span-6 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-900 min-h-[300px]">
-                <img
-                  src="/src/assets/images/aivad_portal_hero_1794711880878.jpg"
-                  alt="Viatura elétrica executiva em operação urbana AIVAD"
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-            </section>
-
-            {/* Full-width 4-column summary strip reading LIVE state */}
-            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card className="p-5 space-y-1.5">
-                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Tacógrafo &amp; Operação
-                </span>
-                <p className="text-xl font-bold font-mono-tabular text-blue-700 dark:text-blue-400">
-                  10 Estados Auditáveis
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Jornada multi-app consolidada, fila offline e QR verificável.
-                </p>
-              </Card>
-              <Card className="p-5 space-y-1.5">
-                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Mercados Disponíveis
-                </span>
-                <p className="text-xl font-bold font-mono-tabular text-slate-900 dark:text-white">
-                  {availableMarketsForPortal.length} Países Disponíveis
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  {availableMarketsForPortal.map((c) => c.name).join(', ')} (+{pipelineMarkets.length} em expansão).
-                </p>
-              </Card>
-              <Card className="p-5 space-y-1.5">
-                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Plataformas Catalogadas
-                </span>
-                <p className="text-xl font-bold font-mono-tabular text-slate-900 dark:text-white">
-                  {state.platforms.length} Plataformas
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  {state.platforms.map((p) => p.name).join(', ')}.
-                </p>
-              </Card>
-              <Card className="p-5 space-y-1.5">
-                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Conformidade Jurídica
-                </span>
-                <p className="text-xl font-bold font-mono-tabular text-red-600 dark:text-red-400">
-                  {state.obligations.length} Normas Ativas
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Monitorização TVDE / VTC multi-país com validação jurídica humana.
-                </p>
-              </Card>
-            </section>
-
-            {/* Spotlight on 8 Key Ecosystem Capabilities */}
-            <section className="space-y-4">
-              <div className="flex flex-wrap items-end justify-between gap-2">
-                <div>
-                  <h2 className="text-2xl font-bold">8 Pilares Tecnológicos em Destaque</h2>
-                  <p className="text-xs text-slate-500">
-                    Todos interligados sob o mesmo motor central — sem módulos isolados nem dados duplicados.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPortalPage('funcionalidades')}
-                  className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline"
-                >
-                  Ver todas as funcionalidades →
-                </button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {FEATURED_CAPABILITIES.map((cap) => {
-                  const Icon = cap.icon;
-                  return (
-                    <Card key={cap.id} className="p-5 space-y-2.5">
-                      <div className="w-9 h-9 rounded-lg bg-blue-700/10 text-blue-700 dark:text-blue-400 flex items-center justify-center">
-                        <Icon className="w-4 h-4" />
+              if (secId === 'hero') {
+                return (
+                  <section key="hero" className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+                    <div className="lg:col-span-6 flex flex-col justify-center space-y-5">
+                      <p style={{ color: accentColor }} className="text-xs font-bold tracking-wide uppercase">
+                        {cms.brandTagline || 'O Cérebro Inteligente do Motorista'}
+                      </p>
+                      <h1 className="text-3xl sm:text-4xl lg:text-5xl font-display font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight [text-wrap:balance]">
+                        {cms.heroTitle}
+                      </h1>
+                      <p className="text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
+                        {cms.heroSubtitle}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-3 pt-2">
+                        <button
+                          type="button"
+                          onClick={handleEnterDriver}
+                          style={{ backgroundColor: primaryColor }}
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl text-white text-sm font-semibold transition-opacity hover:opacity-95 shadow-sm"
+                        >
+                          <span>{cms.heroCtaDriverLabel || 'Entrar como Motorista'}</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPortalPage('planos')}
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                        >
+                          <span>{cms.heroCtaPlansLabel || 'Explorar Planos'}</span>
+                        </button>
                       </div>
-                      <h3 className="text-sm font-bold">{cap.title}</h3>
-                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                        {cap.desc}
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Ecossistema independente para motoristas e operadores · Cálculos auditáveis sem promessas irreais.
+                      </p>
+                    </div>
+
+                    <div className="lg:col-span-6 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-900 min-h-[300px]">
+                      <img
+                        src="/src/assets/images/aivad_portal_hero_1794711880878.jpg"
+                        alt="Viatura elétrica executiva em operação urbana AIVAD"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  </section>
+                );
+              }
+
+              if (secId === 'modules') {
+                return (
+                  <section key="modules" className="space-y-5">
+                    {benefitsList.length > 0 && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {benefitsList.map((b) => (
+                          <Card key={b.id} className="p-5 space-y-1.5 border-blue-200/70 dark:border-blue-900/50">
+                            <h2 className="text-sm font-bold text-slate-900 dark:text-white">{b.title}</h2>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{b.description}</p>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <div>
+                        <h2 className="text-2xl font-display font-bold">Pilares Operacionais AIVAD</h2>
+                        <p className="text-xs text-slate-500">
+                          Módulos partilhados em tempo real sob o mesmo motor central.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPortalPage('funcionalidades')}
+                        className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline"
+                      >
+                        Ver funcionalidades completas →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {FEATURED_CAPABILITIES.map((cap) => {
+                        const Icon = cap.icon;
+                        return (
+                          <Card key={cap.id} className="p-5 space-y-2.5">
+                            <div className="w-9 h-9 rounded-lg bg-blue-700/10 text-blue-700 dark:text-blue-400 flex items-center justify-center">
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <h3 className="text-sm font-bold">{cap.title}</h3>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                              {cap.desc}
+                            </p>
+                          </Card>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              }
+
+              if (secId === 'platforms') {
+                return (
+                  <section key="platforms" className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="text-xl font-display font-bold">
+                        Plataformas Catalogadas ({state.platforms.length})
+                      </h2>
+                      <button
+                        type="button"
+                        onClick={() => setPortalPage('plataformas')}
+                        className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline"
+                      >
+                        Estado das integrações →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                      {state.platforms.map((pl) => (
+                        <Card key={pl.id} className="p-3.5 flex flex-col items-center text-center gap-2">
+                          <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
+                          <span className="text-xs font-bold">{pl.name}</span>
+                          <span className="text-[10px] text-slate-500">Comissão {pl.commissionPct}%</span>
+                        </Card>
+                      ))}
+                    </div>
+                  </section>
+                );
+              }
+
+              if (secId === 'plans') {
+                return (
+                  <section key="plans" className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="text-xl font-display font-bold">Planos AIVAD SaaS Core</h2>
+                      <button
+                        type="button"
+                        onClick={() => setPortalPage('planos')}
+                        className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline"
+                      >
+                        Comparar planos →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {state.plans.map((plan) => (
+                        <Card key={plan.id} className="p-5 flex flex-col justify-between gap-4">
+                          <div className="space-y-2">
+                            <p className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">{plan.audience}</p>
+                            <h3 className="text-base font-bold">{plan.name}</h3>
+                            <p className="text-2xl font-extrabold font-mono-tabular">
+                              €{plan.monthlyPriceEur.toFixed(2)}
+                              <span className="text-xs font-normal text-slate-500"> / mês</span>
+                            </p>
+                            <ul className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              {plan.features.slice(0, 3).map((f) => (
+                                <li key={f} className="flex items-start gap-1.5">
+                                  <Check className="w-3.5 h-3.5 text-blue-700 shrink-0 mt-0.5" />
+                                  <span>{f}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleEnterDriver}
+                            className="w-full py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
+                          >
+                            Aceder no Modo Motorista
+                          </button>
+                        </Card>
+                      ))}
+                    </div>
+                  </section>
+                );
+              }
+
+              if (secId === 'markets') {
+                return (
+                  <section key="markets" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <Card className="p-5 space-y-1">
+                      <span className="text-xs text-slate-500">Mercados Disponíveis</span>
+                      <p className="text-xl font-bold font-mono-tabular">{availableMarketsForPortal.length} Países</p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">
+                        {availableMarketsForPortal.map((c) => c.name).join(', ')} (+{pipelineMarkets.length} em estudo).
                       </p>
                     </Card>
-                  );
-                })}
-              </div>
-            </section>
+                    <Card className="p-5 space-y-1">
+                      <span className="text-xs text-slate-500">Conformidade Jurídica</span>
+                      <p className="text-xl font-bold font-mono-tabular text-red-600 dark:text-red-400">
+                        {state.obligations.length} Normas Ativas
+                      </p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">
+                        Portaria n.º 7/2022, Lei TVDE e regras locais por país.
+                      </p>
+                    </Card>
+                    <Card className="p-5 space-y-1">
+                      <span className="text-xs text-slate-500">Sessões &amp; Atividade</span>
+                      <p className="text-xl font-bold font-mono-tabular text-blue-700 dark:text-blue-400">
+                        10h / 24h Janela
+                      </p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">
+                        Alertas preventivos às 8h e 9h com QR verificável.
+                      </p>
+                    </Card>
+                    <Card className="p-5 space-y-1">
+                      <span className="text-xs text-slate-500">Canal &amp; Suporte</span>
+                      <p className="text-sm font-bold truncate">{cms.contactEmail || 'suporte@aivad-ecosystem.local'}</p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">{cms.supportHours || 'Seg–Sex · 09:00–19:00'}</p>
+                    </Card>
+                  </section>
+                );
+              }
+
+              if (secId === 'faq' && faqList.length > 0) {
+                return (
+                  <section key="faq" className="space-y-4">
+                    <h2 className="text-xl font-display font-bold flex items-center gap-2">
+                      <HelpCircle className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+                      Perguntas Frequentes
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {faqList.map((f) => (
+                        <Card key={f.id} className="p-5 space-y-1.5">
+                          <h3 className="text-sm font-bold">{f.question}</h3>
+                          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{f.answer}</p>
+                        </Card>
+                      ))}
+                    </div>
+                  </section>
+                );
+              }
+
+              if (secId === 'updates') {
+                return (
+                  <section key="updates" className="space-y-3">
+                    <h2 className="text-xl font-display font-bold">Comunicados Publicados</h2>
+                    <Card className="divide-y divide-slate-200 dark:divide-slate-800">
+                      {cms.publications
+                        .filter((p) => p.status === 'Publicado')
+                        .map((pub) => (
+                          <div key={pub.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-bold">{pub.title}</p>
+                              <p className="text-xs text-slate-600 dark:text-slate-300">{pub.summary}</p>
+                            </div>
+                            <span className="text-xs text-slate-500 font-mono-tabular whitespace-nowrap">
+                              {pub.category} · {pub.publishedAt}
+                            </span>
+                          </div>
+                        ))}
+                    </Card>
+                  </section>
+                );
+              }
+              return null;
+            })}
           </div>
         )}
 
-        {/* PAGE: SOBRE */}
-        {page === 'sobre' && (
-          <Card className="p-6 sm:p-8 space-y-5">
-            <h2 className="text-2xl font-bold">Sobre o Ecossistema AIVAD</h2>
-            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed max-w-3xl">
-              O AIVAD foi desenhado como um ecossistema único e independente de plataformas de transporte: une aplicação diária de motorista, Tacógrafo TVDE auditável, painel administrativo central, conformidade regulatória e adaptadores nativos sob o mesmo motor de cálculo e eventos idempotentes.
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-              <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 space-y-1">
-                <p className="text-sm font-bold">Privacidade por Desenho</p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Os administradores gerem planos, mercados e conformidade sem aceder automaticamente a dados financeiros privados dos motoristas sem consentimento explícito.
-                </p>
-              </div>
-              <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 space-y-1">
-                <p className="text-sm font-bold">Transparência de Integração</p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Integrações externas sem API oficial exibem sempre a etiqueta INTEGRAÇÃO A VALIDAR — sem simulação de cliques nem armazenamento de senhas de terceiros.
-                </p>
-              </div>
-              <div className="p-4 rounded-lg bg-slate-50 dark:bg-slate-800/50 space-y-1">
-                <p className="text-sm font-bold">Internacionalização Real</p>
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  Suporta expansão mundial ilimitada de países, moedas, idiomas e regiões sem converter nem corromper transações históricas.
-                </p>
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* PAGE: SOLUÇÕES & FUNCIONALIDADES */}
-        {(page === 'solucoes' || page === 'funcionalidades') && (
+        {/* PAGE: FUNCIONALIDADES */}
+        {page === 'funcionalidades' && (
           <div className="space-y-6">
-            <h2 className="text-2xl font-bold">
-              {page === 'solucoes'
-                ? 'Soluções AIVAD para Motoristas, Frotas & Operadores'
-                : 'Funcionalidades Completas do Ecossistema'}
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <h2 className="text-2xl font-display font-bold">Funcionalidades do Ecossistema AIVAD</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {FEATURED_CAPABILITIES.map((cap) => {
                 const Icon = cap.icon;
                 return (
@@ -440,89 +625,24 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           </div>
         )}
 
-        {/* PAGE: AIVAD DRIVER & AIVAD MANAGEMENT */}
-        {(page === 'aivad-driver' || page === 'aivad-management') && (
-          <Card className="p-6 sm:p-8 space-y-5">
-            <h2 className="text-2xl font-bold">
-              {page === 'aivad-driver'
-                ? 'AIVAD Driver — Aplicação Operacional Multi-Plataforma'
-                : 'AIVAD Management — Consola Central de Gestão & Expansão'}
-            </h2>
-            <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed max-w-3xl">
-              {page === 'aivad-driver'
-                ? 'Inclui Dashboard com gráficos interativos, Tacógrafo TVDE independente com QR verificável, Calculadora de propostas, AutoPilot seguro, Smart Data Capture, Consolidado Multi-App, Financeiro, Planeador e Conformidade.'
-                : 'Centraliza 26 módulos administrativos: Utilizadores, Frotas, Planos, Assinaturas, Pagamentos SaaS, Plataformas, Países e Mercados Dinâmicos, Legislação, CMS, Versões, Monitorização e Auditoria Imutável.'}
-            </p>
-            <button
-              type="button"
-              onClick={() => setMode(page === 'aivad-driver' ? 'driver' : 'admin')}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
-            >
-              <span>
-                {page === 'aivad-driver' ? 'Entrar no AIVAD Driver' : 'Abrir Consola Administrativa'}
-              </span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </Card>
-        )}
-
-        {/* PAGES: ANDROID / IOS / WEB */}
-        {(page === 'android' || page === 'ios' || page === 'web') && (
-          <div className="space-y-6">
-            <div className="flex items-center gap-3">
-              <Smartphone className="w-6 h-6 text-blue-700 dark:text-blue-400" />
-              <h2 className="text-2xl font-bold">
-                Arquitetura {page === 'android' ? 'AIVAD Android' : page === 'ios' ? 'AIVAD iOS Ready' : 'AIVAD Web & PWA'}
-              </h2>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {PLATFORM_ADAPTERS.filter((a) =>
-                page === 'android'
-                  ? a.os === 'Android Native Bridge'
-                  : page === 'ios'
-                  ? a.os === 'iOS Apple Ready'
-                  : a.os === 'Web / PWA'
-              ).map((adapter, i) => (
-                <Card key={i} className="p-5 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
-                      {adapter.os}
-                    </span>
-                    <StatusLabel
-                      tone={adapter.supportedNow ? 'success' : 'warning'}
-                      text={adapter.integrationState}
-                    />
-                  </div>
-                  <h3 className="text-sm font-bold">{adapter.capability}</h3>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">{adapter.notes}</p>
-                </Card>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* PAGE: MERCADOS (Lê EXCLUSIVAMENTE mercados com status Disponível) */}
+        {/* PAGE: MERCADOS */}
         {page === 'mercados' && (
           <div className="space-y-6">
             <Card className="overflow-x-auto">
-              <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Globe className="w-5 h-5 text-blue-700 dark:text-blue-400" />
-                  <div>
-                    <h2 className="text-lg font-bold">
-                      Mercados Disponíveis ({availableMarketsForPortal.length})
-                    </h2>
-                    <p className="text-xs text-slate-500">
-                      Lista sincronizada automaticamente com a Administração — apenas mercados marcados como &quot;Disponível&quot; constam como ativos ao público.
-                    </p>
-                  </div>
+              <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
+                <Globe className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+                <div>
+                  <h2 className="text-lg font-bold">Mercados Disponíveis ({availableMarketsForPortal.length})</h2>
+                  <p className="text-xs text-slate-500">
+                    Lista sincronizada em tempo real com a Administração Central.
+                  </p>
                 </div>
               </div>
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
                   <tr>
                     <th className="p-3">País</th>
-                    <th className="p-3">Regiões / Cidades</th>
+                    <th className="p-3">Cidades</th>
                     <th className="p-3">Idioma</th>
                     <th className="p-3">Moeda &amp; Unidades</th>
                     <th className="p-3">Licença Local</th>
@@ -545,42 +665,18 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 </tbody>
               </table>
             </Card>
-
-            {pipelineMarkets.length > 0 && (
-              <Card className="p-5 space-y-3 text-xs">
-                <h3 className="text-sm font-bold">
-                  Mercados em Expansão / Validação ({pipelineMarkets.length})
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {pipelineMarkets.map((c) => (
-                    <div
-                      key={c.code}
-                      className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold">{c.name} ({c.code})</span>
-                        <StatusLabel tone="warning" text={c.marketStatus} />
-                      </div>
-                      <p className="text-slate-500">
-                        Moeda {c.currency} · {c.regions.flatMap((r) => r.cities).join(', ')}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
           </div>
         )}
 
-        {/* PAGE: PLATAFORMAS (Dinâmico do catálogo central) */}
+        {/* PAGE: PLATAFORMAS */}
         {page === 'plataformas' && (
           <div className="space-y-4">
             <div>
-              <h2 className="text-2xl font-bold">
-                Plataformas de Mobilidade &amp; Estado das Integrações ({state.platforms.length})
+              <h2 className="text-2xl font-display font-bold">
+                Plataformas de Mobilidade ({state.platforms.length})
               </h2>
               <p className="text-xs text-slate-500">
-                Catálogo sincronizado dinamicamente com a administração. O AIVAD não armazena credenciais externas nem automatiza cliques sem API oficial autorizada.
+                Catálogo multi-app transparente. O AIVAD não armazena senhas de terceiros nem automatiza cliques sem API oficial.
               </p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -588,11 +684,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 <Card key={pl.id} className="p-5 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2.5">
-                      <PlatformBadge
-                        name={pl.name}
-                        shortCode={pl.shortCode}
-                        brandColor={pl.brandColor}
-                      />
+                      <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
                       <div>
                         <h3 className="text-base font-bold">{pl.name}</h3>
                         <p className="text-[11px] text-slate-500">
@@ -605,49 +697,30 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                   <p className="text-xs text-slate-600 dark:text-slate-300">
                     Categorias: {pl.categories.join(' · ')}
                   </p>
-                  {pl.requirements && pl.requirements.length > 0 && (
-                    <p className="text-[11px] text-slate-500">
-                      Requisitos: {pl.requirements[0]}
-                    </p>
-                  )}
                 </Card>
               ))}
             </div>
           </div>
         )}
 
-        {/* PAGE: PLANOS & PREÇOS */}
-        {(page === 'planos' || page === 'precos') && (
+        {/* PAGE: PLANOS */}
+        {page === 'planos' && (
           <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-bold">
-                {page === 'precos' ? 'Preços Transparentes AIVAD SaaS Core' : 'Planos AIVAD SaaS Core'}
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Sincronizados em tempo real com o painel administrativo.
-              </p>
-            </div>
+            <h2 className="text-2xl font-display font-bold">Planos AIVAD SaaS Core</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {state.plans.map((plan) => (
                 <Card key={plan.id} className="p-6 flex flex-col justify-between gap-5">
                   <div className="space-y-3">
-                    <div>
-                      <p className="text-xs font-medium text-blue-700 dark:text-blue-400">
-                        {plan.audience}
-                      </p>
-                      <h3 className="text-lg font-bold mt-1">{plan.name}</h3>
-                    </div>
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-400">{plan.audience}</p>
+                    <h3 className="text-lg font-bold">{plan.name}</h3>
                     <div className="text-3xl font-extrabold font-mono-tabular">
                       €{plan.monthlyPriceEur.toFixed(2)}
                       <span className="text-xs font-normal text-slate-500"> / mês</span>
                     </div>
-                    <p className="text-xs text-slate-500">
-                      Anual: €{plan.annualPriceEur} · Até {plan.maxVehicles} veículo(s) · {plan.trialDays} dias teste
-                    </p>
                     <ul className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
                       {plan.features.map((f) => (
                         <li key={f} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300">
-                          <Check className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400 mt-0.5 shrink-0" />
+                          <Check className="w-3.5 h-3.5 text-blue-700 mt-0.5 shrink-0" />
                           <span>{f}</span>
                         </li>
                       ))}
@@ -655,10 +728,10 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setMode('driver')}
-                    className="w-full py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold transition-colors"
+                    onClick={handleEnterDriver}
+                    className="w-full py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
                   >
-                    Experimentar no Modo Motorista
+                    Entrar como Motorista
                   </button>
                 </Card>
               ))}
@@ -666,102 +739,91 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           </div>
         )}
 
-        {/* PAGES: DOWNLOADS & ATUALIZAÇÕES */}
-        {(page === 'downloads' || page === 'atualizacoes') && (
+        {/* PAGE: DOWNLOADS / MULTIPLATAFORMA */}
+        {page === 'downloads' && (
           <div className="space-y-6">
-            <h2 className="text-2xl font-bold">
-              {page === 'downloads' ? 'Área Oficial de Downloads & Versões' : 'Publicações & Notas de Lançamento (CMS)'}
-            </h2>
+            <div className="space-y-1">
+              <h2 className="text-2xl font-display font-bold flex items-center gap-2">
+                <Smartphone className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+                Experiência Web, Android &amp; iOS Ready
+              </h2>
+              <p className="text-xs text-slate-500">
+                Estado transparente de cada canal — sem botões falsos de lojas nem promessas de funcionalidades restritas pelo sistema operativo.
+              </p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {PLATFORM_ADAPTERS.map((adapter, i) => (
+                <Card key={i} className="p-5 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
+                      {adapter.os}
+                    </span>
+                    <StatusLabel
+                      tone={adapter.supportedNow ? 'success' : 'warning'}
+                      text={adapter.integrationState}
+                    />
+                  </div>
+                  <h3 className="text-sm font-bold">{adapter.capability}</h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{adapter.notes}</p>
+                </Card>
+              ))}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {state.versions
                 .filter((v) => v.status === 'Publicado' || v.status === 'Gradual')
                 .map((ver) => (
-                  <Card key={ver.id} className="p-5 space-y-3">
+                  <Card key={ver.id} className="p-5 space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-bold">
-                        AIVAD {ver.channel} v{ver.version}
-                      </span>
-                      <StatusLabel
-                        tone={ver.status === 'Publicado' ? 'success' : 'info'}
-                        text={`${ver.status} · ${ver.rolloutPct}%`}
-                      />
+                      <span className="text-sm font-bold">AIVAD {ver.channel} v{ver.version}</span>
+                      <StatusLabel tone={ver.status === 'Publicado' ? 'success' : 'info'} text={`${ver.status} · ${ver.rolloutPct}%`} />
                     </div>
                     <p className="text-xs text-slate-600 dark:text-slate-300">{ver.notes}</p>
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500">
-                      <span>Build #{ver.buildNumber} · {ver.releaseDate}</span>
-                      <button
-                        type="button"
-                        onClick={() => setMode('driver')}
-                        className="inline-flex items-center gap-1 font-semibold text-blue-700 dark:text-blue-400 hover:underline"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        <span>{ver.channel === 'Web' ? 'Abrir Web App' : 'Ver Requisitos'}</span>
-                      </button>
-                    </div>
+                    <p className="text-[11px] font-mono-tabular text-slate-500">
+                      Build #{ver.buildNumber} · {ver.releaseDate}
+                    </p>
                   </Card>
                 ))}
             </div>
-
-            <Card className="p-5 space-y-3">
-              <h3 className="text-base font-bold">Comunicados Publicados pelo Administrador</h3>
-              <div className="divide-y divide-slate-200 dark:divide-slate-800">
-                {state.cms.publications
-                  .filter((p) => p.status === 'Publicado')
-                  .map((pub) => (
-                    <div key={pub.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-semibold">{pub.title}</p>
-                        <p className="text-xs text-slate-600 dark:text-slate-300">{pub.summary}</p>
-                      </div>
-                      <span className="text-xs text-slate-500 whitespace-nowrap">
-                        {pub.category} · {pub.publishedAt}
-                      </span>
-                    </div>
-                  ))}
-              </div>
-            </Card>
           </div>
         )}
 
-        {/* PAGES: TUTORIAIS, AJUDA, SEGURANÇA, PRIVACIDADE */}
-        {(page === 'tutoriais' ||
-          page === 'ajuda' ||
-          page === 'seguranca' ||
-          page === 'privacidade') && (
+        {/* PAGE: TUTORIAIS & FAQ */}
+        {page === 'tutoriais' && (
+          <div className="space-y-6">
+            <Card className="p-6 space-y-3 text-sm text-slate-600 dark:text-slate-300">
+              <h2 className="text-xl font-display font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <ExternalLink className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+                Guia Rápido do Motorista
+              </h2>
+              <p>1. Inicie turno no Registo de atividade TVDE e acompanhe a janela deslizante de 10h em 24h entre todas as apps.</p>
+              <p>2. Configure o seu Cartão Flutuante e Estratégia (Manual / Semiautomático / Automático) antes de entrar na estrada.</p>
+              <p>3. Consulte o AIVAD AI CORE para decisões contextualizadas e aprendizagem prevista vs real isolada da sua conta.</p>
+            </Card>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {faqList.map((f) => (
+                <Card key={f.id} className="p-5 space-y-1.5">
+                  <h3 className="text-sm font-bold">{f.question}</h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{f.answer}</p>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* PAGE: SEGURANÇA */}
+        {page === 'seguranca' && (
           <Card className="p-6 sm:p-8 space-y-4">
             <div className="flex items-center gap-2.5">
-              {page === 'seguranca' ? (
-                <ShieldCheck className="w-5 h-5 text-blue-700 dark:text-blue-400" />
-              ) : page === 'privacidade' ? (
-                <Lock className="w-5 h-5 text-blue-700 dark:text-blue-400" />
-              ) : (
-                <ExternalLink className="w-5 h-5 text-blue-700 dark:text-blue-400" />
-              )}
-              <h2 className="text-2xl font-bold capitalize">{page}</h2>
+              <ShieldCheck className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+              <h2 className="text-2xl font-display font-bold">Segurança, Privacidade &amp; RBAC Estrito</h2>
             </div>
             <div className="text-sm text-slate-600 dark:text-slate-300 space-y-3 max-w-3xl leading-relaxed">
-              {page === 'tutoriais' && (
-                <>
-                  <p>1. Inicie o turno no <strong>AIVAD TACÓGRAFO TVDE</strong> com odómetro válido e troque estados de condução, pausa e descanso sem duplicar tempo entre apps.</p>
-                  <p>2. Configure o seu veículo e limiares na Calculadora de Propostas e consulte o Consolidado Multi-App.</p>
-                  <p>3. Exporte relatórios com código QR verificável, XLSX verdadeiro, CSV ou PDF.</p>
-                </>
-              )}
-              {page === 'ajuda' && (
-                <p>
-                  Cada indicador no AIVAD possui um botão de ajuda contextual (?) que explica o que mede e a fórmula exata aplicada. Para suporte técnico, aceda a Comunicação e Suporte no Modo Motorista.
-                </p>
-              )}
-              {page === 'seguranca' && (
-                <p>
-                  O ecossistema aplica controlo de acesso baseado em funções (RBAC) com 7 perfis administrativos, auditoria imutável de ações críticas, separação estrita de ambientes e nenhuma chave privada armazenada no frontend.
-                </p>
-              )}
-              {page === 'privacidade' && (
-                <p>
-                  Conformidade RGPD: dados financeiros e operacionais do motorista são privados por defeito. Administradores não visualizam detalhes financeiros individuais sem autorização explícita e fundamento operacional.
-                </p>
-              )}
+              <p>
+                O ambiente do motorista encontra-se completamente separado da consola administrativa: não existem botões nem atalhos administrativos dentro do AIVAD Driver, e acessos diretos via URL ao painel administrativo são bloqueados sem sessão autenticada com perfil autorizado.
+              </p>
+              <p>
+                A aprendizagem do AIVAD AI CORE opera estritamente isolada por utilizador — nenhum rendimento financeiro ou histórico privado de um motorista é cruzado com outros utilizadores.
+              </p>
             </div>
           </Card>
         )}
@@ -771,13 +833,17 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           <Card className="p-6 sm:p-8 max-w-2xl space-y-4">
             <div className="flex items-center gap-2.5">
               <Mail className="w-5 h-5 text-blue-700 dark:text-blue-400" />
-              <h2 className="text-2xl font-bold">Contacto Comercial e Institucional</h2>
+              <h2 className="text-2xl font-display font-bold">Contacto Comercial e Suporte</h2>
             </div>
+            <p className="text-xs text-slate-500">
+              Email CMS: <strong>{cms.contactEmail || 'suporte@aivad-ecosystem.local'}</strong> · Horário:{' '}
+              <strong>{cms.supportHours || 'Seg–Sex · 09:00–19:00'}</strong>
+            </p>
             {contactSent ? (
               <div className="p-4 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                <StatusLabel tone="success" text="Pedido registado com sucesso (simulação local)" />
+                <StatusLabel tone="success" text="Pedido registado localmente (simulação)" />
                 <p className="text-xs text-slate-600 dark:text-slate-300">
-                  A sua mensagem de {contactForm.name} ({contactForm.email}) foi validada. Para envio real de correio eletrónico, ligue o adaptador SMTP/CRM no backend.
+                  Mensagem de {contactForm.name} validada. Para envio de email real, ligue o adaptador SMTP no backend Windsurf.
                 </p>
                 <button
                   type="button"
@@ -802,7 +868,6 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                       value={contactForm.name}
                       onChange={(e) => setContactForm((f) => ({ ...f, name: e.target.value }))}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-                      placeholder="Ex: João Almeida"
                     />
                   </div>
                   <div>
@@ -813,7 +878,6 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                       value={contactForm.email}
                       onChange={(e) => setContactForm((f) => ({ ...f, email: e.target.value }))}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-                      placeholder="nome@empresa.pt"
                     />
                   </div>
                 </div>
@@ -825,7 +889,6 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                     value={contactForm.message}
                     onChange={(e) => setContactForm((f) => ({ ...f, message: e.target.value }))}
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-sm"
-                    placeholder="Descreva a sua necessidade comercial, frota ou integração..."
                   />
                 </div>
                 <button
@@ -840,22 +903,149 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
         )}
       </main>
 
+      {/* Portal Authentication & Role Gateway Modal */}
+      {authModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Autenticação de Acesso AIVAD"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 backdrop-blur-xs p-4"
+        >
+          <Card className="w-full max-w-md p-6 space-y-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-xl text-white ${authModalOpen === 'admin' ? 'bg-red-600' : 'bg-blue-700'}`}>
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Gateway de Autenticação RBAC
+                  </p>
+                  <h2 className="text-base font-bold">
+                    {authModalOpen === 'admin' ? 'Entrar na Consola Administrativa' : 'Entrar no AIVAD Driver'}
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthModalOpen(null)}
+                aria-label="Fechar janela de autenticação"
+                className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {authError && <StatusLabel tone="danger" text={authError} />}
+
+            {authModalOpen === 'driver' ? (
+              <div className="space-y-4 text-xs">
+                <div>
+                  <label htmlFor="auth-drv-select" className="block font-semibold mb-1">
+                    Selecionar Conta de Motorista / Operador
+                  </label>
+                  <select
+                    id="auth-drv-select"
+                    value={selectedDriverId}
+                    onChange={(e) => setSelectedDriverId(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
+                  >
+                    {state.users
+                      .filter((u) => !isAdminRole(u.role))
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role} · {u.city})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Experiência 100% focada no motorista — sem acesso nem botões administrativos visíveis.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chosen = state.users.find((u) => u.id === selectedDriverId);
+                    loginAsRole((chosen?.role as UserRole) ?? 'Motorista', chosen?.id);
+                    setAuthModalOpen(null);
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+                >
+                  Iniciar Sessão no AIVAD Driver
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4 text-xs">
+                <div>
+                  <label htmlFor="auth-adm-role" className="block font-semibold mb-1">
+                    Perfil Administrativo RBAC
+                  </label>
+                  <select
+                    id="auth-adm-role"
+                    value={selectedAdminRole}
+                    onChange={(e) => setSelectedAdminRole(e.target.value as AdminRole)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
+                  >
+                    {ADMIN_ROLES.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="auth-adm-pin" className="block font-semibold mb-1">
+                    Chave de Verificação Interna (Demo: AIVAD-ADMIN)
+                  </label>
+                  <input
+                    id="auth-adm-pin"
+                    type="password"
+                    value={adminPinInput}
+                    onChange={(e) => setAdminPinInput(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                  />
+                </div>
+                <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-300">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>
+                    Em produção, este gateway liga-se ao backend JWT/RBAC no Windsurf. Todas as entradas ficam registadas na Auditoria Imutável.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (adminPinInput.trim().toUpperCase() !== 'AIVAD-ADMIN') {
+                      setAuthError('Chave de verificação inválida (utilize AIVAD-ADMIN no ambiente de validação).');
+                      return;
+                    }
+                    setAuthError(null);
+                    loginAsRole(selectedAdminRole, 'usr-admin-1');
+                    setAuthModalOpen(null);
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold"
+                >
+                  Autenticar e Abrir AIVAD Management
+                </button>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
       <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 py-8 px-4 sm:px-6 mt-12">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-2">
             <PhoenixLogo size={20} />
-            <span>AIVAD — Driver Intelligence &amp; Management Ecosystem · 2026</span>
+            <span>{cms.brandTitle ?? 'AIVAD'} — Driver Intelligence &amp; Management Ecosystem · {new Date().getFullYear()}</span>
           </div>
           <div className="flex flex-wrap items-center gap-4">
             <button type="button" onClick={() => setPortalPage('seguranca')} className="hover:text-slate-900 dark:hover:text-white">
-              Segurança
+              Segurança &amp; RGPD
             </button>
-            <button type="button" onClick={() => setPortalPage('privacidade')} className="hover:text-slate-900 dark:hover:text-white">
-              Privacidade &amp; RGPD
+            <button type="button" onClick={() => setPortalPage('contacto')} className="hover:text-slate-900 dark:hover:text-white">
+              Contacto
             </button>
-            <button type="button" onClick={() => setPortalPage('ajuda')} className="hover:text-slate-900 dark:hover:text-white">
-              Ajuda
-            </button>
+            <span className="inline-flex items-center gap-1 text-slate-400">
+              <Download className="w-3 h-3" /> Web PWA Ready
+            </span>
           </div>
         </div>
       </footer>

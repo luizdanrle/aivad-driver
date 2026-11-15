@@ -561,8 +561,70 @@ export function evaluateVehicleEligibility(
   };
 }
 
+export function isCompletedTripStatus(status: TripRecord['status']): boolean {
+  return status === 'Concluída' || status === 'Ajustada';
+}
+
+export interface FinancialCalculationExplanation {
+  kpiTitle: string;
+  formula: string;
+  inputsUsed: Array<{ label: string; value: string }>;
+  countryCode: string;
+  referenceDate: string;
+  assumptions: string[];
+  confidenceLabel: 'Informação confirmada' | 'Estimativa' | 'Misto (Confirmado + Estimado)';
+}
+
+export function getEnergyUnitPriceByTariff(
+  profile: VehicleRecord['energyTariffProfile'],
+  fallbackUnitCostEur: number
+): number {
+  switch (profile) {
+    case 'Doméstico':
+      return 0.17;
+    case 'Garagem':
+      return 0.21;
+    case 'Público AC':
+      return 0.34;
+    case 'Rápido DC':
+      return 0.56;
+    case 'Combustível':
+      return fallbackUnitCostEur > 0 ? fallbackUnitCostEur : 1.72;
+    default:
+      return fallbackUnitCostEur;
+  }
+}
+
+export function computeVehicleOwnershipTcoPerKm(
+  vehicle: VehicleRecord,
+  monthlyKmAssumption = 4800
+): {
+  energyCostPerKmEur: number;
+  maintenancePerKmEur: number;
+  fixedOwnershipPerKmEur: number;
+  totalEstimatedCostPerKmEur: number;
+  ownershipLabel: string;
+} {
+  const unitPrice = getEnergyUnitPriceByTariff(vehicle.energyTariffProfile, vehicle.energyCostPerUnitEur);
+  const energyCostPerKmEur = round2((vehicle.consumptionPer100Km / 100) * unitPrice);
+  const maintenancePerKmEur = round2(vehicle.maintenancePerKmEur);
+  const monthlyDepreciation =
+    vehicle.ownership === 'Alugada' ? 0 : vehicle.depreciationMonthlyEur;
+  const fixedMonthlyEur =
+    vehicle.monthlyLeaseOrFinanceEur + vehicle.insuranceAnnualEur / 12 + monthlyDepreciation;
+  const fixedOwnershipPerKmEur = round2(fixedMonthlyEur / Math.max(500, monthlyKmAssumption));
+  return {
+    energyCostPerKmEur,
+    maintenancePerKmEur,
+    fixedOwnershipPerKmEur,
+    totalEstimatedCostPerKmEur: round2(energyCostPerKmEur + maintenancePerKmEur + fixedOwnershipPerKmEur),
+    ownershipLabel: vehicle.ownership ?? 'Financiada',
+  };
+}
+
 export function computeFinancialSummary(trips: TripRecord[], expenses: ExpenseRecord[]) {
-  const completed = trips.filter((t) => t.status !== 'Cancelada');
+  const completed = trips.filter((t) => isCompletedTripStatus(t.status));
+  const cancelledOrLostCount = trips.filter((t) => !isCompletedTripStatus(t.status)).length;
   const grossTotal = round2(completed.reduce((acc, t) => acc + t.grossEur, 0));
   const tipsTotal = round2(completed.reduce((acc, t) => acc + t.tipEur, 0));
   const bonusTotal = round2(completed.reduce((acc, t) => acc + t.bonusEur, 0));
@@ -582,6 +644,7 @@ export function computeFinancialSummary(trips: TripRecord[], expenses: ExpenseRe
 
   return {
     tripCount: completed.length,
+    cancelledOrLostCount,
     grossTotal,
     tipsTotal,
     bonusTotal,
@@ -597,6 +660,85 @@ export function computeFinancialSummary(trips: TripRecord[], expenses: ExpenseRe
     totalHours,
     avgPerHour: totalHours > 0 ? round2(totalRevenue / totalHours) : 0,
     avgPerKm: totalKm > 0 ? round2(totalRevenue / totalKm) : 0,
+  };
+}
+
+export function explainFinancialCalculation(
+  kpiKey: 'totalRevenue' | 'netEstimated' | 'avgPerHour' | 'avgPerKm',
+  trips: TripRecord[],
+  expenses: ExpenseRecord[],
+  countryCode = 'PT'
+): FinancialCalculationExplanation {
+  const s = computeFinancialSummary(trips, expenses);
+  const today = new Date().toISOString().slice(0, 10);
+  if (kpiKey === 'totalRevenue') {
+    return {
+      kpiTitle: 'Receita Bruta Total (Viagens Concluídas/Ajustadas)',
+      formula: 'Receita Total = Soma(Tarifa Base) + Soma(Gorjetas) + Soma(Bónus) [exclui canceladas/rejeitadas/expiradas]',
+      inputsUsed: [
+        { label: 'Viagens concluídas/ajustadas', value: `${s.tripCount} (excluídas ${s.cancelledOrLostCount} não concluídas)` },
+        { label: 'Tarifas brutas', value: `€${s.grossTotal.toFixed(2)}` },
+        { label: 'Gorjetas', value: `€${s.tipsTotal.toFixed(2)}` },
+        { label: 'Bónus / campanhas', value: `€${s.bonusTotal.toFixed(2)}` },
+      ],
+      countryCode,
+      referenceDate: today,
+      assumptions: [
+        'Corridas canceladas, rejeitadas, expiradas ou no-show sem taxa líquida liquidada são excluídas automaticamente.',
+      ],
+      confidenceLabel: 'Informação confirmada',
+    };
+  }
+  if (kpiKey === 'netEstimated') {
+    return {
+      kpiTitle: 'Líquido Operacional Estimado',
+      formula: 'Líquido = Receita Total - Comissões Plataforma - Custo Operacional/km - Despesas Lançadas',
+      inputsUsed: [
+        { label: 'Receita Total', value: `€${s.totalRevenue.toFixed(2)}` },
+        { label: 'Comissões Plataforma', value: `-€${s.commissionsTotal.toFixed(2)}` },
+        { label: 'Custo Operacional Veículo (km)', value: `-€${s.tripOpCost.toFixed(2)}` },
+        { label: 'Despesas registadas', value: `-€${s.loggedExpenses.toFixed(2)}` },
+      ],
+      countryCode,
+      referenceDate: today,
+      assumptions: [
+        'O custo operacional por viagem estima energia/combustível + desgaste por km total.',
+        'Impostos anuais/IRC/IRS não estão retidos salvo lançamento explícito em Despesas.',
+      ],
+      confidenceLabel: 'Misto (Confirmado + Estimado)',
+    };
+  }
+  if (kpiKey === 'avgPerHour') {
+    return {
+      kpiTitle: 'Média Horária Bruta (€/hora)',
+      formula: '€/hora = Receita Total / (Soma(Duração em minutos de viagens concluídas) / 60)',
+      inputsUsed: [
+        { label: 'Receita Total', value: `€${s.totalRevenue.toFixed(2)}` },
+        { label: 'Horas produtivas em viagem', value: `${s.totalHours.toFixed(2)} h` },
+      ],
+      countryCode,
+      referenceDate: today,
+      assumptions: [
+        'Considera duração total registada das viagens concluídas; tempo morto sem plataforma pode ser consultado no Tacógrafo TVDE.',
+      ],
+      confidenceLabel: 'Estimativa',
+    };
+  }
+  return {
+    kpiTitle: 'Rácio por Distância (€/km)',
+    formula: '€/km = Receita Total / (Km em Recolha + Km com Passageiro)',
+    inputsUsed: [
+      { label: 'Receita Total', value: `€${s.totalRevenue.toFixed(2)}` },
+      { label: 'Km com Passageiro', value: `${s.passengerKm.toFixed(1)} km` },
+      { label: 'Km em Recolha (Vazio)', value: `${s.emptyKm.toFixed(1)} km` },
+      { label: 'Km Totais', value: `${s.totalKm.toFixed(1)} km` },
+    ],
+    countryCode,
+    referenceDate: today,
+    assumptions: [
+      'Inclui distância de deslocação em vazio até à recolha para refletir desgaste real.',
+    ],
+    confidenceLabel: 'Misto (Confirmado + Estimado)',
   };
 }
 

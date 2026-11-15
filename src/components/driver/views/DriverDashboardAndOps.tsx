@@ -1,32 +1,44 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
   Bot,
   Calculator,
   Car,
   CheckCircle2,
   Database,
   Gauge,
+  History,
   Layers,
   Play,
   Radio,
+  RotateCcw,
+  Save,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   Target,
 } from 'lucide-react';
-import { analyzeProposal, round2 } from '../../../core/intelligence';
-import { formatDistance, formatDistanceRate, formatMoney } from '../../../core/localization';
+import { analyzeProposalWithAiCore, type ProposalAiDecisionPackage } from '../../../core/aiCore';
+import { isCompletedTripStatus, round2 } from '../../../core/intelligence';
+import { formatDistance, formatDistanceRate, formatMoney, getTodayIso } from '../../../core/localization';
 import type {
   AnalysisMode,
+  AndroidOverlayConfig,
   AutoPilotMode,
   CaptureSource,
+  FloatingMetricKey,
   ProposalInput,
   ProposalLifecycleState,
   SmartCaptureRecord,
 } from '../../../models/types';
+import { SEED_OVERLAY_CONFIG } from '../../../data/seedData';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import {
+  DynamicFloatingProposalCard,
+  FLOATING_METRIC_LABELS,
   GoalDonutChart,
   HorizontalBreakdownBars,
   PlatformBadge,
@@ -35,10 +47,21 @@ import {
 import {
   Card,
   ContextualHelpBanner,
+  EpistemicTagBadge,
   MetricCard,
   SegmentedFilter,
   StatusLabel,
 } from '../../ui/DesignSystem';
+
+const ALL_FLOATING_METRICS: FloatingMetricKey[] = [
+  'eurPerKm',
+  'eurPerHour',
+  'eurPerMin',
+  'estimatedNet',
+  'emptyReturnRisk',
+  'totalTime',
+  'score',
+];
 
 export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
@@ -46,7 +69,10 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     activeVehicle,
     activeMarket,
     visibleDriverPlatforms,
+    activeDriverTrips,
     tachographSummary,
+    rolling24hCompliance,
+    aiCoreBriefing,
     setDriverNav,
     createAndAnalyzeProposal,
     updateProposalLifecycle,
@@ -56,19 +82,26 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     confirmPendingCapture,
   } = useEcosystem();
 
+  const todayIso = getTodayIso();
+
+  // Sub-tab management when entering consolidated 'corridas' view
+  const [opsSubTab, setOpsSubTab] = useState<'calculadora' | 'propostas-tempo-real' | 'smart-capture'>('calculadora');
+  const resolvedTab = activeTab === 'corridas' ? opsSubTab : activeTab;
+
   // Dashboard filters
   const [platformFilter, setPlatformFilter] = useState<string>('ALL');
   const [dateFilter, setDateFilter] = useState<string>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
 
   const filteredTrips = useMemo(() => {
-    return state.trips.filter((t) => {
+    return activeDriverTrips.filter((t) => {
+      if (!isCompletedTripStatus(t.status)) return false;
       if (platformFilter !== 'ALL' && t.platformId !== platformFilter) return false;
       if (categoryFilter !== 'ALL' && t.category !== categoryFilter) return false;
-      if (dateFilter === 'TODAY' && t.date !== '2026-11-14') return false;
+      if (dateFilter === 'TODAY' && t.date !== todayIso) return false;
       return true;
     });
-  }, [state.trips, platformFilter, categoryFilter, dateFilter]);
+  }, [activeDriverTrips, platformFilter, categoryFilter, dateFilter, todayIso]);
 
   const metrics = useMemo(() => {
     const gross = filteredTrips.reduce((s, t) => s + t.grossEur + t.tipEur + t.bonusEur, 0);
@@ -132,6 +165,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     tollsEur: 0,
     bonusEur: 1.5,
     region: `${state.localization.currentLocation.city} Centro`,
+    pickupAddress: '',
+    destinationAddress: '',
     notes: '',
     vehicleCostPerKmEur:
       (activeVehicle.consumptionPer100Km / 100) * activeVehicle.energyCostPerUnitEur +
@@ -141,10 +176,140 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   });
   const [calcError, setCalcError] = useState<string | null>(null);
   const [lastCreatedPropId, setLastCreatedPropId] = useState<string | null>(null);
+  const [lastSavedAiPackage, setLastSavedAiPackage] = useState<ProposalAiDecisionPackage | null>(null);
 
-  const liveAnalysis = useMemo(
-    () => analyzeProposal(calcInput, state.autoPilot.thresholds),
-    [calcInput, state.autoPilot.thresholds]
+  const liveAiPackage = useMemo(
+    () =>
+      analyzeProposalWithAiCore({
+        input: calcInput,
+        autoPilot: state.autoPilot,
+        activeVehicle,
+        tachograph: state.tachograph,
+        zones: state.zones,
+        savedPlaces: state.savedPlaces,
+        routine: state.routinePreferences,
+      }),
+    [
+      calcInput,
+      state.autoPilot,
+      activeVehicle,
+      state.tachograph,
+      state.zones,
+      state.savedPlaces,
+      state.routinePreferences,
+    ]
+  );
+  const liveAnalysis = liveAiPackage.analysis;
+
+  // Dynamic Floating Card Configurator State (Draft + Sandboxed Simulation)
+  const [overlayDraft, setOverlayDraft] = useState<AndroidOverlayConfig>(state.overlayConfig);
+  const [overlaySavedBanner, setOverlaySavedBanner] = useState<string | null>(null);
+  const [previewSurface, setPreviewSurface] = useState<'web' | 'inapp' | 'android'>('web');
+  const [sandboxPreset, setSandboxPreset] = useState<'verde' | 'amarelo' | 'vermelho'>('verde');
+  const [sandboxActionFeedback, setSandboxActionFeedback] = useState<string | null>(null);
+  const [sandboxCardClosed, setSandboxCardClosed] = useState(false);
+
+  const sandboxInput = useMemo<ProposalInput>(() => {
+    const basePlat = visibleDriverPlatforms[0]?.id ?? 'uber';
+    const baseCat = visibleDriverPlatforms[0]?.categories[0] ?? 'UberX';
+    const th = state.autoPilot.thresholds;
+
+    if (sandboxPreset === 'verde') {
+      const pickupKm = Number(Math.min(1.2, Math.max(0.5, th.maxPickupKm * 0.4)).toFixed(1));
+      const tripKm = 9.2;
+      const totalKm = pickupKm + tripKm;
+      const totalMin = 20;
+      const minGross = Math.max(
+        th.minValueEur + 4,
+        totalKm * th.minEurPerKm * 1.35,
+        (totalMin / 60) * th.minEurPerHour * 1.35,
+        18.5
+      );
+      return {
+        platformId: basePlat,
+        category: baseCat,
+        grossValueEur: Number(minGross.toFixed(2)),
+        pickupDistanceKm: pickupKm,
+        pickupTimeMin: 4,
+        tripDistanceKm: tripKm,
+        tripTimeMin: 16,
+        stops: 0,
+        tollsEur: 0,
+        bonusEur: 2.0,
+        region: `${state.localization.currentLocation.city} → Aeroporto`,
+        vehicleCostPerKmEur: 0.12,
+        calculationBasis: 'total_distance',
+        mode: 'Equilibrado',
+      };
+    }
+
+    if (sandboxPreset === 'amarelo') {
+      // Target ~0.90x minEurPerKm (single threshold breach) while passing €/hora, minValue and maxPickupKm
+      const gross = Number(Math.max(th.minValueEur + 1.5, 9.6).toFixed(2));
+      const pickupKm = Number(Math.min(1.6, Math.max(0.6, th.maxPickupKm * 0.55)).toFixed(1));
+      const targetTotalKm = gross / Math.max(0.4, th.minEurPerKm * 0.9);
+      const tripKm = Number(Math.max(2.5, targetTotalKm - pickupKm).toFixed(1));
+      const targetTotalMin = Math.max(12, Math.min(th.maxTotalTimeMin - 5, Math.round((gross / Math.max(8, th.minEurPerHour * 1.15)) * 60)));
+      const pickupMin = Math.max(3, Math.round(targetTotalMin * 0.28));
+      const tripMin = Math.max(6, targetTotalMin - pickupMin);
+      return {
+        platformId: basePlat,
+        category: baseCat,
+        grossValueEur: gross,
+        pickupDistanceKm: pickupKm,
+        pickupTimeMin: pickupMin,
+        tripDistanceKm: tripKm,
+        tripTimeMin: tripMin,
+        stops: 0,
+        tollsEur: 0,
+        bonusEur: 0,
+        region: `${state.localization.currentLocation.city} · Zona Intermédia`,
+        vehicleCostPerKmEur: 0.12,
+        calculationBasis: 'total_distance',
+        mode: 'Equilibrado',
+      };
+    }
+
+    const redPickupKm = Number((th.maxPickupKm + 1.5).toFixed(1));
+    const redGross = Number(Math.max(3.8, th.minValueEur * 0.72).toFixed(2));
+    return {
+      platformId: basePlat,
+      category: baseCat,
+      grossValueEur: redGross,
+      pickupDistanceKm: redPickupKm,
+      pickupTimeMin: 12,
+      tripDistanceKm: 6.5,
+      tripTimeMin: 21,
+      stops: 1,
+      tollsEur: 1.2,
+      bonusEur: 0,
+      region: 'Periferia Distante (Risco Retorno Vazio)',
+      vehicleCostPerKmEur: 0.12,
+      calculationBasis: 'total_distance',
+      mode: 'Equilibrado',
+    };
+  }, [sandboxPreset, visibleDriverPlatforms, state.localization.currentLocation.city, state.autoPilot.thresholds]);
+
+  const sandboxPackage = useMemo(
+    () =>
+      analyzeProposalWithAiCore({
+        input: sandboxInput,
+        autoPilot: state.autoPilot,
+        activeVehicle,
+        tachograph: state.tachograph,
+        zones: state.zones,
+        savedPlaces: state.savedPlaces,
+        routine: state.routinePreferences,
+      }),
+    [
+      sandboxInput,
+      state.autoPilot,
+      activeVehicle,
+      state.tachograph,
+      state.zones,
+      state.savedPlaces,
+      state.routinePreferences,
+    ]
   );
 
   // Smart Data Capture Form
@@ -172,7 +337,10 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
   const [pendingMatchTripId, setPendingMatchTripId] = useState<string>(state.trips[0]?.id ?? '');
 
-  if (activeTab === 'dashboard') {
+  // ==========================================================
+  // DASHBOARD PRINCIPAL DO MOTORISTA
+  // ==========================================================
+  if (resolvedTab === 'dashboard') {
     const expiringDocs = state.documents.filter((d) => d.status !== 'Válido');
     const activeCampaigns = state.campaigns.filter((c) => c.status === 'Ativa');
     const activeTacho = state.tachograph.sessions.find(
@@ -181,6 +349,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     const totalKmRatio = Math.max(0.1, metrics.passKm + metrics.emptyKm);
     const passKmPct = Math.round((metrics.passKm / totalKmRatio) * 100);
     const weeklyNetGoal = 750;
+    const isTachoCritical =
+      rolling24hCompliance.alertLevel === 'Limite 10h Atingido' ||
+      rolling24hCompliance.alertLevel === 'Crítico 9h (540 min)';
 
     return (
       <div className="space-y-6">
@@ -198,6 +369,17 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     }}
                   />
                   {activeTacho ? 'Turno & Tacógrafo Ativos' : 'Sem Turno Ativo'}
+                </span>
+                <span
+                  className={`px-2 py-0.5 rounded-md font-mono-tabular font-semibold ${
+                    isTachoCritical
+                      ? 'bg-red-600/80 text-white'
+                      : 'bg-emerald-600/30 border border-emerald-400/40 text-emerald-100'
+                  }`}
+                >
+                  TVDE 10h/24h: {Math.floor(rolling24hCompliance.rolling24hWorkMinutes / 60)}h
+                  {String(rolling24hCompliance.rolling24hWorkMinutes % 60).padStart(2, '0')}m (Restam{' '}
+                  {rolling24hCompliance.remainingLegalMinutes}m)
                 </span>
                 <span className="text-slate-300 font-mono-tabular">
                   {state.localization.currentLocation.city},{' '}
@@ -222,11 +404,19 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
+                onClick={() => setDriverNav('ai-core')}
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-colors"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>Abrir AI CORE</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setDriverNav('tacografo')}
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors"
               >
                 <Gauge className="w-4 h-4" />
-                <span>Abrir Tacógrafo</span>
+                <span>Tacógrafo</span>
               </button>
               <button
                 type="button"
@@ -236,15 +426,41 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 <Calculator className="w-4 h-4" />
                 <span>Analisar Proposta</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setDriverNav('consolidado-plataformas')}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold transition-colors"
-              >
-                <Layers className="w-4 h-4" />
-                <span>Consolidado Multi-App</span>
-              </button>
             </div>
+          </div>
+        </Card>
+
+        {/* AI CORE Proactive Briefing Strip */}
+        <Card className="p-5 space-y-3 border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-bold flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              AIVAD AI CORE — Briefing Operacional Proativo ({aiCoreBriefing.length} análises ativas)
+            </h2>
+            <button
+              type="button"
+              onClick={() => setDriverNav('ai-core')}
+              className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
+            >
+              Ver 8 Agentes &amp; Previsões <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {aiCoreBriefing.slice(0, 3).map((ins) => (
+              <div
+                key={ins.id}
+                className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-1.5 text-xs"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  <span className="font-bold text-blue-700 dark:text-blue-400">
+                    {ins.agentName}
+                  </span>
+                  <EpistemicTagBadge tag={ins.epistemicTag} />
+                </div>
+                <p className="font-semibold text-slate-900 dark:text-white">{ins.title}</p>
+                <p className="text-slate-600 dark:text-slate-300 line-clamp-2">{ins.recommendation}</p>
+              </div>
+            ))}
           </div>
         </Card>
 
@@ -256,7 +472,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               onChange={setDateFilter}
               options={[
                 { id: 'ALL', label: 'Todo o período' },
-                { id: 'TODAY', label: 'Hoje (14 Nov)' },
+                { id: 'TODAY', label: `Hoje (${todayIso})` },
               ]}
             />
             <div>
@@ -282,7 +498,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium"
               >
                 <option value="ALL">Todas categorias</option>
-                {Array.from(new Set(state.trips.map((t) => t.category))).map((cat) => (
+                {Array.from(new Set(activeDriverTrips.map((t) => t.category))).map((cat) => (
                   <option key={cat} value={cat}>{cat}</option>
                 ))}
               </select>
@@ -290,7 +506,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           </div>
 
           <span className="text-xs text-slate-500">
-            {filteredTrips.length} viagem(ns) · clique nos gráficos para abrir detalhes
+            {filteredTrips.length} viagem(ns) concluída(s) · canceladas excluídas automaticamente
           </span>
         </Card>
 
@@ -299,7 +515,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           <MetricCard
             label="Ganhos Brutos (Período)"
             value={formatMoney(metrics.gross, activeMarket.currency)}
-            subtext={`${filteredTrips.length} viagens · inclui gorjetas e bónus`}
+            subtext={`${filteredTrips.length} viagens · exclui canceladas`}
             explanation="Soma total das tarifas brutas, gorjetas reconciliadas e bónus das viagens concluídas."
             formula="Σ(tarifa bruta + gorjeta + bónus)"
             accent="blue"
@@ -361,7 +577,6 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               label="Resultado Líquido Acumulado"
             />
 
-            {/* Passenger vs Empty Km Visual Split Bar */}
             <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
               <div className="flex justify-between font-medium">
                 <span>Km Passageiro ({passKmPct}%) vs Vazio ({100 - passKmPct}%)</span>
@@ -387,7 +602,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold flex items-center gap-2">
                 <Layers className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                Resumo por Plataforma (Clique para comparar)
+                Resumo por Plataforma (Clique para filtrar)
               </h2>
               <button
                 type="button"
@@ -457,7 +672,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 {activeVehicle.brand} {activeVehicle.model} ({activeVehicle.year})
               </p>
               <p className="text-slate-500 dark:text-slate-400">
-                {activeVehicle.fuelType} · Autonomia {formatDistance(activeVehicle.rangeKm, activeMarket.unitSystem)} · {activeVehicle.city}
+                {activeVehicle.fuelType} · Autonomia real{' '}
+                {formatDistance(activeVehicle.realRangeKm ?? activeVehicle.rangeKm, activeMarket.unitSystem)} ·{' '}
+                {activeVehicle.city}
               </p>
               <div className="pt-2 flex items-center justify-between">
                 <StatusLabel tone="success" text={`Elegível (${activeMarket.code})`} />
@@ -474,13 +691,13 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
           <Card className="p-5 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold">Plataformas Ativas ({visibleDriverPlatforms.length})</h2>
+              <h2 className="text-sm font-bold">Apps Ativas no Perfil ({visibleDriverPlatforms.length})</h2>
               <button
                 type="button"
-                onClick={() => setDriverNav('consolidado-plataformas')}
+                onClick={() => setDriverNav('apps-integracoes')}
                 className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
               >
-                Detalhes
+                Gerir Apps
               </button>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -500,6 +717,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-blue-600 text-xs font-medium"
                 >
                   <PlatformBadge
+                    platformId={pl.id}
                     name={pl.name}
                     shortCode={pl.shortCode}
                     brandColor={pl.brandColor}
@@ -536,7 +754,429 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     );
   }
 
-  if (activeTab === 'calculadora') {
+  // Sub-navigation ribbon when entering via 'corridas'
+  const renderCorridasRibbon = () =>
+    activeTab === 'corridas' ? (
+      <Card className="p-3 flex flex-wrap items-center justify-between gap-2">
+        <SegmentedFilter
+          value={opsSubTab}
+          onChange={(v) => setOpsSubTab(v as typeof opsSubTab)}
+          options={[
+            { id: 'calculadora', label: 'Calculadora & AI CORE' },
+            { id: 'propostas-tempo-real', label: 'Propostas & Ciclo de Vida' },
+            { id: 'smart-capture', label: 'Smart Data Capture' },
+          ]}
+        />
+        <div className="flex flex-wrap gap-2 text-xs">
+          <button
+            type="button"
+            onClick={() => setDriverNav('cartoes-flutuantes')}
+            className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-blue-600 font-medium inline-flex items-center gap-1"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
+            Configurar Cartão Flutuante
+          </button>
+          <button
+            type="button"
+            onClick={() => setDriverNav('historico-viagens')}
+            className="px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold inline-flex items-center gap-1"
+          >
+            <History className="w-3.5 h-3.5" />
+            Histórico de Viagens
+          </button>
+        </div>
+      </Card>
+    ) : null;
+
+  // ==========================================================
+  // CONFIGURADOR & SIMULADOR ISOLADO DE CARTÕES FLUTUANTES
+  // ==========================================================
+  if (resolvedTab === 'cartoes-flutuantes') {
+    const visibleSet = new Set(overlayDraft.visibleMetrics);
+    const orderedMetrics: FloatingMetricKey[] = [
+      ...overlayDraft.visibleMetrics,
+      ...ALL_FLOATING_METRICS.filter((k) => !visibleSet.has(k)),
+    ];
+
+    const moveMetric = (key: FloatingMetricKey, dir: -1 | 1) => {
+      const idx = overlayDraft.visibleMetrics.indexOf(key);
+      if (idx === -1) return;
+      const nextIdx = idx + dir;
+      if (nextIdx < 0 || nextIdx >= overlayDraft.visibleMetrics.length) return;
+      const copy = [...overlayDraft.visibleMetrics];
+      [copy[idx], copy[nextIdx]] = [copy[nextIdx], copy[idx]];
+      setOverlayDraft((d) => ({ ...d, visibleMetrics: copy }));
+    };
+
+    const toggleMetric = (key: FloatingMetricKey) => {
+      const exists = overlayDraft.visibleMetrics.includes(key);
+      if (exists && overlayDraft.visibleMetrics.length <= 2) return;
+      setOverlayDraft((d) => ({
+        ...d,
+        visibleMetrics: exists
+          ? d.visibleMetrics.filter((k) => k !== key)
+          : [...d.visibleMetrics, key],
+      }));
+    };
+
+    return (
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Cartões Flutuantes Dinâmicos — Aparência, Métricas & Simulador Isolado"
+          description="Personalize largura, fonte, tamanho, transparência, posição, visibilidade e ordem das métricas. O simulador testa propostas Verde, Amarelo e Vermelho sem poluir o seu histórico real."
+          demoNotice="Overlay sobre outras apps no Android: INTEGRAÇÃO A VALIDAR"
+        />
+
+        {overlaySavedBanner && <StatusLabel tone="success" text={overlaySavedBanner} />}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Controls Column */}
+          <Card className="lg:col-span-6 p-5 space-y-5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-bold flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Configuração do Cartão Flutuante
+              </h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setOverlayDraft(SEED_OVERLAY_CONFIG);
+                  updateOverlayConfig(SEED_OVERLAY_CONFIG);
+                  setOverlaySavedBanner('Configuração reposta para os valores padrão de fábrica.');
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Repor Padrão
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div>
+                <label htmlFor="fl-pos" className="block font-medium mb-1">Posição no Ecrã</label>
+                <select
+                  id="fl-pos"
+                  value={overlayDraft.position}
+                  onChange={(e) =>
+                    setOverlayDraft((d) => ({ ...d, position: e.target.value as AndroidOverlayConfig['position'] }))
+                  }
+                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                >
+                  <option value="Topo">Topo</option>
+                  <option value="Centro">Centro</option>
+                  <option value="Fundo">Fundo</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="fl-font" className="block font-medium mb-1">Família Tipográfica</label>
+                <select
+                  id="fl-font"
+                  value={overlayDraft.fontFamily}
+                  onChange={(e) =>
+                    setOverlayDraft((d) => ({ ...d, fontFamily: e.target.value as AndroidOverlayConfig['fontFamily'] }))
+                  }
+                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                >
+                  <option value="Sans">Sans (Inter)</option>
+                  <option value="Display">Display (Destaque)</option>
+                  <option value="Mono">Mono Tabular</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="fl-dur" className="block font-medium mb-1">Duração Visível (s)</label>
+                <input
+                  id="fl-dur"
+                  type="number"
+                  min={3}
+                  max={45}
+                  value={overlayDraft.durationSeconds}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, durationSeconds: Number(e.target.value) }))}
+                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="fl-width" className="block font-medium mb-1">
+                  Largura ({overlayDraft.widthPercent}%)
+                </label>
+                <input
+                  id="fl-width"
+                  type="range"
+                  min={70}
+                  max={100}
+                  value={overlayDraft.widthPercent}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, widthPercent: Number(e.target.value) }))}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label htmlFor="fl-fsize" className="block font-medium mb-1">
+                  Tam. Letra ({overlayDraft.fontSizePx}px)
+                </label>
+                <input
+                  id="fl-fsize"
+                  type="range"
+                  min={11}
+                  max={18}
+                  value={overlayDraft.fontSizePx}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, fontSizePx: Number(e.target.value) }))}
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label htmlFor="fl-opac" className="block font-medium mb-1">
+                  Opacidade ({overlayDraft.opacityPercent}%)
+                </label>
+                <input
+                  id="fl-opac"
+                  type="range"
+                  min={55}
+                  max={100}
+                  value={overlayDraft.opacityPercent}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, opacityPercent: Number(e.target.value) }))}
+                  className="w-full"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="fl-bg" className="block font-medium mb-1">Cor Base Fundo</label>
+                <input
+                  id="fl-bg"
+                  type="color"
+                  value={overlayDraft.bgColor}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, bgColor: e.target.value }))}
+                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label htmlFor="fl-txt" className="block font-medium mb-1">Cor Texto</label>
+                <input
+                  id="fl-txt"
+                  type="color"
+                  value={overlayDraft.textColor}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, textColor: e.target.value }))}
+                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
+                />
+              </div>
+              <div>
+                <label htmlFor="fl-brd" className="block font-medium mb-1">Cor Borda Base</label>
+                <input
+                  id="fl-brd"
+                  type="color"
+                  value={overlayDraft.borderColor}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, borderColor: e.target.value }))}
+                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={overlayDraft.autoDismiss ?? true}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, autoDismiss: e.target.checked }))}
+                />
+                <span>Fechar automaticamente após duração</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={overlayDraft.allowManualClose ?? true}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, allowManualClose: e.target.checked }))}
+                />
+                <span>Botão de fechar manual (X)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={overlayDraft.allowMinimize ?? true}
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, allowMinimize: e.target.checked }))}
+                />
+                <span>Permitir minimizar cartão</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={overlayDraft.showHistoryFloatingButton}
+                  onChange={(e) =>
+                    setOverlayDraft((d) => ({ ...d, showHistoryFloatingButton: e.target.checked }))
+                  }
+                />
+                <span>Atalho rápido de histórico</span>
+              </label>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <p className="font-bold">Ordem e Visibilidade das Métricas no Cartão (mín. 2)</p>
+              <div className="space-y-1.5">
+                {orderedMetrics.map((mKey) => {
+                  const isVisible = overlayDraft.visibleMetrics.includes(mKey);
+                  const idx = overlayDraft.visibleMetrics.indexOf(mKey);
+                  return (
+                    <div
+                      key={mKey}
+                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
+                    >
+                      <label className="inline-flex items-center gap-2 cursor-pointer font-medium">
+                        <input
+                          type="checkbox"
+                          checked={isVisible}
+                          onChange={() => toggleMetric(mKey)}
+                        />
+                        <span>{FLOATING_METRIC_LABELS[mKey]}</span>
+                      </label>
+                      {isVisible && (
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            aria-label={`Subir ${FLOATING_METRIC_LABELS[mKey]}`}
+                            disabled={idx === 0}
+                            onClick={() => moveMetric(mKey, -1)}
+                            className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40"
+                          >
+                            <ArrowUp className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Descer ${FLOATING_METRIC_LABELS[mKey]}`}
+                            disabled={idx === overlayDraft.visibleMetrics.length - 1}
+                            onClick={() => moveMetric(mKey, 1)}
+                            className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40"
+                          >
+                            <ArrowDown className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  updateOverlayConfig(overlayDraft);
+                  setOverlaySavedBanner('Configuração de cartão flutuante guardada no perfil!');
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+              >
+                <Save className="w-3.5 h-3.5" /> Guardar Alterações
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOverlayDraft(state.overlayConfig);
+                  setOverlaySavedBanner('Rascunho cancelado — revertido para a última configuração guardada.');
+                }}
+                className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-medium"
+              >
+                Cancelar
+              </button>
+            </div>
+          </Card>
+
+          {/* Isolated Live Simulator Column */}
+          <Card className="lg:col-span-6 p-5 space-y-4 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-base font-bold flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-red-600" />
+                Simulador em Ambiente Isolado (Sandbox)
+              </h2>
+              <SegmentedFilter
+                value={sandboxPreset}
+                onChange={(v) => {
+                  setSandboxPreset(v as typeof sandboxPreset);
+                  setSandboxCardClosed(false);
+                  setSandboxActionFeedback(null);
+                }}
+                options={[
+                  { id: 'verde', label: 'Cenário Verde' },
+                  { id: 'amarelo', label: 'Cenário Amarelo' },
+                  { id: 'vermelho', label: 'Cenário Vermelho' },
+                ]}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-slate-500 font-medium">Superfície simulada:</span>
+              <SegmentedFilter
+                value={previewSurface}
+                onChange={(v) => setPreviewSurface(v as typeof previewSurface)}
+                options={[
+                  { id: 'web', label: 'Web Preview' },
+                  { id: 'inapp', label: 'App AIVAD' },
+                  { id: 'android', label: 'Android (A Validar)' },
+                ]}
+              />
+            </div>
+
+            <div
+              className={`min-h-[320px] rounded-2xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col bg-slate-200/70 dark:bg-slate-950 ${
+                overlayDraft.position === 'Topo'
+                  ? 'justify-start'
+                  : overlayDraft.position === 'Centro'
+                  ? 'justify-center'
+                  : 'justify-end'
+              }`}
+            >
+              {previewSurface === 'android' && (
+                <p className="text-[11px] text-center text-amber-700 dark:text-amber-300 font-semibold mb-2">
+                  Modo Overlay Sistema Android — INTEGRAÇÃO A VALIDAR (pré-visualização Web funcional)
+                </p>
+              )}
+
+              {sandboxCardClosed ? (
+                <div className="text-center py-8 space-y-2">
+                  <p className="text-slate-500">Cartão simulado fechado.</p>
+                  <button
+                    type="button"
+                    onClick={() => setSandboxCardClosed(false)}
+                    className="px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold"
+                  >
+                    Reabrir Simulação
+                  </button>
+                </div>
+              ) : (
+                <DynamicFloatingProposalCard
+                  overlayConfig={overlayDraft}
+                  proposalInput={sandboxInput}
+                  analysis={sandboxPackage.analysis}
+                  recommendedAction={sandboxPackage.recommendedAction}
+                  confidencePct={sandboxPackage.confidencePct}
+                  isPreviewSurface
+                  onAccept={() =>
+                    setSandboxActionFeedback(
+                      `Simulação: Ação "Aceitar" testada no cenário ${sandboxPreset.toUpperCase()} (0 alterações gravadas no histórico real).`
+                    )
+                  }
+                  onReject={() =>
+                    setSandboxActionFeedback(
+                      `Simulação: Ação "Recusar" testada no cenário ${sandboxPreset.toUpperCase()} (sem impacto nas previsões).`
+                    )
+                  }
+                  onClose={() => setSandboxCardClosed(true)}
+                />
+              )}
+            </div>
+
+            {sandboxActionFeedback && <StatusLabel tone="info" text={sandboxActionFeedback} />}
+
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300">
+              <strong>Garantia de Isolamento:</strong> Testar cenários neste painel utiliza{' '}
+              <code>isSimulatedSandbox: true</code> — não adiciona propostas falsas, não altera estatísticas financeiras nem contamina o histórico de aprendizagem da IA.
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // CALCULADORA & ANALISADOR AI CORE
+  // ==========================================================
+  if (resolvedTab === 'calculadora') {
     const classBadge =
       liveAnalysis.classification === 'verde'
         ? { tone: 'success' as const, label: 'Verde — Proposta Favorável' }
@@ -552,21 +1192,23 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
       }
       setCalcError(null);
       const created = createAndAnalyzeProposal(calcInput, 'Manual');
-      setLastCreatedPropId(created.id);
+      setLastCreatedPropId(created.record.id);
+      setLastSavedAiPackage(created.aiPackage);
     };
 
-    const currentOverlay = state.overlayConfig;
+    const displayedPackage = lastSavedAiPackage ?? liveAiPackage;
 
     return (
       <div className="space-y-6">
+        {renderCorridasRibbon()}
         <ContextualHelpBanner
-          title="AIVAD Real-Time Offer Analyzer & Cartão Flutuante Android"
-          description="Avalie rentabilidade em €/km, €/hora e €/minuto antes de aceitar. Ao concluir uma proposta registada, ela propaga automaticamente para Viagens, Tacógrafo, Financeiro e Campanhas."
+          title="AIVAD Real-Time Offer Analyzer & Decisão Contextual AI CORE"
+          description="Avalie rentabilidade em €/km, €/hora e €/minuto, compare alternativas antes de aceitar e sincronize automaticamente com Viagens, Tacógrafo, Financeiro e Previsões IA."
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card className="lg:col-span-7 p-5 space-y-4">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-base font-bold flex items-center gap-2">
                 <Calculator className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                 Dados da Proposta ({activeMarket.currency})
@@ -701,23 +1343,24 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               </div>
 
               <div>
-                <label htmlFor="prop-stops" className="block font-medium mb-1">Paragens</label>
+                <label htmlFor="prop-pickup-addr" className="block font-medium mb-1">Morada Recolha (opcional)</label>
                 <input
-                  id="prop-stops"
-                  type="number"
-                  min={0}
-                  value={calcInput.stops}
-                  onChange={(e) => setCalcInput((p) => ({ ...p, stops: Number(e.target.value) }))}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                  id="prop-pickup-addr"
+                  type="text"
+                  placeholder="Ex: Av. da Liberdade 180, Lisboa"
+                  value={calcInput.pickupAddress ?? ''}
+                  onChange={(e) => setCalcInput((p) => ({ ...p, pickupAddress: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>
               <div>
-                <label htmlFor="prop-region" className="block font-medium mb-1">Zona / Região</label>
+                <label htmlFor="prop-dest-addr" className="block font-medium mb-1">Morada Destino (opcional)</label>
                 <input
-                  id="prop-region"
+                  id="prop-dest-addr"
                   type="text"
-                  value={calcInput.region}
-                  onChange={(e) => setCalcInput((p) => ({ ...p, region: e.target.value }))}
+                  placeholder="Ex: Aeroporto Terminal 1, Lisboa"
+                  value={calcInput.destinationAddress ?? ''}
+                  onChange={(e) => setCalcInput((p) => ({ ...p, destinationAddress: e.target.value }))}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                 />
               </div>
@@ -744,7 +1387,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   type="submit"
                   className="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
                 >
-                  Registar Proposta no Histórico
+                  Registar &amp; Analisar com AI CORE
                 </button>
                 {lastCreatedPropId && (
                   <button
@@ -752,219 +1395,142 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     onClick={() => updateProposalLifecycle(lastCreatedPropId, 'Concluída')}
                     className="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
                   >
-                    Marcar Última como Concluída (Gerar Viagem + Tacógrafo)
+                    Marcar Última como Concluída (Gerar Viagem + Reconciliar IA)
                   </button>
                 )}
               </div>
             </form>
-          </Card>
 
-          <Card className="lg:col-span-5 p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-bold">Resultado Analítico</h2>
-              <StatusLabel tone={classBadge.tone} text={classBadge.label} />
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">Por distância</span>
-                <p className="text-base font-bold font-mono-tabular">
-                  {formatDistanceRate(liveAnalysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}
-                </p>
-              </div>
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">Por hora</span>
-                <p className="text-base font-bold font-mono-tabular">
-                  {formatMoney(liveAnalysis.eurPerHour, activeMarket.currency)}/h
-                </p>
-              </div>
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">Por minuto</span>
-                <p className="text-base font-bold font-mono-tabular">
-                  {formatMoney(liveAnalysis.eurPerMin, activeMarket.currency)}/m
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Distância Total Comprometida</span>
-                <span className="font-mono-tabular font-semibold">
-                  {formatDistance(liveAnalysis.totalDistanceKm, activeMarket.unitSystem)}
+            {/* AI CORE Live Alternative Comparison */}
+            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 space-y-2.5 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-400">
+                  <Sparkles className="w-4 h-4" />
+                  Alternativas Comparadas pelo AI CORE ({displayedPackage.confidencePct}% confiança)
                 </span>
+                <EpistemicTagBadge tag={displayedPackage.epistemicTag} />
               </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Tempo Total Comprometido</span>
-                <span className="font-mono-tabular font-semibold">{liveAnalysis.totalTimeMin} min</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Custo Operacional Estimado</span>
-                <span className="font-mono-tabular font-semibold">
-                  {formatMoney(liveAnalysis.operatingCostEur, activeMarket.currency)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Rentabilidade Líquida Antes de Comissão</span>
-                <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
-                  {formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Risco de Retorno Vazio</span>
-                <span className="font-semibold">{liveAnalysis.emptyReturnRisk}</span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-800">
-              {liveAnalysis.basisDescription}
-            </p>
-            <ul className="space-y-1 text-xs text-slate-600 dark:text-slate-300">
-              {liveAnalysis.reasons.map((r, i) => (
-                <li key={i}>• {r}</li>
-              ))}
-            </ul>
-          </Card>
-        </div>
-
-        {/* Android Floating Card Designer */}
-        <Card className="p-5 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <h2 className="text-base font-bold flex items-center gap-2">
-                <Smartphone className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                Configurador do Cartão Flutuante Android
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                As cores personalizadas do cartão são independentes da classificação (Verde/Amarelo/Vermelho). Renderização real exclusiva do módulo nativo Android.
+              <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
+                {displayedPackage.trafficHonestyNote}
               </p>
-            </div>
-            <StatusLabel tone="warning" text="Overlay Nativo Android: INTEGRAÇÃO A VALIDAR" />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-            <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-              <div>
-                <label htmlFor="ov-pos" className="block font-medium mb-1">Posição</label>
-                <select
-                  id="ov-pos"
-                  value={currentOverlay.position}
-                  onChange={(e) => updateOverlayConfig({ position: e.target.value as 'Topo' | 'Centro' | 'Fundo' })}
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                >
-                  <option value="Topo">Topo</option>
-                  <option value="Centro">Centro</option>
-                  <option value="Fundo">Fundo</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="ov-opac" className="block font-medium mb-1">Transparência ({currentOverlay.opacityPercent}%)</label>
-                <input
-                  id="ov-opac"
-                  type="range"
-                  min={50}
-                  max={100}
-                  value={currentOverlay.opacityPercent}
-                  onChange={(e) => updateOverlayConfig({ opacityPercent: Number(e.target.value) })}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label htmlFor="ov-dur" className="block font-medium mb-1">Duração (s)</label>
-                <input
-                  id="ov-dur"
-                  type="number"
-                  min={3}
-                  max={45}
-                  value={currentOverlay.durationSeconds}
-                  onChange={(e) => updateOverlayConfig({ durationSeconds: Number(e.target.value) })}
-                  className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
-                />
-              </div>
-              <div>
-                <label htmlFor="ov-bg" className="block font-medium mb-1">Cor Fundo Cartão</label>
-                <input
-                  id="ov-bg"
-                  type="color"
-                  value={currentOverlay.bgColor}
-                  onChange={(e) => updateOverlayConfig({ bgColor: e.target.value })}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
-              </div>
-              <div>
-                <label htmlFor="ov-txt" className="block font-medium mb-1">Cor Texto</label>
-                <input
-                  id="ov-txt"
-                  type="color"
-                  value={currentOverlay.textColor}
-                  onChange={(e) => updateOverlayConfig({ textColor: e.target.value })}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
-              </div>
-              <div>
-                <label htmlFor="ov-brd" className="block font-medium mb-1">Cor Borda</label>
-                <input
-                  id="ov-brd"
-                  type="color"
-                  value={currentOverlay.borderColor}
-                  onChange={(e) => updateOverlayConfig({ borderColor: e.target.value })}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
-              </div>
-              <label className="col-span-2 sm:col-span-3 flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  checked={currentOverlay.showHistoryFloatingButton}
-                  onChange={(e) => updateOverlayConfig({ showHistoryFloatingButton: e.target.checked })}
-                />
-                <span>Mostrar botão flutuante rápido de histórico de propostas</span>
-              </label>
-            </div>
-
-            <div className="lg:col-span-5 flex flex-col items-center justify-center p-4 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-              <div
-                style={{
-                  backgroundColor: currentOverlay.bgColor,
-                  color: currentOverlay.textColor,
-                  borderColor: currentOverlay.borderColor,
-                  opacity: currentOverlay.opacityPercent / 100,
-                  width: `${currentOverlay.widthPercent}%`,
-                  fontSize: `${currentOverlay.fontSizePx}px`,
-                }}
-                className="rounded-xl border-2 p-3.5 shadow-md space-y-2"
-              >
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold">AIVAD · {calcInput.platformId.toUpperCase()}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded font-bold text-white text-[11px] ${
-                      liveAnalysis.classification === 'verde'
-                        ? 'bg-emerald-600'
-                        : liveAnalysis.classification === 'amarelo'
-                        ? 'bg-amber-600'
-                        : 'bg-red-600'
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {displayedPackage.alternatives.map((alt) => (
+                  <div
+                    key={alt.action}
+                    className={`p-3 rounded-lg border ${
+                      alt.action === displayedPackage.recommendedAction
+                        ? 'border-blue-600 bg-blue-50/70 dark:bg-blue-950/30'
+                        : 'border-slate-200 dark:border-slate-800'
                     }`}
                   >
-                    {liveAnalysis.classification.toUpperCase()}
-                  </span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold">{alt.action}</span>
+                      <span className="font-mono-tabular font-semibold">{alt.expectedScore}/100</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1">{alt.rationale}</p>
+                    <div className="mt-1.5">
+                      <EpistemicTagBadge tag={alt.epistemicTag} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+
+          <div className="lg:col-span-5 space-y-4">
+            <Card className="p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-bold">Resultado Analítico</h2>
+                <StatusLabel tone={classBadge.tone} text={classBadge.label} />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+                  <span className="text-[11px] text-slate-500">Por distância</span>
+                  <p className="text-base font-bold font-mono-tabular">
+                    {formatDistanceRate(liveAnalysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}
+                  </p>
                 </div>
-                <div className="grid grid-cols-3 gap-2 font-mono-tabular font-bold">
-                  <div>{formatDistanceRate(liveAnalysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}</div>
-                  <div>{formatMoney(liveAnalysis.eurPerHour, activeMarket.currency)}/h</div>
-                  <div>{formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)} líq.</div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+                  <span className="text-[11px] text-slate-500">Por hora</span>
+                  <p className="text-base font-bold font-mono-tabular">
+                    {formatMoney(liveAnalysis.eurPerHour, activeMarket.currency)}/h
+                  </p>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
+                  <span className="text-[11px] text-slate-500">Por minuto</span>
+                  <p className="text-base font-bold font-mono-tabular">
+                    {formatMoney(liveAnalysis.eurPerMin, activeMarket.currency)}/m
+                  </p>
                 </div>
               </div>
-              {currentOverlay.showHistoryFloatingButton && (
-                <span className="mt-3 text-[11px] text-slate-500">
-                  + Botão flutuante de histórico ativo ({currentOverlay.position}, fecha em {currentOverlay.durationSeconds}s)
-                </span>
-              )}
-            </div>
+
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Distância Total Comprometida</span>
+                  <span className="font-mono-tabular font-semibold">
+                    {formatDistance(liveAnalysis.totalDistanceKm, activeMarket.unitSystem)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Tempo Total Comprometido</span>
+                  <span className="font-mono-tabular font-semibold">{liveAnalysis.totalTimeMin} min</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Custo Operacional Estimado</span>
+                  <span className="font-mono-tabular font-semibold">
+                    {formatMoney(liveAnalysis.operatingCostEur, activeMarket.currency)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Rentabilidade Líquida Antes de Comissão</span>
+                  <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                    {formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Risco de Retorno Vazio</span>
+                  <span className="font-semibold">{liveAnalysis.emptyReturnRisk}</span>
+                </div>
+              </div>
+
+              <ul className="space-y-1 text-xs text-slate-600 dark:text-slate-300 pt-2 border-t border-slate-100 dark:border-slate-800">
+                {liveAnalysis.reasons.map((r, i) => (
+                  <li key={i}>• {r}</li>
+                ))}
+              </ul>
+            </Card>
+
+            {/* Live Dynamic Floating Card Preview */}
+            <Card className="p-5 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <h3 className="font-bold">Cartão Flutuante Dinâmico (Ao Vivo)</h3>
+                <button
+                  type="button"
+                  onClick={() => setDriverNav('cartoes-flutuantes')}
+                  className="text-blue-700 dark:text-blue-400 font-semibold hover:underline"
+                >
+                  Personalizar →
+                </button>
+              </div>
+              <DynamicFloatingProposalCard
+                overlayConfig={state.overlayConfig}
+                proposalInput={calcInput}
+                analysis={liveAnalysis}
+                recommendedAction={displayedPackage.recommendedAction}
+                confidencePct={displayedPackage.confidencePct}
+              />
+            </Card>
           </div>
-        </Card>
+        </div>
       </div>
     );
   }
 
-  if (activeTab === 'propostas-tempo-real') {
+  // ==========================================================
+  // PROPOSTAS EM TEMPO REAL
+  // ==========================================================
+  if (resolvedTab === 'propostas-tempo-real') {
     const states: ProposalLifecycleState[] = [
       'Capturada',
       'Analisada',
@@ -980,6 +1546,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
     return (
       <div className="space-y-6">
+        {renderCorridasRibbon()}
         <ContextualHelpBanner
           title="Propostas em Tempo Real & Ciclo de Vida Separado"
           description="O clique de aceitação do motorista nunca é confundido com a confirmação efetiva pela plataforma. Teste uma proposta simulada ou avance estados manualmente."
@@ -1013,7 +1580,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
           >
             <Play className="w-3.5 h-3.5" />
-            <span>Simular Nova Proposta Recebida</span>
+            <span>Registar Nova Proposta Realista</span>
           </button>
         </div>
 
@@ -1021,17 +1588,24 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           {state.proposals.map((prop) => (
             <Card key={prop.id} className="p-5 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2 text-sm font-bold">
-                    <span>{prop.input.platformId.toUpperCase()} · {prop.input.category}</span>
-                    <span className="text-xs font-normal text-slate-500">({prop.source})</span>
+                <div className="flex items-center gap-3">
+                  <PlatformBadge
+                    platformId={prop.input.platformId}
+                    name={prop.input.platformId}
+                    size="sm"
+                  />
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2 text-sm font-bold">
+                      <span>{prop.input.platformId.toUpperCase()} · {prop.input.category}</span>
+                      <span className="text-xs font-normal text-slate-500">({prop.source})</span>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {prop.input.region} · {formatDistance(prop.analysis.totalDistanceKm, activeMarket.unitSystem)} · {prop.analysis.totalTimeMin} min
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    {prop.input.region} · {formatDistance(prop.analysis.totalDistanceKm, activeMarket.unitSystem)} · {prop.analysis.totalTimeMin} min
-                  </p>
                 </div>
 
-                <div className="flex items-center gap-4 font-mono-tabular text-xs">
+                <div className="flex flex-wrap items-center gap-3 font-mono-tabular text-xs">
                   <span>{formatMoney(prop.analysis.effectiveRevenueEur, activeMarket.currency)}</span>
                   <span>{formatDistanceRate(prop.analysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}</span>
                   <span>{formatMoney(prop.analysis.eurPerHour, activeMarket.currency)}/h</span>
@@ -1079,13 +1653,13 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     );
   }
 
-  if (activeTab === 'autopilot') {
+  if (resolvedTab === 'autopilot') {
     const ap = state.autoPilot;
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
           title="AIVAD AutoPilot — Motor de Decisão Responsável"
-          description="Suporta modos Manual, Assistido e Automático. Não implementa simulação de cliques, manipulação de GPS ou contorno de proteções. O modo Automático só executa mediante integração oficial autorizada."
+          description="Suporta modos Manual, Assistido e Automático. Não implementa simulação de cliques, manipulação de GPS ou contorno de proteções."
         />
 
         <Card className="p-5 space-y-5">
@@ -1113,7 +1687,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   INTEGRAÇÃO A VALIDAR — Bloqueio de Segurança Ativo
                 </p>
                 <p className="text-amber-800 dark:text-amber-300 mt-0.5">
-                  Nenhuma plataforma possui autorização oficial de aceitação automática ativa neste ambiente. As decisões ficam registadas como bloqueadas sem simulação de toques.
+                  Nenhuma plataforma possui autorização oficial de aceitação automática ativa neste ambiente.
                 </p>
               </div>
             </div>
@@ -1201,6 +1775,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
   return (
     <div className="space-y-6">
+      {renderCorridasRibbon()}
       <ContextualHelpBanner
         title="AIVAD Smart Data Capture — Captura Idempotente & Reconciliação"
         description="Associa gorjetas tardias à viagem original sem duplicar, regista campanhas e bloqueia repetições com base na chave idempotente."
@@ -1212,9 +1787,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           Capturar / Reconciliar Evento Externo
         </h2>
 
-        {capFeedback && (
-          <StatusLabel tone={capFeedback.tone} text={capFeedback.message} />
-        )}
+        {capFeedback && <StatusLabel tone={capFeedback.tone} text={capFeedback.message} />}
 
         <form
           onSubmit={(e) => {

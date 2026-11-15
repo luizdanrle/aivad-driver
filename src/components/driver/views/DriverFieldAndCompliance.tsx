@@ -8,6 +8,16 @@ import {
   StatusLabel,
 } from '../../ui/DesignSystem';
 
+const SUPPORT_SUB_TABS = [
+  { id: 'suporte', label: 'Tickets & Suporte' },
+  { id: 'legislacao', label: 'Legislação' },
+  { id: 'documentos', label: 'Documentos' },
+  { id: 'avaliacao-rapida', label: 'Avaliação Rápida' },
+  { id: 'dashcam', label: 'Dashcam' },
+  { id: 'notificacoes', label: 'Notificações' },
+  { id: 'sugestoes', label: 'Sugestões' },
+];
+
 export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
@@ -17,7 +27,27 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
     incrementReviewCopy,
     toggleDashcamProtection,
     addDashcamCapture,
+    setDriverNav,
   } = useEcosystem();
+
+  const renderSupportSubNav = () => (
+    <div className="flex flex-wrap items-center gap-1.5 pb-3 border-b border-slate-200 dark:border-slate-800">
+      {SUPPORT_SUB_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => setDriverNav(t.id)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+            activeTab === t.id
+              ? 'bg-blue-700 text-white shadow-xs'
+              : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-blue-500'
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
 
   // Map Layers State
   const [layers, setLayers] = useState({
@@ -206,6 +236,7 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
 
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title={`AIVAD Compliance Intelligence — Mercado Ativo (${activeCountryCode})`}
           description="Cada obrigação indica fonte oficial, artigo, datas, estado regulamentar e selo de validação jurídica humana antes de comunicação definitiva."
@@ -213,7 +244,7 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
 
         <div className="space-y-4">
           {displayedObligations.map((ob) => (
-            <Card key={ob.id} className="p-5 space-y-3 border-l-4 border-l-blue-700">
+            <Card key={ob.id} className="p-5 space-y-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
@@ -279,6 +310,7 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
 
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title="AIVAD Quick Review — Avaliação Rápida de Passageiros"
           description="Construa avaliações fiéis ao que observou e copie para a área de transferência. Nunca envia automaticamente sem API oficial autorizada."
@@ -421,6 +453,7 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
   if (activeTab === 'dashcam') {
     return (
       <div className="space-y-6">
+        {renderSupportSubNav()}
         <ContextualHelpBanner
           title="Dashcam, Privacidade & Retenção Protegida"
           description="Associada às viagens concluídas com bloqueio de proteção contra eliminação automática e mascaramento de privacidade conforme RGPD local."

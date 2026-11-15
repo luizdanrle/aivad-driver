@@ -209,3 +209,38 @@ test('Offline queue deduplicates repeated keys, resolves conflicts, and builds v
   assert.ok(qr.verificationCode.startsWith('AIVAD-'));
   assert.ok(TACHOGRAPH_LEGAL_DISCLAIMER.includes('homologado'));
 });
+
+test('Rolling 24h TVDE compliance triggers preventive 8h/9h/10h alerts without duplicating overlapping apps', async () => {
+  const { evaluateRolling24hCompliance, PORTARIA_7_2022_CHECKLIST } = await import('./tachograph.ts');
+  const now = new Date('2026-11-15T18:00:00Z');
+  const tenHoursAgo = new Date(now.getTime() - 9 * 60 * 60 * 1000).toISOString();
+  const halfHourAgo = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+  const res = evaluateRolling24hCompliance(
+    [],
+    [
+      {
+        id: 'p1',
+        platformId: 'uber',
+        date: '2026-11-15',
+        startIso: tenHoursAgo,
+        endIso: now.toISOString(),
+        kind: 'Online',
+      },
+      {
+        id: 'p2',
+        platformId: 'bolt',
+        date: '2026-11-15',
+        startIso: tenHoursAgo,
+        endIso: halfHourAgo,
+        kind: 'Online',
+      },
+    ],
+    now.toISOString(),
+    600
+  );
+  assert.equal(res.rolling24hWorkMinutes, 540);
+  assert.equal(res.remainingLegalMinutes, 60);
+  assert.equal(res.alertLevel, 'Crítico 9h (540 min)');
+  assert.ok(PORTARIA_7_2022_CHECKLIST.length >= 4);
+});
+

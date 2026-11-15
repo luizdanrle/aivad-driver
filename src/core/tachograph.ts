@@ -22,6 +22,127 @@ export const TACHOGRAPH_STATES: TachographState[] = [
   'Fim de turno',
 ];
 
+export const TACHOGRAPH_STATE_REG_ALIASES: Record<TachographState, { portariaGroup: string; legalCountableAsWork: boolean }> = {
+  'Fora de serviço': { portariaGroup: 'Repouso / Fora de atividade TVDE', legalCountableAsWork: false },
+  'Início de turno': { portariaGroup: 'Abertura de jornada multiplataforma', legalCountableAsWork: true },
+  'Condução em serviço': { portariaGroup: 'Condução efetiva TVDE', legalCountableAsWork: true },
+  'Trabalho sem condução': { portariaGroup: 'Outros trabalhos / Preparação de viatura', legalCountableAsWork: true },
+  'Disponibilidade': { portariaGroup: 'Tempo de disponibilidade conectado às apps', legalCountableAsWork: true },
+  'Espera': { portariaGroup: 'Tempo de espera em serviço', legalCountableAsWork: true },
+  'Pausa': { portariaGroup: 'Pausa / Interrupção obrigatória', legalCountableAsWork: false },
+  'Refeição': { portariaGroup: 'Intervalo de refeição', legalCountableAsWork: false },
+  'Descanso': { portariaGroup: 'Período de descanso / repouso', legalCountableAsWork: false },
+  'Fim de turno': { portariaGroup: 'Encerramento de jornada', legalCountableAsWork: false },
+};
+
+export interface Rolling24hComplianceResult {
+  rolling24hWorkMinutes: number;
+  rolling24hBreakMinutes: number;
+  legalDailyLimitMinutes: number;
+  remainingLegalMinutes: number;
+  utilizationPct: number;
+  alertLevel: 'Normal' | 'Preventivo 8h (480 min)' | 'Crítico 9h (540 min)' | 'Limite 10h Atingido';
+  alerts: string[];
+  platformBreakdownNote: string;
+}
+
+export function evaluateRolling24hCompliance(
+  activities: TachographActivityRecord[],
+  platformIntervals: TachographPlatformInterval[],
+  referenceNowIso = new Date().toISOString(),
+  legalDailyLimitMinutes = 600
+): Rolling24hComplianceResult {
+  const refMs = new Date(referenceNowIso).getTime();
+  const cutoffMs = refMs - 24 * 60 * 60 * 1000;
+
+  let activityWorkMinutes = 0;
+  let rolling24hBreakMinutes = 0;
+
+  for (const act of activities) {
+    const startMs = new Date(act.startIso).getTime();
+    const endMs = act.endIso ? new Date(act.endIso).getTime() : startMs + act.durationMinutes * 60000;
+    const clampedStart = Math.max(startMs, cutoffMs);
+    const clampedEnd = Math.min(endMs, refMs);
+    if (!Number.isFinite(clampedStart) || !Number.isFinite(clampedEnd) || clampedEnd <= clampedStart) {
+      continue;
+    }
+    const mins = Math.round((clampedEnd - clampedStart) / 60000);
+    if (TACHOGRAPH_STATE_REG_ALIASES[act.state]?.legalCountableAsWork) {
+      activityWorkMinutes += mins;
+    } else if (act.state === 'Pausa' || act.state === 'Refeição' || act.state === 'Descanso') {
+      rolling24hBreakMinutes += mins;
+    }
+  }
+
+  const recentIntervals = platformIntervals
+    .map((i) => ({
+      startIso: new Date(Math.max(new Date(i.startIso).getTime(), cutoffMs)).toISOString(),
+      endIso: new Date(Math.min(new Date(i.endIso).getTime(), refMs)).toISOString(),
+    }))
+    .filter((i) => new Date(i.endIso).getTime() > new Date(i.startIso).getTime());
+
+  const { mergedMinutes } = mergeTimeIntervalsMinutes(recentIntervals);
+  const rolling24hWorkMinutes = Math.max(activityWorkMinutes, mergedMinutes);
+  const remainingLegalMinutes = Math.max(0, legalDailyLimitMinutes - rolling24hWorkMinutes);
+  const utilizationPct = Math.min(100, Math.round((rolling24hWorkMinutes / Math.max(1, legalDailyLimitMinutes)) * 100));
+
+  const alerts: string[] = [];
+  let alertLevel: Rolling24hComplianceResult['alertLevel'] = 'Normal';
+
+  if (rolling24hWorkMinutes >= legalDailyLimitMinutes) {
+    alertLevel = 'Limite 10h Atingido';
+    alerts.push('Limite legal de 10h (600 min) em janela deslizante de 24h atingido. Deve iniciar descanso imediato.');
+  } else if (rolling24hWorkMinutes >= 540) {
+    alertLevel = 'Crítico 9h (540 min)';
+    alerts.push(`Alerta preventivo 9h: restam apenas ${remainingLegalMinutes} min do limite diário de 10h nas últimas 24h.`);
+  } else if (rolling24hWorkMinutes >= 480) {
+    alertLevel = 'Preventivo 8h (480 min)';
+    alerts.push(`Alerta preventivo 8h: planeie o regresso à base/garagem (restam ${remainingLegalMinutes} min).`);
+  }
+
+  if (rolling24hWorkMinutes > 270 && rolling24hBreakMinutes < 45) {
+    alerts.push('Condução/atividade > 4h30 sem 45 min acumulados de pausa/refeição.');
+  }
+
+  return {
+    rolling24hWorkMinutes,
+    rolling24hBreakMinutes,
+    legalDailyLimitMinutes,
+    remainingLegalMinutes,
+    utilizationPct,
+    alertLevel,
+    alerts,
+    platformBreakdownNote: 'Tempo online consolidado entre plataformas numa única contagem legal sem duplicação em janela móvel de 24h.',
+  };
+}
+
+export const PORTARIA_7_2022_CHECKLIST = [
+  {
+    id: 'chk-1',
+    requirement: 'Identificação única do motorista (CMTVDE / NIF / ID interno)',
+    status: 'Implementado no modelo de sessão',
+    portariaRef: 'Portaria n.º 7/2022 · Registo de tempos de trabalho TVDE',
+  },
+  {
+    id: 'chk-2',
+    requirement: 'Separação entre condução, outros trabalhos, disponibilidade e pausas/descanso',
+    status: 'Implementado nos 10 estados auditáveis',
+    portariaRef: 'Art. 25.º Lei n.º 45/2018 & Portaria n.º 7/2022',
+  },
+  {
+    id: 'chk-3',
+    requirement: 'Consolidação multi-plataforma em janela de 24h com teto máximo de 10h',
+    status: 'Cálculo ativo (sem dupla contagem)',
+    portariaRef: 'Art. 10.º n.º 5 Lei n.º 45/2018',
+  },
+  {
+    id: 'chk-4',
+    requirement: 'Trilha de alterações imutável com motivo e código QR de verificação',
+    status: 'Ativo localmente (Exportável PDF/CSV/QR)',
+    portariaRef: 'Boa prática de auditoria — homologação oficial sujeita a validação ACT/IMT',
+  },
+] as const;
+
 export const TACHOGRAPH_LEGAL_DISCLAIMER =
   'Registo digital operacional AIVAD TACÓGRAFO TVDE com trilha auditável e código QR verificável. Não substitui equipamento ou tacógrafo oficialmente homologado sem validação legal e técnica expressa das autoridades competentes.';
 

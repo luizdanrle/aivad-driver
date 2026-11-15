@@ -178,6 +178,49 @@ export const GLOBAL_GEO_BOUNDING_REGIONS: GeoBoundingRegion[] = [
   },
 ];
 
+export function getTodayIso(referenceDate = new Date()): string {
+  return referenceDate.toISOString().slice(0, 10);
+}
+
+export function daysAgoIso(daysAgo: number, referenceDate = new Date()): string {
+  const d = new Date(referenceDate.getTime() - daysAgo * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+export function daysFromNowIso(daysAhead: number, referenceDate = new Date()): string {
+  const d = new Date(referenceDate.getTime() + daysAhead * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+export function getCurrentMonthLabel(referenceDate = new Date(), locale = 'pt-PT'): string {
+  try {
+    const label = new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(referenceDate);
+    return label.charAt(0).toUpperCase() + label.slice(1);
+  } catch {
+    return referenceDate.toISOString().slice(0, 7);
+  }
+}
+
+export function buildUnavailableLocation(
+  reason = 'Localização automática indisponível. Selecione manualmente país e cidade.'
+): {
+  countryCode: string;
+  countryName: string;
+  region: string;
+  city: string;
+  approxAddress: string;
+  timezone: string;
+} {
+  return {
+    countryCode: 'UNSET',
+    countryName: 'Localização não detetada',
+    region: 'Não detetada',
+    city: 'Não detetada',
+    approxAddress: reason,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  };
+}
+
 export function resolveLocationFromCoordinates(
   latitude: number,
   longitude: number
@@ -189,6 +232,10 @@ export function resolveLocationFromCoordinates(
   approxAddress: string;
   timezone: string;
 } {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return buildUnavailableLocation('Coordenadas inválidas ou indisponíveis.');
+  }
+
   const exact = GLOBAL_GEO_BOUNDING_REGIONS.find(
     (b) =>
       latitude >= b.latMin &&
@@ -207,7 +254,6 @@ export function resolveLocationFromCoordinates(
     };
   }
 
-  // Country-level broad coordinate heuristic fallback for anywhere in the world
   if (latitude >= 36.8 && latitude <= 42.2 && longitude >= -9.6 && longitude <= -6.1) {
     return {
       countryCode: 'PT',
@@ -249,19 +295,20 @@ export function resolveLocationFromCoordinates(
     };
   }
 
+  // Never fabricate "US / Nova Iorque" when coordinates fall outside known geo boxes
   return {
-    countryCode: 'US',
-    countryName: 'Mercado Internacional',
-    region: 'Região Global',
-    city: `Zona (${latitude.toFixed(2)}, ${longitude.toFixed(2)})`,
-    approxAddress: `Coordenadas aproximadas (${latitude.toFixed(2)}, ${longitude.toFixed(2)})`,
+    countryCode: 'UNSET',
+    countryName: 'Localização não detetada',
+    region: 'Zona fora dos mercados mapeados',
+    city: `Coordenadas (${latitude.toFixed(2)}, ${longitude.toFixed(2)})`,
+    approxAddress: `Localização GPS fora dos mercados pré-mapeados (${latitude.toFixed(2)}, ${longitude.toFixed(2)})`,
     timezone: 'UTC',
   };
 }
 
 export function detectFallbackLocation(
-  browserLanguage = 'pt-PT',
-  timezone = 'Europe/Lisbon'
+  browserLanguage = '',
+  timezone = ''
 ): {
   countryCode: string;
   countryName: string;
@@ -333,15 +380,20 @@ export function detectFallbackLocation(
       timezone: timezone || 'Africa/Luanda',
     };
   }
+  if (tz.includes('lisbon') || lang.includes('pt-pt') || lang === 'pt') {
+    return {
+      countryCode: 'PT',
+      countryName: 'Portugal',
+      region: 'Área Metropolitana de Lisboa',
+      city: 'Lisboa',
+      approxAddress: 'Localização aproximada por fuso/idioma (Lisboa, Portugal)',
+      timezone: timezone || 'Europe/Lisbon',
+    };
+  }
 
-  return {
-    countryCode: 'PT',
-    countryName: 'Portugal',
-    region: 'Área Metropolitana de Lisboa',
-    city: 'Lisboa',
-    approxAddress: 'Localização aproximada por fuso/idioma (Lisboa, Portugal)',
-    timezone: timezone || 'Europe/Lisbon',
-  };
+  return buildUnavailableLocation(
+    'Fuso horário ou idioma sem correspondência automática. Selecione país e cidade manualmente.'
+  );
 }
 
 export function formatMoney(

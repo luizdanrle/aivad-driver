@@ -270,3 +270,83 @@ test('calculateSmartPlan and answerDriverQuery produce grounded consistent summa
   assert.ok(answer.answer.includes('Tesla Model 3'));
   assert.ok(answer.sources.length > 0);
 });
+
+test('computeFinancialSummary excludes cancelled, rejected, expired and unconfirmed rides from revenue', () => {
+  const sampleTrips: TripRecord[] = [
+    {
+      id: 't-ok',
+      externalRef: 'UB-1',
+      platformId: 'uber',
+      vehicleId: 'veh-1',
+      date: '2026-11-14',
+      time: '09:00',
+      grossEur: 20,
+      tipEur: 2,
+      bonusEur: 0,
+      tollsEur: 0,
+      commissionEur: 5,
+      operationalCostEur: 2,
+      netEur: 15,
+      pickupDistanceKm: 1,
+      tripDistanceKm: 10,
+      durationMin: 20,
+      pickupZone: 'Saldanha',
+      category: 'UberX',
+      status: 'Concluída',
+      source: 'Manual',
+      isDemo: true,
+    },
+    {
+      id: 't-cancel-pax',
+      externalRef: 'UB-2',
+      platformId: 'uber',
+      vehicleId: 'veh-1',
+      date: '2026-11-14',
+      time: '09:30',
+      grossEur: 35,
+      tipEur: 0,
+      bonusEur: 0,
+      tollsEur: 0,
+      commissionEur: 0,
+      operationalCostEur: 0,
+      netEur: 0,
+      pickupDistanceKm: 1,
+      tripDistanceKm: 15,
+      durationMin: 25,
+      pickupZone: 'Chiado',
+      category: 'UberX',
+      status: 'Cancelada pelo passageiro',
+      cancellationBy: 'Passageiro',
+      source: 'Manual',
+      isDemo: true,
+    },
+    {
+      id: 't-rejected',
+      externalRef: 'BL-3',
+      platformId: 'bolt',
+      vehicleId: 'veh-1',
+      date: '2026-11-14',
+      time: '10:00',
+      grossEur: 12,
+      tipEur: 0,
+      bonusEur: 0,
+      tollsEur: 0,
+      commissionEur: 0,
+      operationalCostEur: 0,
+      netEur: 0,
+      pickupDistanceKm: 3,
+      tripDistanceKm: 6,
+      durationMin: 15,
+      pickupZone: 'Lumiar',
+      category: 'Bolt',
+      status: 'Rejeitada',
+      source: 'Manual',
+      isDemo: true,
+    },
+  ];
+  const fin = computeFinancialSummary(sampleTrips, []);
+  assert.equal(fin.tripCount, 1);
+  assert.equal(fin.cancelledOrLostCount, 2);
+  assert.equal(fin.totalRevenue, 22);
+});
+

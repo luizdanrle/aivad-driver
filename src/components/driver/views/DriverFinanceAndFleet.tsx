@@ -1,22 +1,42 @@
 import React, { useMemo, useState } from 'react';
-import { Car, ChevronRight, Download, FileSpreadsheet, GitCompare, Wallet } from 'lucide-react';
+import {
+  Car,
+  ChevronRight,
+  Download,
+  FileSpreadsheet,
+  GitCompare,
+  HelpCircle,
+  Search,
+  Wallet,
+} from 'lucide-react';
 import {
   exportPrintablePdfReport,
   exportReportAsPng,
   exportToCsv,
   exportToXlsx,
 } from '../../../core/exportUtils';
-import { evaluateVehicleEligibility, round2 } from '../../../core/intelligence';
+import {
+  computeVehicleOwnershipTcoPerKm,
+  evaluateVehicleEligibility,
+  explainFinancialCalculation,
+  getEnergyUnitPriceByTariff,
+  isCompletedTripStatus,
+  round2,
+  type FinancialCalculationExplanation,
+} from '../../../core/intelligence';
 import {
   formatDistance,
   formatDistanceRate,
   formatHistoricalMoney,
   formatMoney,
+  getCurrentMonthLabel,
+  getTodayIso,
 } from '../../../core/localization';
-import type { ExpenseRecord, FuelType } from '../../../models/types';
+import type { ExpenseRecord, FuelType, VehicleRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { HorizontalBreakdownBars, PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
+  CalculationExplanationModal,
   Card,
   ContextualHelpBanner,
   MetricCard,
@@ -28,15 +48,25 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   const {
     state,
     activeMarket,
+    activeDriverTrips,
     financialSummary,
     addExpense,
     addVehicle,
+    updateVehicle,
     setActiveVehicle,
   } = useEcosystem();
+
+  const todayIso = getTodayIso();
+  const currentMonthLabel = getCurrentMonthLabel();
+  const currentYear = new Date().getFullYear();
 
   const currency = activeMarket.currency;
   const symbol = activeMarket.currencySymbol;
   const unitSystem = state.localization.unitSystem;
+
+  // Calculation Explanation Modal state ("Como foi calculado?")
+  const [activeExplanation, setActiveExplanation] =
+    useState<FinancialCalculationExplanation | null>(null);
 
   // Reports Hierarchy Drill-down: Mês -> Plataforma -> Dia -> Viagem
   const [reportScope, setReportScope] = useState<'mensal' | 'plataforma' | 'categoria' | 'campanhas'>('mensal');
@@ -56,14 +86,17 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   const [simKmMonth, setSimKmMonth] = useState(4200);
   const [simGrossPerKm, setSimGrossPerKm] = useState(1.18);
 
-  // Vehicle Add Form
+  // Vehicle Catalog Search & Fuel Filter + Add Form
+  const [vehSearch, setVehSearch] = useState('');
+  const [vehFuelFilter, setVehFuelFilter] = useState<string>('ALL');
   const [vehForm, setVehForm] = useState({
     brand: 'Kia',
     model: 'Niro EV',
     version: 'Drive 64.8 kWh',
-    year: 2024,
+    year: currentYear - 1,
     powerKw: 150,
     rangeKm: 460,
+    realRangeKm: 375,
     consumptionPer100Km: 16.2,
     fuelType: 'Elétrico' as FuelType,
     seats: 5,
@@ -79,9 +112,17 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     state.vehicles.slice(0, 3).map((v) => v.id)
   );
 
+  const completedTrips = useMemo(
+    () => activeDriverTrips.filter((t) => isCompletedTripStatus(t.status)),
+    [activeDriverTrips]
+  );
+
   const platformBreakdown = useMemo(() => {
-    const map = new Map<string, { platform: string; color?: string; trips: number; gross: number; tips: number; net: number }>();
-    for (const t of state.trips) {
+    const map = new Map<
+      string,
+      { platform: string; color?: string; trips: number; gross: number; tips: number; net: number }
+    >();
+    for (const t of completedTrips) {
       const plat = state.platforms.find((p) => p.id === t.platformId);
       const cur = map.get(t.platformId) ?? {
         platform: plat?.name ?? t.platformId.toUpperCase(),
@@ -98,10 +139,13 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       map.set(t.platformId, cur);
     }
     return Array.from(map.entries()).map(([id, data]) => ({ id, ...data }));
-  }, [state.trips, state.platforms]);
+  }, [completedTrips, state.platforms]);
 
+  // ==========================================================
+  // RELATÓRIOS & EXPORTAÇÕES
+  // ==========================================================
   if (activeTab === 'relatorios') {
-    const drillTrips = state.trips.filter((t) => {
+    const drillTrips = completedTrips.filter((t) => {
       if (drillPlatform && t.platformId !== drillPlatform) return false;
       if (drillDate && t.date !== drillDate) return false;
       return true;
@@ -138,7 +182,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       <div className="space-y-6">
         <ContextualHelpBanner
           title="Relatórios Hierárquicos & Exportações Profissionais"
-          description="Navegue de Mês → Plataforma → Dia → Viagem individual. Exporte em CSV, XLSX verdadeiro, PDF/Impressão ou imagem PNG preservando a moeda original de cada registo."
+          description="Navegue de Mês → Plataforma → Dia → Viagem individual. Exclui viagens canceladas dos totais e exporta em CSV, XLSX real, PDF/Impressão ou PNG na moeda original."
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -173,7 +217,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               onClick={() =>
                 exportPrintablePdfReport(
                   'Relatório Operacional AIVAD',
-                  `Novembro 2026 · ${drillTrips.length} viagens · Mercado ${activeMarket.name}`,
+                  `${currentMonthLabel} · ${drillTrips.length} viagens concluídas · Mercado ${activeMarket.name}`,
                   headers,
                   rows
                 )
@@ -186,9 +230,9 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               type="button"
               onClick={() =>
                 exportReportAsPng(
-                  'aivad-resumo-nov-2026.png',
+                  `aivad-resumo-${todayIso.slice(0, 7)}.png`,
                   'AIVAD — Resumo Operacional',
-                  `Período: Novembro 2026 · ${drillTrips.length} viagens`,
+                  `Período: ${currentMonthLabel} · ${drillTrips.length} viagens`,
                   [
                     { label: 'Receita Total', value: formatMoney(financialSummary.totalRevenue, currency) },
                     { label: 'Líquido Est.', value: formatMoney(financialSummary.netEstimated, currency) },
@@ -218,7 +262,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             }}
             className="font-semibold text-blue-700 dark:text-blue-400 hover:underline"
           >
-            Novembro 2026
+            {currentMonthLabel}
           </button>
           {drillPlatform && (
             <>
@@ -243,7 +287,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
         {/* Interactive Bar Chart per Platform */}
         <Card className="p-5 space-y-3">
           <h3 className="text-sm font-bold">
-            Desagregação por Plataforma (Clique numa barra para filtrar até às viagens)
+            Desagregação por Plataforma (Clique numa barra para filtrar)
           </h3>
           <HorizontalBreakdownBars
             items={platformBreakdown.map((p) => ({
@@ -314,10 +358,14 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     );
   }
 
+  // ==========================================================
+  // FINANCEIRO INTEGRADO + TRANSPARÊNCIA "COMO FOI CALCULADO?"
+  // ==========================================================
   if (activeTab === 'financeiro') {
     const activeVeh = state.vehicles.find((v) => v.isActiveDriverVehicle) ?? state.vehicles[0];
-    const simEnergyCost = round2((simKmMonth / 100) * activeVeh.consumptionPer100Km * activeVeh.energyCostPerUnitEur);
-    const simMaintCost = round2(simKmMonth * activeVeh.maintenancePerKmEur);
+    const tco = computeVehicleOwnershipTcoPerKm(activeVeh);
+    const simEnergyCost = round2(simKmMonth * tco.energyCostPerKmEur);
+    const simMaintCost = round2(simKmMonth * tco.maintenancePerKmEur);
     const simFixedCost = round2(activeVeh.monthlyLeaseOrFinanceEur + activeVeh.insuranceAnnualEur / 12);
     const simGross = round2(simKmMonth * simGrossPerKm);
     const simCommission = round2(simGross * 0.22);
@@ -328,43 +376,88 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       return acc;
     }, {});
 
+    const openExplain = (kpiKey: 'totalRevenue' | 'netEstimated' | 'avgPerHour' | 'avgPerKm') => {
+      setActiveExplanation(
+        explainFinancialCalculation(kpiKey, activeDriverTrips, state.expenses, activeMarket.code)
+      );
+    };
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="Gestão Financeira Integrada & Simulador de Rentabilidade"
-          description="Receitas provenientes de viagens, gorjetas e campanhas cruzadas com todas as categorias de despesas TVDE. Lançamentos passados preservam a moeda original."
+          title="Gestão Financeira Integrada & Transparência Auditável"
+          description="Clique em 'Como foi calculado?' em qualquer indicador para auditar fórmulas, pressupostos, moeda e exclusão automática de viagens canceladas."
         />
 
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-          <MetricCard
-            label="Receita Total Integrada"
-            value={formatMoney(financialSummary.totalRevenue, currency)}
-            subtext={`Gorjetas: ${formatMoney(financialSummary.tipsTotal, currency)} · Bónus: ${formatMoney(financialSummary.bonusTotal, currency)}`}
-            explanation="Soma de tarifas, gorjetas reconciliadas e bónus."
-            formula="Bruto + Gorjetas + Bónus"
-            accent="blue"
-          />
-          <MetricCard
-            label="Comissões Plataformas"
-            value={formatMoney(financialSummary.commissionsTotal, currency)}
-            subtext="Calculado conforme taxa de cada plataforma"
-            explanation="Total retido pelas plataformas intermediárias."
-            formula="Σ (Bruto × % Comissão)"
-          />
-          <MetricCard
-            label="Despesas Registadas"
-            value={formatMoney(financialSummary.loggedExpenses, currency)}
-            subtext={`${state.expenses.length} lançamentos`}
-            explanation="Despesas operacionais e fixas lançadas pelo motorista."
-            formula="Σ Despesas"
-          />
-          <MetricCard
-            label="Resultado Líquido Estimado"
-            value={formatMoney(financialSummary.netEstimated, currency)}
-            subtext="Após comissões, energia e despesas"
-            explanation="Lucro operacional estimado no período atual."
-            formula="Receita - Comissões - Custo/Km - Despesas"
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className="space-y-1.5">
+            <MetricCard
+              label="Receita Total Integrada"
+              value={formatMoney(financialSummary.totalRevenue, currency)}
+              subtext={`${financialSummary.tripCount} concluídas (${financialSummary.cancelledOrLostCount} excl.)`}
+              explanation="Soma de tarifas, gorjetas reconciliadas e bónus."
+              formula="Bruto + Gorjetas + Bónus"
+              accent="blue"
+            />
+            <button
+              type="button"
+              onClick={() => openExplain('totalRevenue')}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 dark:text-blue-400 hover:underline px-1"
+            >
+              <HelpCircle className="w-3.5 h-3.5" /> Como foi calculado?
+            </button>
+          </div>
+
+          <div className="space-y-1.5">
+            <MetricCard
+              label="Resultado Líquido Estimado"
+              value={formatMoney(financialSummary.netEstimated, currency)}
+              subtext={`Despesas: ${formatMoney(financialSummary.loggedExpenses, currency)}`}
+              explanation="Lucro operacional estimado após comissões, energia e despesas."
+              formula="Receita - Comissões - Custo/Km - Despesas"
+            />
+            <button
+              type="button"
+              onClick={() => openExplain('netEstimated')}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 dark:text-blue-400 hover:underline px-1"
+            >
+              <HelpCircle className="w-3.5 h-3.5" /> Como foi calculado?
+            </button>
+          </div>
+
+          <div className="space-y-1.5">
+            <MetricCard
+              label="Média Horária Bruta"
+              value={`${formatMoney(financialSummary.avgPerHour, currency)}/h`}
+              subtext={`${financialSummary.totalHours.toFixed(1)}h em viagem`}
+              explanation="Receita bruta total por hora produtiva."
+              formula="Receita ÷ Horas Produtivas"
+            />
+            <button
+              type="button"
+              onClick={() => openExplain('avgPerHour')}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 dark:text-blue-400 hover:underline px-1"
+            >
+              <HelpCircle className="w-3.5 h-3.5" /> Como foi calculado?
+            </button>
+          </div>
+
+          <div className="space-y-1.5">
+            <MetricCard
+              label="Rácio por Distância"
+              value={formatDistanceRate(financialSummary.avgPerKm, currency, unitSystem)}
+              subtext={`${formatDistance(financialSummary.totalKm, unitSystem)} totais`}
+              explanation="Receita média por distância total comprometida."
+              formula="Receita ÷ (Recolha + Passageiro)"
+            />
+            <button
+              type="button"
+              onClick={() => openExplain('avgPerKm')}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 dark:text-blue-400 hover:underline px-1"
+            >
+              <HelpCircle className="w-3.5 h-3.5" /> Como foi calculado?
+            </button>
+          </div>
         </div>
 
         <Card className="p-5 space-y-3">
@@ -391,7 +484,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 e.preventDefault();
                 if (!expForm.description.trim() || expForm.amountEur <= 0) return;
                 addExpense({
-                  date: '2026-11-14',
+                  date: todayIso,
                   category: expForm.category,
                   description: expForm.description,
                   amountEur: expForm.amountEur,
@@ -482,7 +575,9 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
           </Card>
 
           <Card className="lg:col-span-6 p-5 space-y-4">
-            <h3 className="text-sm font-bold">Simulador Mensal de Cenários ({activeVeh.brand} {activeVeh.model})</h3>
+            <h3 className="text-sm font-bold">
+              Simulador Mensal de Cenários ({activeVeh.brand} {activeVeh.model} · {tco.ownershipLabel})
+            </h3>
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
                 <label htmlFor="sim-km" className="block mb-1 font-medium">
@@ -523,7 +618,10 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 <span className="font-mono-tabular">-{formatMoney(simCommission, currency)}</span>
               </div>
               <div className="flex justify-between">
-                <span>Energia / Combustível ({activeVeh.consumptionPer100Km} {activeVeh.consumptionUnit}/100km)</span>
+                <span>
+                  Energia / Combustível ({activeVeh.energyTariffProfile ?? 'Padrão'}:{' '}
+                  {formatDistanceRate(tco.energyCostPerKmEur, currency, unitSystem)})
+                </span>
                 <span className="font-mono-tabular">-{formatMoney(simEnergyCost, currency)}</span>
               </div>
               <div className="flex justify-between">
@@ -541,33 +639,74 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             </div>
           </Card>
         </div>
+
+        <CalculationExplanationModal
+          explanation={activeExplanation}
+          onClose={() => setActiveExplanation(null)}
+        />
       </div>
     );
   }
 
+  // ==========================================================
+  // VEÍCULOS (Autonomia Real vs Homologada, Propriedade, Perfil Energia, TCO)
+  // ==========================================================
   if (activeTab === 'veiculos') {
+    const filteredVehicles = state.vehicles.filter((v) => {
+      const q = vehSearch.trim().toLowerCase();
+      if (q && !`${v.brand} ${v.model} ${v.version} ${v.city}`.toLowerCase().includes(q)) return false;
+      if (vehFuelFilter !== 'ALL' && v.fuelType !== vehFuelFilter) return false;
+      return true;
+    });
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="Base de Dados Técnica de Veículos & Elegibilidade Multi-Plataforma"
-          description="Suporta Elétricos, Híbridos, Plug-in, Gasolina, Gasóleo, GPL e Bi-fuel. Avalia elegibilidade legal local e comercial em todas as plataformas ativas do catálogo."
+          title="Base Técnica de Veículos — Autonomia Real vs Homologada & Custo TCO/km"
+          description="Separa autonomia homologada (WLTP) da autonomia real observada, adapta custo por perfil de carregamento/combustível e distingue viatura Própria, Financiada ou Alugada."
         />
 
+        <Card className="p-4 flex flex-wrap items-center gap-3 text-xs">
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="search"
+              aria-label="Pesquisar veículos"
+              placeholder="Pesquisar marca, modelo ou cidade..."
+              value={vehSearch}
+              onChange={(e) => setVehSearch(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+          </div>
+          <select
+            aria-label="Filtrar por motorização"
+            value={vehFuelFilter}
+            onChange={(e) => setVehFuelFilter(e.target.value)}
+            className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+          >
+            <option value="ALL">Todas motorizações</option>
+            {['Elétrico', 'Híbrido', 'Plug-in', 'Gasolina', 'Gasóleo', 'GPL', 'Bi-fuel'].map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </Card>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {state.vehicles.map((v) => {
+          {filteredVehicles.map((v) => {
             const marketCfg = state.countries.find((c) => c.code === v.countryCode);
             const elig = evaluateVehicleEligibility(
               v,
-              2026,
+              currentYear,
               state.platforms,
               marketCfg?.vehicleMaxAgeYears
             );
+            const tco = computeVehicleOwnershipTcoPerKm(v);
             return (
-              <Card key={v.id} className="p-5 space-y-3">
+              <Card key={v.id} className="p-5 space-y-3 text-xs">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h3 className="text-base font-bold">{v.brand} {v.model}</h3>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-slate-500">
                       {v.version} · {v.year} · {v.fuelType} · {v.city}/{v.countryCode}
                     </p>
                   </div>
@@ -577,21 +716,80 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                     <button
                       type="button"
                       onClick={() => setActiveVehicle(v.id)}
-                      className="px-2.5 py-1 rounded bg-blue-700 text-white text-xs font-medium"
+                      className="px-2.5 py-1 rounded bg-blue-700 text-white font-medium"
                     >
                       Ativar
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-xs font-mono-tabular">
-                  <div><span className="text-slate-500 block">Potência</span>{v.powerKw} kW</div>
-                  <div><span className="text-slate-500 block">Autonomia</span>{formatDistance(v.rangeKm, unitSystem)}</div>
-                  <div><span className="text-slate-500 block">Consumo</span>{v.consumptionPer100Km} {v.consumptionUnit}/100</div>
-                  <div><span className="text-slate-500 block">Lotação/Portas</span>{v.seats}L / {v.doors}P</div>
-                  <div><span className="text-slate-500 block">Bagageira</span>{v.trunkLiters} L</div>
-                  <div><span className="text-slate-500 block">Renda/Mês</span>{formatMoney(v.monthlyLeaseOrFinanceEur, currency)}</div>
+
+                {/* Homologated vs Real Range Box */}
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-[11px] text-slate-500 block">Homologada (WLTP)</span>
+                    <span className="font-mono-tabular font-bold">
+                      {formatDistance(v.homologatedRangeKm ?? v.rangeKm, unitSystem)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-500 block">Autonomia Real TVDE</span>
+                    <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                      {formatDistance(v.realRangeKm ?? v.rangeKm, unitSystem)}
+                    </span>
+                  </div>
+                  <p className="col-span-2 text-[11px] text-slate-500">
+                    Fonte: {v.rangeSource ?? 'Estimativa AIVAD'} · TCO Real:{' '}
+                    <strong className="font-mono-tabular">
+                      {formatDistanceRate(tco.totalEstimatedCostPerKmEur, currency, unitSystem)}
+                    </strong>
+                  </p>
                 </div>
-                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-xs space-y-2">
+
+                {/* Ownership & Tariff Profile Live Controls */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor={`own-${v.id}`} className="block text-[11px] font-medium mb-1">
+                      Regime de Propriedade
+                    </label>
+                    <select
+                      id={`own-${v.id}`}
+                      value={v.ownership ?? 'Financiada'}
+                      onChange={(e) =>
+                        updateVehicle(v.id, { ownership: e.target.value as VehicleRecord['ownership'] })
+                      }
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="Própria">Própria</option>
+                      <option value="Financiada">Financiada</option>
+                      <option value="Alugada">Alugada</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor={`tar-${v.id}`} className="block text-[11px] font-medium mb-1">
+                      Perfil Tarifário Energia
+                    </label>
+                    <select
+                      id={`tar-${v.id}`}
+                      value={v.energyTariffProfile ?? 'Garagem'}
+                      onChange={(e) => {
+                        const nextProfile = e.target.value as VehicleRecord['energyTariffProfile'];
+                        updateVehicle(v.id, {
+                          energyTariffProfile: nextProfile,
+                          energyCostPerUnitEur: getEnergyUnitPriceByTariff(nextProfile, v.energyCostPerUnitEur),
+                        });
+                      }}
+                      className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="Doméstico">Doméstico (€0.17/kWh)</option>
+                      <option value="Garagem">Garagem (€0.21/kWh)</option>
+                      <option value="Público AC">Público AC (€0.34/kWh)</option>
+                      <option value="Rápido DC">Rápido DC (€0.56/kWh)</option>
+                      <option value="Combustível">Combustível (€1.72/L)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
                   <StatusLabel
                     tone={elig.tvdeLegalEligible ? 'success' : 'danger'}
                     text={elig.tvdeLegalEligible ? `Elegível Legal (${v.countryCode})` : `Fora do limite legal (${v.countryCode})`}
@@ -605,6 +803,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px]"
                         >
                           <PlatformBadge
+                            platformId={platId}
                             name={plat?.name ?? platId}
                             shortCode={plat?.shortCode}
                             brandColor={plat?.brandColor}
@@ -641,6 +840,11 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 maintenancePerKmEur: vehForm.fuelType === 'Elétrico' ? 0.04 : 0.06,
                 energyCostPerUnitEur: vehForm.fuelType === 'Elétrico' ? 0.21 : 1.72,
                 depreciationMonthlyEur: 220,
+                ownership: 'Financiada',
+                energyTariffProfile: vehForm.fuelType === 'Elétrico' ? 'Garagem' : 'Combustível',
+                homologatedRangeKm: vehForm.rangeKm,
+                rangeSource: 'Registo manual do motorista',
+                rangeUpdatedAt: todayIso,
                 countryCode: activeMarket.code,
                 isActiveDriverVehicle: false,
               });
@@ -701,13 +905,15 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     );
   }
 
-  // COMPARADOR DE VEÍCULOS
+  // ==========================================================
+  // COMPARADOR DE VEÍCULOS (Mobile Cards + Desktop Table)
+  // ==========================================================
   const selectedVehicles = state.vehicles.filter((v) => compareIds.includes(v.id));
   return (
     <div className="space-y-6">
       <ContextualHelpBanner
-        title="Comparador de Veículos — TCO, Elegibilidade Legal & Multi-Plataforma"
-        description="Separa rigorosamente a elegibilidade legal local da elegibilidade comercial de cada plataforma catalogada."
+        title="Comparador de Veículos — TCO Real, Autonomia & Elegibilidade Multi-Plataforma"
+        description="Compara custo por distância completo (energia + manutenção + propriedade), autonomia real vs homologada e elegibilidade comercial."
       />
 
       <Card className="p-4 flex flex-wrap items-center gap-3 text-xs">
@@ -734,7 +940,31 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
         })}
       </Card>
 
-      <Card className="overflow-x-auto">
+      {/* Mobile Cards (< md) */}
+      <div className="md:hidden space-y-3">
+        {selectedVehicles.map((v) => {
+          const tco = computeVehicleOwnershipTcoPerKm(v);
+          const mkt = state.countries.find((c) => c.code === v.countryCode);
+          const el = evaluateVehicleEligibility(v, currentYear, state.platforms, mkt?.vehicleMaxAgeYears);
+          return (
+            <Card key={v.id} className="p-4 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="font-bold text-sm">{v.brand} {v.model} ({v.year})</h3>
+                <StatusLabel tone={el.tvdeLegalEligible ? 'success' : 'danger'} text={el.tvdeLegalEligible ? 'Elegível' : 'Inelegível'} />
+              </div>
+              <p className="text-slate-500">
+                {v.fuelType} · Real: {formatDistance(v.realRangeKm ?? v.rangeKm, unitSystem)} (WLTP {formatDistance(v.homologatedRangeKm ?? v.rangeKm, unitSystem)})
+              </p>
+              <p className="font-mono-tabular font-semibold text-blue-700 dark:text-blue-400">
+                TCO Total: {formatDistanceRate(tco.totalEstimatedCostPerKmEur, currency, unitSystem)} ({tco.ownershipLabel})
+              </p>
+            </Card>
+          );
+        })}
+      </div>
+
+      {/* Desktop Comparison Table (>= md) */}
+      <Card className="hidden md:block overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
             <tr>
@@ -748,41 +978,38 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             <tr>
-              <td className="p-3 font-medium">Motorização &amp; Autonomia</td>
+              <td className="p-3 font-medium">Autonomia Real vs Homologada</td>
               {selectedVehicles.map((v) => (
-                <td key={v.id} className="p-3">{v.fuelType} · {formatDistance(v.rangeKm, unitSystem)}</td>
+                <td key={v.id} className="p-3 font-mono-tabular">
+                  {v.fuelType} · Real {formatDistance(v.realRangeKm ?? v.rangeKm, unitSystem)} / WLTP{' '}
+                  {formatDistance(v.homologatedRangeKm ?? v.rangeKm, unitSystem)}
+                </td>
               ))}
             </tr>
             <tr>
-              <td className="p-3 font-medium">Custo Energia + Manutenção / dist.</td>
+              <td className="p-3 font-medium">Custo Energia + Manutenção + Propriedade (TCO)</td>
               {selectedVehicles.map((v) => {
-                const cpk = (v.consumptionPer100Km / 100) * v.energyCostPerUnitEur + v.maintenancePerKmEur;
+                const tco = computeVehicleOwnershipTcoPerKm(v);
                 return (
-                  <td key={v.id} className="p-3 font-mono-tabular">
-                    {formatDistanceRate(cpk, currency, unitSystem)}
+                  <td key={v.id} className="p-3 font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                    {formatDistanceRate(tco.totalEstimatedCostPerKmEur, currency, unitSystem)} ({tco.ownershipLabel})
                   </td>
                 );
               })}
             </tr>
             <tr>
-              <td className="p-3 font-medium">Aluguer / Financiamento + Depreciação</td>
+              <td className="p-3 font-medium">Aluguer / Financiamento + Seguro</td>
               {selectedVehicles.map((v) => (
                 <td key={v.id} className="p-3 font-mono-tabular">
-                  {formatMoney(v.monthlyLeaseOrFinanceEur, currency)}/mês (+ {formatMoney(v.depreciationMonthlyEur, currency)} depr.)
+                  {formatMoney(v.monthlyLeaseOrFinanceEur, currency)}/mês + {formatMoney(v.insuranceAnnualEur, currency)}/ano
                 </td>
-              ))}
-            </tr>
-            <tr>
-              <td className="p-3 font-medium">Seguro Anual Estimado</td>
-              {selectedVehicles.map((v) => (
-                <td key={v.id} className="p-3 font-mono-tabular">{formatMoney(v.insuranceAnnualEur, currency)}/ano</td>
               ))}
             </tr>
             <tr>
               <td className="p-3 font-medium">Elegibilidade Legal</td>
               {selectedVehicles.map((v) => {
                 const mkt = state.countries.find((c) => c.code === v.countryCode);
-                const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
+                const el = evaluateVehicleEligibility(v, currentYear, state.platforms, mkt?.vehicleMaxAgeYears);
                 return (
                   <td key={v.id} className="p-3">
                     <StatusLabel
@@ -801,7 +1028,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                   <td className="p-3 font-medium">Elegibilidade Comercial {plat.name}</td>
                   {selectedVehicles.map((v) => {
                     const mkt = state.countries.find((c) => c.code === v.countryCode);
-                    const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
+                    const el = evaluateVehicleEligibility(v, currentYear, state.platforms, mkt?.vehicleMaxAgeYears);
                     const pEl = el.platformEligibility[plat.id];
                     return (
                       <td key={v.id} className="p-3">

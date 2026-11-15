@@ -1,6 +1,19 @@
 import React, { useState } from 'react';
-import { Inbox, Newspaper, PackageCheck, Palette, RotateCcw } from 'lucide-react';
-import type { AppVersionRecord, TicketRecord } from '../../../models/types';
+import {
+  ArrowDown,
+  ArrowUp,
+  Eye,
+  Inbox,
+  Newspaper,
+  PackageCheck,
+  Palette,
+  Plus,
+  RotateCcw,
+  Save,
+  Trash2,
+} from 'lucide-react';
+import { getTodayIso } from '../../../core/localization';
+import type { AppVersionRecord, PortalSectionId, TicketRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import {
   Card,
@@ -8,11 +21,43 @@ import {
   StatusLabel,
 } from '../../ui/DesignSystem';
 
+const SECTION_LABELS: Record<PortalSectionId, string> = {
+  hero: 'Secção Hero & CTAs',
+  modules: 'Benefícios & Pilares AIVAD',
+  platforms: 'Catálogo de Plataformas',
+  plans: 'Planos SaaS Core',
+  markets: 'Indicadores de Mercados & Conformidade',
+  faq: 'Perguntas Frequentes (FAQ)',
+  updates: 'Comunicados Publicados',
+};
+
+const DEFAULT_ORDER: PortalSectionId[] = [
+  'hero',
+  'modules',
+  'platforms',
+  'plans',
+  'markets',
+  'faq',
+  'updates',
+];
+
+const DEFAULT_VISIBILITY: Record<PortalSectionId, boolean> = {
+  hero: true,
+  modules: true,
+  platforms: true,
+  plans: true,
+  markets: true,
+  faq: true,
+  updates: true,
+};
+
 export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
     replyToTicket,
     updateTicketStatus,
+    saveCmsDraft,
+    discardCmsDraft,
     updateCmsAndPublish,
     rollbackCms,
     addVersionRelease,
@@ -22,14 +67,32 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
   const [adminReply, setAdminReply] = useState('');
   const [isInternalNote, setIsInternalNote] = useState(false);
 
-  // CMS Draft State
+  const initialMerged = { ...state.cms, ...(state.cms.draftSnapshot ?? {}) };
   const [cmsDraft, setCmsDraft] = useState({
-    heroTitle: state.cms.heroTitle,
-    heroSubtitle: state.cms.heroSubtitle,
-    announcementBanner: state.cms.announcementBanner,
-    showAnnouncement: state.cms.showAnnouncement,
+    brandTitle: initialMerged.brandTitle ?? 'AIVAD',
+    brandTagline: initialMerged.brandTagline ?? 'O Cérebro Inteligente do Motorista',
+    primaryColor: initialMerged.primaryColor ?? '#1D4ED8',
+    accentColor: initialMerged.accentColor ?? '#DC2626',
+    heroTitle: initialMerged.heroTitle,
+    heroSubtitle: initialMerged.heroSubtitle,
+    heroCtaDriverLabel: initialMerged.heroCtaDriverLabel ?? 'Entrar como Motorista',
+    heroCtaPlansLabel: initialMerged.heroCtaPlansLabel ?? 'Explorar Planos',
+    announcementBanner: initialMerged.announcementBanner,
+    showAnnouncement: initialMerged.showAnnouncement,
+    contactEmail: initialMerged.contactEmail ?? 'suporte@aivad-ecosystem.local',
+    supportHours: initialMerged.supportHours ?? 'Seg–Sex · 09:00–19:00',
+    seoTitle: initialMerged.seoTitle ?? 'AIVAD — O Cérebro Inteligente do Motorista',
+    seoDescription: initialMerged.seoDescription ?? '',
+    sectionOrder: initialMerged.sectionOrder ?? DEFAULT_ORDER,
+    visibleSections: initialMerged.visibleSections ?? DEFAULT_VISIBILITY,
+    benefits: initialMerged.benefits ?? [],
+    faqs: initialMerged.faqs ?? [],
   });
   const [showPreview, setShowPreview] = useState(false);
+  const [cmsNotice, setCmsNotice] = useState<string | null>(null);
+
+  const [newBenefit, setNewBenefit] = useState({ title: '', description: '' });
+  const [newFaq, setNewFaq] = useState({ question: '', answer: '' });
 
   // Publication Add State
   const [pubTitle, setPubTitle] = useState('');
@@ -167,28 +230,98 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
   }
 
   if (activeTab === 'publicacoes' || activeTab === 'gestao-visual' || activeTab === 'editor-paginas') {
+    const moveSection = (index: number, dir: -1 | 1) => {
+      const target = index + dir;
+      if (target < 0 || target >= cmsDraft.sectionOrder.length) return;
+      const nextOrder = [...cmsDraft.sectionOrder];
+      const [item] = nextOrder.splice(index, 1);
+      nextOrder.splice(target, 0, item);
+      setCmsDraft((d) => ({ ...d, sectionOrder: nextOrder }));
+    };
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
           title="CMS Integrado — Gestão Visual, Páginas & Publicações do Site Oficial"
-          description="Rascunho, pré-visualização, publicação imediata para o Site Oficial AIVAD e rollback seguro de revisões anteriores."
+          description="Edite identidade visual, ordem e visibilidade de secções, textos, benefícios, FAQs e comunicados com Rascunho, Pré-visualização, Publicação imediata e Rollback."
         />
 
-        <Card className="p-5 space-y-4 text-xs">
-          <div className="flex items-center justify-between">
+        {cmsNotice && (
+          <StatusLabel tone="info" text={cmsNotice} />
+        )}
+
+        <Card className="p-5 space-y-5 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <Palette className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-              Editor Principal do Site Oficial (Hero &amp; Faixa de Aviso)
+              Editor Completo do Site Oficial (Identidade, Hero, Secções &amp; SEO)
             </h3>
-            <button
-              type="button"
-              onClick={() => setShowPreview((s) => !s)}
-              className="px-3 py-1 rounded border border-slate-300 dark:border-slate-700 font-medium"
-            >
-              {showPreview ? 'Ocultar Pré-visualização' : 'Pré-visualizar'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {state.cms.draftSnapshot && (
+                <StatusLabel tone="warning" text="Rascunho não publicado ativo" />
+              )}
+              <button
+                type="button"
+                onClick={() => setShowPreview((s) => !s)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 font-medium"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>{showPreview ? 'Ocultar Pré-visualização' : 'Pré-visualizar'}</span>
+              </button>
+            </div>
           </div>
 
+          {/* Identity & Colors */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div>
+              <label htmlFor="cms-brand" className="block font-medium mb-1">Nome da Marca</label>
+              <input
+                id="cms-brand"
+                type="text"
+                value={cmsDraft.brandTitle}
+                onChange={(e) => setCmsDraft((d) => ({ ...d, brandTitle: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="cms-tag" className="block font-medium mb-1">Subtítulo / Tagline</label>
+              <input
+                id="cms-tag"
+                type="text"
+                value={cmsDraft.brandTagline}
+                onChange={(e) => setCmsDraft((d) => ({ ...d, brandTagline: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="cms-pcolor" className="block font-medium mb-1">Cor Primária</label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="cms-pcolor"
+                  type="color"
+                  value={cmsDraft.primaryColor}
+                  onChange={(e) => setCmsDraft((d) => ({ ...d, primaryColor: e.target.value }))}
+                  className="h-9 w-12 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+                <span className="font-mono-tabular">{cmsDraft.primaryColor}</span>
+              </div>
+            </div>
+            <div>
+              <label htmlFor="cms-acolor" className="block font-medium mb-1">Cor Secundária / Destaque</label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="cms-acolor"
+                  type="color"
+                  value={cmsDraft.accentColor}
+                  onChange={(e) => setCmsDraft((d) => ({ ...d, accentColor: e.target.value }))}
+                  className="h-9 w-12 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+                <span className="font-mono-tabular">{cmsDraft.accentColor}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Hero & CTAs */}
           <div className="space-y-3">
             <div>
               <label htmlFor="cms-hero" className="block font-medium mb-1">Título Hero do Site Oficial</label>
@@ -210,6 +343,28 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
               />
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="cms-cta-d" className="block font-medium mb-1">Botão CTA Principal</label>
+                <input
+                  id="cms-cta-d"
+                  type="text"
+                  value={cmsDraft.heroCtaDriverLabel}
+                  onChange={(e) => setCmsDraft((d) => ({ ...d, heroCtaDriverLabel: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
+              <div>
+                <label htmlFor="cms-cta-p" className="block font-medium mb-1">Botão CTA Secundário</label>
+                <input
+                  id="cms-cta-p"
+                  type="text"
+                  value={cmsDraft.heroCtaPlansLabel}
+                  onChange={(e) => setCmsDraft((d) => ({ ...d, heroCtaPlansLabel: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
+            </div>
             <div>
               <label htmlFor="cms-banner" className="block font-medium mb-1">Texto da Faixa de Comunicado</label>
               <input
@@ -230,22 +385,296 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
             </label>
           </div>
 
+          {/* Contact & SEO */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <div>
+              <label htmlFor="cms-email" className="block font-medium mb-1">Email de Contacto</label>
+              <input
+                id="cms-email"
+                type="email"
+                value={cmsDraft.contactEmail}
+                onChange={(e) => setCmsDraft((d) => ({ ...d, contactEmail: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="cms-hours" className="block font-medium mb-1">Horário de Suporte</label>
+              <input
+                id="cms-hours"
+                type="text"
+                value={cmsDraft.supportHours}
+                onChange={(e) => setCmsDraft((d) => ({ ...d, supportHours: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="cms-seo" className="block font-medium mb-1">Título SEO</label>
+              <input
+                id="cms-seo"
+                type="text"
+                value={cmsDraft.seoTitle}
+                onChange={(e) => setCmsDraft((d) => ({ ...d, seoTitle: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+          </div>
+
+          {/* Section Order & Visibility */}
+          <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+            <p className="font-bold">Ordem e Visibilidade das Secções da Página Inicial</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {cmsDraft.sectionOrder.map((secId, idx) => (
+                <div
+                  key={secId}
+                  className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex items-center justify-between gap-2"
+                >
+                  <label className="inline-flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(cmsDraft.visibleSections[secId])}
+                      onChange={(e) =>
+                        setCmsDraft((d) => ({
+                          ...d,
+                          visibleSections: {
+                            ...d.visibleSections,
+                            [secId]: e.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    <span className="font-semibold">{SECTION_LABELS[secId]}</span>
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={idx === 0}
+                      onClick={() => moveSection(idx, -1)}
+                      aria-label={`Subir ${SECTION_LABELS[secId]}`}
+                      className="p-1 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-30"
+                    >
+                      <ArrowUp className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={idx === cmsDraft.sectionOrder.length - 1}
+                      onClick={() => moveSection(idx, 1)}
+                      aria-label={`Descer ${SECTION_LABELS[secId]}`}
+                      className="p-1 rounded border border-slate-300 dark:border-slate-700 disabled:opacity-30"
+                    >
+                      <ArrowDown className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {showPreview && (
-            <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/30 space-y-1">
-              <p className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">PRÉ-VISUALIZAÇÃO PORTAL</p>
-              <p className="text-base font-bold">{cmsDraft.heroTitle}</p>
+            <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-slate-50 dark:bg-slate-900 space-y-2">
+              <p className="text-[11px] font-bold uppercase tracking-wider" style={{ color: cmsDraft.accentColor }}>
+                PRÉ-VISUALIZAÇÃO PORTAL · {cmsDraft.brandTitle} · {cmsDraft.brandTagline}
+              </p>
+              <p className="text-lg font-extrabold">{cmsDraft.heroTitle}</p>
               <p className="text-xs text-slate-600 dark:text-slate-300">{cmsDraft.heroSubtitle}</p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <span
+                  style={{ backgroundColor: cmsDraft.primaryColor }}
+                  className="px-3 py-1.5 rounded-lg text-white font-semibold"
+                >
+                  {cmsDraft.heroCtaDriverLabel}
+                </span>
+                <span className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 font-semibold">
+                  {cmsDraft.heroCtaPlansLabel}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Secções ativas: {cmsDraft.sectionOrder.filter((id) => cmsDraft.visibleSections[id]).map((id) => SECTION_LABELS[id]).join(' → ')}
+              </p>
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => updateCmsAndPublish(cmsDraft, 'Atualização editorial Hero & Banner')}
-            className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
-          >
-            Publicar no Site Oficial
-          </button>
+          <div className="flex flex-wrap items-center gap-2 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                saveCmsDraft(cmsDraft);
+                setCmsNotice('Rascunho guardado localmente sem alterar o Portal público.');
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-semibold hover:border-blue-600"
+            >
+              <Save className="w-3.5 h-3.5" />
+              Guardar Rascunho
+            </button>
+            {state.cms.draftSnapshot && (
+              <button
+                type="button"
+                onClick={() => {
+                  discardCmsDraft();
+                  setCmsDraft((prev) => ({
+                    ...prev,
+                    brandTitle: state.cms.brandTitle ?? 'AIVAD',
+                    brandTagline: state.cms.brandTagline ?? 'O Cérebro Inteligente do Motorista',
+                    primaryColor: state.cms.primaryColor ?? '#1D4ED8',
+                    accentColor: state.cms.accentColor ?? '#DC2626',
+                    heroTitle: state.cms.heroTitle,
+                    heroSubtitle: state.cms.heroSubtitle,
+                    heroCtaDriverLabel: state.cms.heroCtaDriverLabel ?? 'Entrar como Motorista',
+                    heroCtaPlansLabel: state.cms.heroCtaPlansLabel ?? 'Explorar Planos',
+                    announcementBanner: state.cms.announcementBanner,
+                    showAnnouncement: state.cms.showAnnouncement,
+                    contactEmail: state.cms.contactEmail ?? 'suporte@aivad-ecosystem.local',
+                    supportHours: state.cms.supportHours ?? 'Seg–Sex · 09:00–19:00',
+                    seoTitle: state.cms.seoTitle ?? 'AIVAD — O Cérebro Inteligente do Motorista',
+                    seoDescription: state.cms.seoDescription ?? '',
+                    sectionOrder: state.cms.sectionOrder ?? DEFAULT_ORDER,
+                    visibleSections: state.cms.visibleSections ?? DEFAULT_VISIBILITY,
+                    benefits: state.cms.benefits ?? [],
+                    faqs: state.cms.faqs ?? [],
+                  }));
+                  setCmsNotice('Rascunho descartado; repostos os valores publicados.');
+                }}
+                className="px-4 py-2 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 font-semibold"
+              >
+                Descartar Rascunho
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                updateCmsAndPublish(cmsDraft, `Publicação CMS (${cmsDraft.brandTitle})`);
+                setCmsNotice('Alterações publicadas ao vivo no Site Oficial AIVAD.');
+              }}
+              className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+            >
+              Publicar no Site Oficial
+            </button>
+          </div>
         </Card>
+
+        {/* Benefits & FAQs CMS Blocks */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
+          <Card className="p-5 space-y-3">
+            <h3 className="text-sm font-bold">Cartões de Benefício no Portal ({cmsDraft.benefits.length})</h3>
+            <div className="space-y-2">
+              {cmsDraft.benefits.map((b) => (
+                <div key={b.id} className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-bold">{b.title}</p>
+                    <p className="text-slate-500">{b.description}</p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remover benefício ${b.title}`}
+                    onClick={() =>
+                      setCmsDraft((d) => ({
+                        ...d,
+                        benefits: d.benefits.filter((x) => x.id !== b.id),
+                      }))
+                    }
+                    className="p-1 text-slate-400 hover:text-red-600"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <input
+                type="text"
+                placeholder="Título do benefício"
+                value={newBenefit.title}
+                onChange={(e) => setNewBenefit((b) => ({ ...b, title: e.target.value }))}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <input
+                type="text"
+                placeholder="Descrição breve"
+                value={newBenefit.description}
+                onChange={(e) => setNewBenefit((b) => ({ ...b, description: e.target.value }))}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newBenefit.title.trim()) return;
+                  setCmsDraft((d) => ({
+                    ...d,
+                    benefits: [
+                      ...d.benefits,
+                      { id: `ben-${Date.now()}`, title: newBenefit.title.trim(), description: newBenefit.description.trim() },
+                    ],
+                  }));
+                  setNewBenefit({ title: '', description: '' });
+                }}
+                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Adicionar Benefício
+              </button>
+            </div>
+          </Card>
+
+          <Card className="p-5 space-y-3">
+            <h3 className="text-sm font-bold">Perguntas Frequentes FAQ ({cmsDraft.faqs.length})</h3>
+            <div className="space-y-2">
+              {cmsDraft.faqs.map((f) => (
+                <div key={f.id} className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-bold">{f.question}</p>
+                    <p className="text-slate-500">{f.answer}</p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remover FAQ ${f.question}`}
+                    onClick={() =>
+                      setCmsDraft((d) => ({
+                        ...d,
+                        faqs: d.faqs.filter((x) => x.id !== f.id),
+                      }))
+                    }
+                    className="p-1 text-slate-400 hover:text-red-600"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <input
+                type="text"
+                placeholder="Pergunta"
+                value={newFaq.question}
+                onChange={(e) => setNewFaq((q) => ({ ...q, question: e.target.value }))}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <input
+                type="text"
+                placeholder="Resposta"
+                value={newFaq.answer}
+                onChange={(e) => setNewFaq((q) => ({ ...q, answer: e.target.value }))}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (!newFaq.question.trim() || !newFaq.answer.trim()) return;
+                  setCmsDraft((d) => ({
+                    ...d,
+                    faqs: [
+                      ...d.faqs,
+                      { id: `faq-${Date.now()}`, question: newFaq.question.trim(), answer: newFaq.answer.trim() },
+                    ],
+                  }));
+                  setNewFaq({ question: '', answer: '' });
+                }}
+                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Adicionar FAQ
+              </button>
+            </div>
+          </Card>
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card className="p-5 space-y-3 text-xs">
@@ -265,7 +694,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                         title: pubTitle,
                         category: 'Comunicado',
                         summary: pubSummary || 'Publicado via Consola CMS AIVAD.',
-                        publishedAt: '2026-11-14',
+                        publishedAt: getTodayIso(),
                         status: 'Publicado',
                       },
                       ...state.cms.publications,
@@ -355,7 +784,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
               mandatoryUpdate: verForm.mandatoryUpdate,
               rolloutPct: verForm.rolloutPct,
               status: verForm.rolloutPct === 100 ? 'Publicado' : 'Gradual',
-              releaseDate: '2026-11-14',
+              releaseDate: getTodayIso(),
               notes: verForm.notes,
             });
           }}

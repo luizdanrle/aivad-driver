@@ -1,24 +1,314 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { CheckCircle2, Download, QrCode, ShieldCheck } from 'lucide-react';
-import type { TachographActivityRecord, TachographState } from '../../models/types';
+import {
+  CheckCircle2,
+  Download,
+  Maximize2,
+  Minimize2,
+  QrCode,
+  ShieldCheck,
+  Sparkles,
+  X,
+} from 'lucide-react';
+import type {
+  AndroidOverlayConfig,
+  FloatingMetricKey,
+  PlatformId,
+  ProposalAnalysis,
+  ProposalInput,
+  TachographActivityRecord,
+  TachographState,
+} from '../../models/types';
+
+export const PlatformLogo: React.FC<{
+  platformId: PlatformId;
+  name: string;
+  size?: number;
+}> = ({ platformId, name, size = 32 }) => {
+  const pid = platformId.toLowerCase();
+  if (pid === 'uber') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" className="fill-slate-900 dark:fill-slate-100" />
+        <path
+          d="M13 13V21.5C13 24.8 15.6 27.5 19.5 27.5C23.4 27.5 26 24.8 26 21.5V13H22.6V21.3C22.6 23.1 21.3 24.4 19.5 24.4C17.7 24.4 16.4 23.1 16.4 21.3V13H13Z"
+          className="fill-white dark:fill-slate-900"
+        />
+      </svg>
+    );
+  }
+  if (pid === 'bolt') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" fill="#059669" />
+        <path
+          d="M21.8 9L13 21.5H19.4L17.9 31L27 18.2H20.4L21.8 9Z"
+          fill="#FFFFFF"
+        />
+      </svg>
+    );
+  }
+  if (pid === 'cabify') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" fill="#6D28D9" />
+        <path
+          d="M26 15.2C24.6 13.7 22.6 12.8 20.3 12.8C15.9 12.8 12.6 16 12.6 20C12.6 24 15.9 27.2 20.3 27.2C22.7 27.2 24.7 26.3 26.1 24.7L23.5 22.4C22.7 23.3 21.6 23.8 20.4 23.8C18.1 23.8 16.4 22.2 16.4 20C16.4 17.8 18.1 16.2 20.4 16.2C21.6 16.2 22.7 16.7 23.4 17.5L26 15.2Z"
+          fill="#FFFFFF"
+        />
+      </svg>
+    );
+  }
+  if (pid === 'freenow') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" fill="#0284C7" />
+        <path
+          d="M12 25L18.5 14H23L19.8 19.5H27L16.2 29L18.8 22.8H12Z"
+          fill="#FFFFFF"
+        />
+      </svg>
+    );
+  }
+  if (pid === 'pop') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" fill="#1D4ED8" />
+        <circle cx="20" cy="20" r="8.5" stroke="#FFFFFF" strokeWidth="3.2" />
+        <circle cx="20" cy="20" r="3" fill="#FFFFFF" />
+      </svg>
+    );
+  }
+  if (pid === 'vloz') {
+    return (
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+        <rect width="40" height="40" rx="10" fill="#DC2626" />
+        <path d="M12.5 13.5L20 27.5L27.5 13.5H23.6L20 20.8L16.4 13.5H12.5Z" fill="#FFFFFF" />
+      </svg>
+    );
+  }
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
+      <rect width="40" height="40" rx="10" fill="#475569" />
+      <path d="M13 20H27M20 13L27 20L20 27" stroke="#FFFFFF" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
 
 export const PlatformBadge: React.FC<{
+  platformId?: PlatformId;
   name: string;
   shortCode?: string;
   brandColor?: string;
   size?: 'sm' | 'md';
-}> = ({ name, shortCode, brandColor = '#1D4ED8', size = 'md' }) => {
-  const code = (shortCode || name.slice(0, 2)).toUpperCase();
-  const dim = size === 'sm' ? 'w-7 h-7 text-[10px]' : 'w-9 h-9 text-xs';
+}> = ({ platformId, name, size = 'md' }) => {
+  const px = size === 'sm' ? 28 : 36;
+  return <PlatformLogo platformId={platformId ?? name.toLowerCase()} name={name} size={px} />;
+};
+
+export const FLOATING_METRIC_LABELS: Record<FloatingMetricKey, string> = {
+  eurPerKm: '€/km',
+  eurPerHour: '€/hora',
+  eurPerMin: '€/min',
+  estimatedNet: 'Líquido est.',
+  emptyReturnRisk: 'Retorno vazio',
+  totalTime: 'Tempo total',
+  score: 'Score IA',
+};
+
+export const DynamicFloatingProposalCard: React.FC<{
+  overlayConfig: AndroidOverlayConfig;
+  proposalInput: ProposalInput;
+  analysis: ProposalAnalysis;
+  recommendedAction?: string;
+  confidencePct?: number;
+  isPreviewSurface?: boolean;
+  onAccept?: () => void;
+  onReject?: () => void;
+  onClose?: () => void;
+}> = ({
+  overlayConfig,
+  proposalInput,
+  analysis,
+  recommendedAction,
+  confidencePct,
+  isPreviewSurface = false,
+  onAccept,
+  onReject,
+  onClose,
+}) => {
+  const [minimized, setMinimized] = useState(false);
+
+  // Strictly dynamic visual treatment based on analysis classification
+  const verdict =
+    analysis.classification === 'verde'
+      ? {
+          label: 'VERDE · FAVORÁVEL',
+          accentHex: '#10B981',
+          badgeBg: 'rgba(16, 185, 129, 0.18)',
+          badgeText: '#34D399',
+        }
+      : analysis.classification === 'amarelo'
+      ? {
+          label: 'AMARELO · ATENÇÃO',
+          accentHex: '#F59E0B',
+          badgeBg: 'rgba(245, 158, 11, 0.18)',
+          badgeText: '#FBBF24',
+        }
+      : {
+          label: 'VERMELHO · REJEITAR',
+          accentHex: '#EF4444',
+          badgeBg: 'rgba(239, 68, 68, 0.22)',
+          badgeText: '#FCA5A5',
+        };
+
+  const fontClass =
+    overlayConfig.fontFamily === 'Display'
+      ? 'font-display'
+      : overlayConfig.fontFamily === 'Mono'
+      ? 'font-mono-tabular'
+      : 'font-sans';
+
+  const getMetricValue = (key: FloatingMetricKey): { label: string; value: string } => {
+    switch (key) {
+      case 'eurPerKm':
+        return { label: '€/km', value: `€${analysis.eurPerKm.toFixed(2)}` };
+      case 'eurPerHour':
+        return { label: '€/hora', value: `€${analysis.eurPerHour.toFixed(2)}` };
+      case 'eurPerMin':
+        return { label: '€/min', value: `€${analysis.eurPerMin.toFixed(2)}` };
+      case 'estimatedNet':
+        return { label: 'Líquido est.', value: `€${analysis.estimatedNetEur.toFixed(2)}` };
+      case 'emptyReturnRisk':
+        return { label: 'Retorno vazio', value: analysis.emptyReturnRisk };
+      case 'totalTime':
+        return { label: 'Tempo total', value: `${analysis.totalTimeMin} min` };
+      case 'score':
+        return { label: 'Score IA', value: `${analysis.score}/100` };
+    }
+  };
+
   return (
-    <span
-      style={{ backgroundColor: brandColor }}
-      className={`inline-flex items-center justify-center rounded-lg font-mono-tabular font-bold text-white shrink-0 shadow-sm ${dim}`}
-      aria-hidden="true"
+    <div
+      style={{
+        width: isPreviewSurface ? `${overlayConfig.widthPercent}%` : '100%',
+        opacity: overlayConfig.opacityPercent / 100,
+        backgroundColor: overlayConfig.bgColor,
+        color: overlayConfig.textColor,
+        borderColor: verdict.accentHex,
+        fontSize: `${overlayConfig.fontSizePx}px`,
+      }}
+      className={`rounded-2xl border-2 p-4 shadow-xl transition-all duration-300 space-y-3 mx-auto ${fontClass}`}
     >
-      {code}
-    </span>
+      {/* Top Status Strip */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={28} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold uppercase tracking-tight">
+                {proposalInput.platformId.toUpperCase()} · {proposalInput.category}
+              </span>
+              <span
+                style={{ backgroundColor: verdict.badgeBg, color: verdict.badgeText }}
+                className="text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-tabular whitespace-nowrap"
+              >
+                {verdict.label}
+              </span>
+            </div>
+            <p className="text-[11px] opacity-75 truncate">
+              {proposalInput.region} · Recolha {proposalInput.pickupDistanceKm} km + Viagem {proposalInput.tripDistanceKm} km
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-lg font-extrabold font-mono-tabular">
+            €{proposalInput.grossValueEur.toFixed(2)}
+          </span>
+          {(overlayConfig.allowMinimize ?? true) && (
+            <button
+              type="button"
+              onClick={() => setMinimized((m) => !m)}
+              aria-label={minimized ? 'Expandir cartão flutuante' : 'Minimizar cartão flutuante'}
+              className="p-1 rounded-md hover:bg-white/10"
+            >
+              {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {(overlayConfig.allowManualClose ?? true) && onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Fechar cartão flutuante"
+              className="p-1 rounded-md hover:bg-white/10"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!minimized && (
+        <>
+          {/* Dynamic Metrics Grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {overlayConfig.visibleMetrics.map((key) => {
+              const item = getMetricValue(key);
+              return (
+                <div
+                  key={key}
+                  className="p-2 rounded-xl bg-white/10 border border-white/10"
+                >
+                  <span className="text-[10px] uppercase tracking-wider opacity-70 block">
+                    {item.label}
+                  </span>
+                  <span className="font-mono-tabular font-bold text-sm">{item.value}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* AI Recommended Action + Reasons */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-white/10">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color: verdict.accentHex }} />
+              <span className="truncate font-semibold">
+                {recommendedAction ?? analysis.reasons[0]}
+                {confidencePct ? ` (${confidencePct}% conf.)` : ''}
+              </span>
+            </div>
+            <span className="text-[10px] opacity-70 font-mono-tabular">
+              Pos: {overlayConfig.position} · {overlayConfig.autoDismiss ? `${overlayConfig.durationSeconds}s auto` : 'Manual'}
+            </span>
+          </div>
+
+          {(onAccept || onReject) && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {onAccept && (
+                <button
+                  type="button"
+                  onClick={onAccept}
+                  style={{ backgroundColor: verdict.accentHex }}
+                  className="flex-1 py-2 px-3 rounded-xl text-white text-xs font-bold hover:opacity-90 transition-opacity"
+                >
+                  Aceitar (Registar Decisão)
+                </button>
+              )}
+              {onReject && (
+                <button
+                  type="button"
+                  onClick={onReject}
+                  className="py-2 px-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-semibold transition-colors"
+                >
+                  Recusar
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 };
 
@@ -200,7 +490,7 @@ export const TachographTimelineStrip: React.FC<{
       <div
         className="w-full h-9 rounded-xl overflow-hidden flex border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950"
         role="img"
-        aria-label="Linha temporal cronológica das atividades do tacógrafo"
+        aria-label="Linha temporal cronológica das atividades do registo TVDE"
       >
         {ordered.map((act) => {
           const widthPct = Math.max(3, (act.durationMinutes / totalMin) * 100);
@@ -268,7 +558,7 @@ export const QrCodeVerifierCard: React.FC<{
         {dataUrl ? (
           <img
             src={dataUrl}
-            alt={`Código QR verificável do tacógrafo ${verificationCode}`}
+            alt={`Código QR verificável ${verificationCode}`}
             className="w-40 h-40 object-contain"
           />
         ) : (
@@ -285,7 +575,7 @@ export const QrCodeVerifierCard: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 font-bold text-sm text-slate-900 dark:text-white">
             <ShieldCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            <span>QR Verificável de Inspeção / Relatório</span>
+            <span>QR Verificável de Auditoria / Relatório</span>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -299,7 +589,7 @@ export const QrCodeVerifierCard: React.FC<{
             {dataUrl && (
               <a
                 href={dataUrl}
-                download={`aivad-tacografo-qr-${verificationCode}.png`}
+                download={`aivad-registo-tvde-qr-${verificationCode}.png`}
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 font-medium hover:bg-white dark:hover:bg-slate-800"
               >
                 <Download className="w-3.5 h-3.5" />
