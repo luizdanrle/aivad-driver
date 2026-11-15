@@ -7,6 +7,27 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig(() => {
   return {
     plugins: [
+      {
+        name: 'aivad-disable-hmr-ws-client',
+        enforce: 'post',
+        transform(code, id) {
+          if (id.includes('vite/dist/client/client.mjs')) {
+            const noopSwCleanup = `
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister())).catch(() => {});
+}
+`;
+            return (
+              noopSwCleanup +
+              code.replace(
+                'const createWebSocketModuleRunnerTransport = (options) => {',
+                'const createWebSocketModuleRunnerTransport = (options) => { void options; return { async connect() {}, disconnect() {}, send() {} };'
+              )
+            );
+          }
+          return null;
+        },
+      },
       react(),
       tailwindcss(),
       VitePWA({
@@ -45,9 +66,10 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2,jpg}'],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),
@@ -58,7 +80,8 @@ export default defineConfig(() => {
       },
     },
     server: {
-      hmr: process.env.DISABLE_HMR !== 'true',
+      hmr: false,
+      ws: false,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };

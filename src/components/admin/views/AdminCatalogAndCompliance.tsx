@@ -34,6 +34,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     addCountryMarket,
     updateCountryMarketStatus,
     addRegionOrCityToCountry,
+    updateVehicle,
     validateLegislation,
     addLegislation,
     broadcastNotification,
@@ -491,15 +492,19 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     const activePlats = state.platforms.filter((p) => p.status === 'Ativa').slice(0, 4);
     return (
       <Card className="overflow-x-auto">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-sm font-bold">Catálogo Central de Veículos &amp; Regras Dinâmicas Multi-Plataforma</h2>
+        <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-1">
+          <h2 className="text-sm font-bold">Catálogo Central de Veículos, Cor &amp; Regras por Versão/Mercado</h2>
+          <p className="text-xs text-slate-500">
+            Configure regras de cor, validade por versão + mercado e acompanhe a elegibilidade legal e comercial multi-plataforma.
+          </p>
         </div>
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
             <tr>
-              <th className="p-3">Veículo</th>
+              <th className="p-3">Veículo / Versão</th>
               <th className="p-3">Ano / Mercado</th>
-              <th className="p-3">Elegibilidade Legal</th>
+              <th className="p-3">Cor &amp; Regra Local</th>
+              <th className="p-3">Validade Mercado &amp; Estado</th>
               {activePlats.map((pl) => (
                 <th key={pl.id} className="p-3">{pl.name} Comercial</th>
               ))}
@@ -511,13 +516,68 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
               const el = evaluateVehicleEligibility(v, new Date().getFullYear(), state.platforms, mkt?.vehicleMaxAgeYears);
               return (
                 <tr key={v.id}>
-                  <td className="p-3 font-semibold">{v.brand} {v.model} ({v.fuelType})</td>
-                  <td className="p-3">{v.year} · {v.city}/{v.countryCode}</td>
                   <td className="p-3">
+                    <p className="font-semibold">{v.brand} {v.model} ({v.fuelType})</p>
+                    <p className="text-[11px] text-slate-500">{v.version}</p>
+                  </td>
+                  <td className="p-3 font-mono-tabular">{v.year} · {v.city}/{v.countryCode}</td>
+                  <td className="p-3 space-y-1">
+                    <p className="font-medium">{v.color}</p>
+                    <select
+                      aria-label={`Regra de cor de ${v.brand} ${v.model}`}
+                      value={v.colorRule?.status ?? 'Sem restrição conhecida'}
+                      onChange={(e) =>
+                        updateVehicle(v.id, {
+                          colorRule: {
+                            permitted: v.colorRule?.permitted ?? [v.color],
+                            mandatory: v.colorRule?.mandatory,
+                            forbidden: v.colorRule?.forbidden,
+                            status: e.target.value as NonNullable<typeof v.colorRule>['status'],
+                            source: v.colorRule?.source ?? 'Atualização Administrativa AIVAD',
+                            verifiedAt: getTodayIso(),
+                          },
+                        })
+                      }
+                      className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-[11px]"
+                    >
+                      <option value="Regra confirmada">Regra confirmada</option>
+                      <option value="Sem restrição conhecida">Sem restrição conhecida</option>
+                      <option value="Informação ainda não confirmada">Informação ainda não confirmada</option>
+                    </select>
+                  </td>
+                  <td className="p-3 space-y-1.5">
                     <StatusLabel
-                      tone={el.tvdeLegalEligible ? 'success' : 'danger'}
-                      text={el.tvdeLegalEligible ? 'Elegível' : 'Inelegível'}
+                      tone={
+                        el.eligibilityStatus === 'Elegível'
+                          ? 'success'
+                          : el.eligibilityStatus === 'Não elegível'
+                          ? 'danger'
+                          : 'warning'
+                      }
+                      text={el.eligibilityStatus}
                     />
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-slate-500">Até:</span>
+                      <input
+                        type="date"
+                        aria-label={`Validade de mercado de ${v.brand} ${v.model}`}
+                        value={v.eligibilityValidUntil ?? el.expiresOnDate ?? ''}
+                        onChange={(e) =>
+                          updateVehicle(v.id, {
+                            eligibilityValidUntil: e.target.value,
+                            marketEligibilityDetail: {
+                              status: v.marketEligibilityDetail?.status ?? el.eligibilityStatus,
+                              maxAgeYears: mkt?.vehicleMaxAgeYears ?? 7,
+                              expiresOnDate: e.target.value,
+                              source: v.marketEligibilityDetail?.source ?? 'Atualização Admin AIVAD',
+                              verifiedAt: getTodayIso(),
+                              conditions: v.marketEligibilityDetail?.conditions ?? [],
+                            },
+                          })
+                        }
+                        className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular text-[11px]"
+                      />
+                    </div>
                   </td>
                   {activePlats.map((pl) => {
                     const res = el.platformEligibility[pl.id];

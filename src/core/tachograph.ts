@@ -52,37 +52,64 @@ export function evaluateRolling24hCompliance(
   referenceNowIso = new Date().toISOString(),
   legalDailyLimitMinutes = 600
 ): Rolling24hComplianceResult {
-  const refMs = new Date(referenceNowIso).getTime();
+  const parsedRef = new Date(referenceNowIso).getTime();
+  const refMs = Number.isFinite(parsedRef) ? parsedRef : Date.now();
   const cutoffMs = refMs - 24 * 60 * 60 * 1000;
 
-  let activityWorkMinutes = 0;
-  let rolling24hBreakMinutes = 0;
+  const countableWorkIntervals: Array<{ startIso: string; endIso: string }> = [];
+  const countableBreakIntervals: Array<{ startIso: string; endIso: string }> = [];
 
   for (const act of activities) {
     const startMs = new Date(act.startIso).getTime();
-    const endMs = act.endIso ? new Date(act.endIso).getTime() : startMs + act.durationMinutes * 60000;
-    const clampedStart = Math.max(startMs, cutoffMs);
-    const clampedEnd = Math.min(endMs, refMs);
-    if (!Number.isFinite(clampedStart) || !Number.isFinite(clampedEnd) || clampedEnd <= clampedStart) {
+    if (!Number.isFinite(startMs)) continue;
+
+    let endMs: number;
+    if (act.endIso) {
+      const parsedEnd = new Date(act.endIso).getTime();
+      if (!Number.isFinite(parsedEnd) || parsedEnd <= startMs) continue;
+      endMs = parsedEnd;
+    } else if (act.status === 'Ativo') {
+      // Active open block uses explicit duration if positive or elapsed time up to refMs
+      const elapsedMs = Math.max(0, refMs - startMs);
+      const fallbackMs = Math.max(0, act.durationMinutes) * 60000;
+      endMs = startMs + Math.max(elapsedMs, fallbackMs);
+    } else if (act.durationMinutes > 0) {
+      endMs = startMs + act.durationMinutes * 60000;
+    } else {
       continue;
     }
-    const mins = Math.round((clampedEnd - clampedStart) / 60000);
+
+    const clampedStart = Math.max(startMs, cutoffMs);
+    const clampedEnd = Math.min(endMs, refMs);
+    if (clampedEnd <= clampedStart) continue;
+
+    const span = {
+      startIso: new Date(clampedStart).toISOString(),
+      endIso: new Date(clampedEnd).toISOString(),
+    };
+
     if (TACHOGRAPH_STATE_REG_ALIASES[act.state]?.legalCountableAsWork) {
-      activityWorkMinutes += mins;
+      countableWorkIntervals.push(span);
     } else if (act.state === 'Pausa' || act.state === 'Refeição' || act.state === 'Descanso') {
-      rolling24hBreakMinutes += mins;
+      countableBreakIntervals.push(span);
     }
   }
 
-  const recentIntervals = platformIntervals
-    .map((i) => ({
-      startIso: new Date(Math.max(new Date(i.startIso).getTime(), cutoffMs)).toISOString(),
-      endIso: new Date(Math.min(new Date(i.endIso).getTime(), refMs)).toISOString(),
-    }))
-    .filter((i) => new Date(i.endIso).getTime() > new Date(i.startIso).getTime());
+  for (const pi of platformIntervals) {
+    const startMs = new Date(pi.startIso).getTime();
+    const endMs = new Date(pi.endIso).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+    const clampedStart = Math.max(startMs, cutoffMs);
+    const clampedEnd = Math.min(endMs, refMs);
+    if (clampedEnd <= clampedStart) continue;
+    countableWorkIntervals.push({
+      startIso: new Date(clampedStart).toISOString(),
+      endIso: new Date(clampedEnd).toISOString(),
+    });
+  }
 
-  const { mergedMinutes } = mergeTimeIntervalsMinutes(recentIntervals);
-  const rolling24hWorkMinutes = Math.max(activityWorkMinutes, mergedMinutes);
+  const { mergedMinutes: rolling24hWorkMinutes } = mergeTimeIntervalsMinutes(countableWorkIntervals);
+  const { mergedMinutes: rolling24hBreakMinutes } = mergeTimeIntervalsMinutes(countableBreakIntervals);
   const remainingLegalMinutes = Math.max(0, legalDailyLimitMinutes - rolling24hWorkMinutes);
   const utilizationPct = Math.min(100, Math.round((rolling24hWorkMinutes / Math.max(1, legalDailyLimitMinutes)) * 100));
 
@@ -112,7 +139,8 @@ export function evaluateRolling24hCompliance(
     utilizationPct,
     alertLevel,
     alerts,
-    platformBreakdownNote: 'Tempo online consolidado entre plataformas numa única contagem legal sem duplicação em janela móvel de 24h.',
+    platformBreakdownNote:
+      'União cronológica única de blocos do tacógrafo e intervalos multi-plataforma nas últimas 24h (soma períodos distintos e funde sobreposições sem dupla contagem).',
   };
 }
 

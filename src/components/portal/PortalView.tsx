@@ -23,8 +23,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { AdminRole, UserRole } from '../../models/types';
-import { canAccessMode, isAdminRole, ADMIN_ROLES } from '../../core/rbac';
+import { canAccessMode, isAdminRole } from '../../core/rbac';
 import { useEcosystem } from '../../services/EcosystemContext';
 import { PLATFORM_ADAPTERS } from '../../adapters/platformAdapters';
 import { PlatformLogo } from '../ui/ChartsAndVisuals';
@@ -95,7 +94,9 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
     state,
     availableMarketsForPortal,
     setMode,
-    loginAsRole,
+    loginWithServerCredentials,
+    registerRealAccount,
+    enterDemoSandbox,
     logoutSession,
     clearRbacDenied,
     setPortalPage,
@@ -126,9 +127,13 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
   ];
 
   const [authModalOpen, setAuthModalOpen] = useState<'driver' | 'admin' | null>(null);
-  const [selectedDriverId, setSelectedDriverId] = useState(state.activeDriverUserId);
-  const [selectedAdminRole, setSelectedAdminRole] = useState<AdminRole>(state.activeAdminRole);
-  const [adminPinInput, setAdminPinInput] = useState('AIVAD-ADMIN');
+  const [authTab, setAuthTab] = useState<'real' | 'demo'>('real');
+  const [realMode, setRealMode] = useState<'login' | 'register'>('login');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authRole, setAuthRole] = useState<'Motorista' | 'Operador'>('Motorista');
+  const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [contactForm, setContactForm] = useState({
@@ -243,20 +248,33 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 <span>{state.session.userName}</span>
                 <span className="text-slate-400">·</span>
                 <span className="font-semibold text-blue-700 dark:text-blue-400">{state.session.role}</span>
+                {state.session.isDemoSession && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-[10px] font-bold">
+                    DEMO
+                  </span>
+                )}
               </span>
             ) : (
               <span className="text-slate-500">Visitante não autenticado</span>
             )}
             <button
               type="button"
-              onClick={() => setAuthModalOpen('driver')}
+              onClick={() => {
+                setAuthError(null);
+                setAuthTab('real');
+                setAuthModalOpen('driver');
+              }}
               className="px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-600 font-medium"
             >
               Acesso Motorista
             </button>
             <button
               type="button"
-              onClick={handleEnterAdmin}
+              onClick={() => {
+                setAuthError(null);
+                setAuthTab('real');
+                handleEnterAdmin();
+              }}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-red-600 font-medium"
             >
               <Lock className="w-3 h-3 text-red-600" />
@@ -936,94 +954,201 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
               </button>
             </div>
 
+            {/* Auth Tabs: Conta Real vs Sandbox Demo */}
+            <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('real');
+                  setAuthError(null);
+                }}
+                className={`py-2 px-3 rounded-lg font-semibold transition-colors ${
+                  authTab === 'real'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Conta Real (Servidor)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('demo');
+                  setAuthError(null);
+                }}
+                className={`py-2 px-3 rounded-lg font-semibold transition-colors ${
+                  authTab === 'demo'
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Modo Demonstração
+              </button>
+            </div>
+
             {authError && <StatusLabel tone="danger" text={authError} />}
 
-            {authModalOpen === 'driver' ? (
-              <div className="space-y-4 text-xs">
+            {authTab === 'real' ? (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setAuthError(null);
+                  setAuthBusy(true);
+                  const res =
+                    realMode === 'register' && authModalOpen === 'driver'
+                      ? await registerRealAccount(authName, authEmail, authPassword, authRole)
+                      : await loginWithServerCredentials(authEmail, authPassword);
+                  setAuthBusy(false);
+                  if (!res.ok) {
+                    setAuthError(res.error ?? 'Falha de autenticação.');
+                    return;
+                  }
+                  setAuthModalOpen(null);
+                  setAuthPassword('');
+                }}
+                className="space-y-3 text-xs"
+              >
+                {authModalOpen === 'driver' && (
+                  <div className="flex gap-3 text-[11px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setRealMode('login')}
+                      className={realMode === 'login' ? 'text-blue-700 underline' : 'text-slate-500'}
+                    >
+                      Entrar na minha conta
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRealMode('register')}
+                      className={realMode === 'register' ? 'text-blue-700 underline' : 'text-slate-500'}
+                    >
+                      Criar conta real
+                    </button>
+                  </div>
+                )}
+
+                {realMode === 'register' && authModalOpen === 'driver' && (
+                  <>
+                    <div>
+                      <label htmlFor="auth-real-name" className="block font-semibold mb-1">Nome completo</label>
+                      <input
+                        id="auth-real-name"
+                        type="text"
+                        required
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                        placeholder="Ex: João Ferreira"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="auth-real-role" className="block font-semibold mb-1">Perfil de conta</label>
+                      <select
+                        id="auth-real-role"
+                        value={authRole}
+                        onChange={(e) => setAuthRole(e.target.value as 'Motorista' | 'Operador')}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      >
+                        <option value="Motorista">Motorista TVDE</option>
+                        <option value="Operador">Operador / Frota</option>
+                      </select>
+                    </div>
+                  </>
+                )}
+
                 <div>
-                  <label htmlFor="auth-drv-select" className="block font-semibold mb-1">
-                    Selecionar Conta de Motorista / Operador
-                  </label>
-                  <select
-                    id="auth-drv-select"
-                    value={selectedDriverId}
-                    onChange={(e) => setSelectedDriverId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
-                  >
-                    {state.users
-                      .filter((u) => !isAdminRole(u.role))
-                      .map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name} ({u.role} · {u.city})
-                        </option>
-                      ))}
-                  </select>
-                </div>
-                <p className="text-[11px] text-slate-500">
-                  Experiência 100% focada no motorista — sem acesso nem botões administrativos visíveis.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const chosen = state.users.find((u) => u.id === selectedDriverId);
-                    loginAsRole((chosen?.role as UserRole) ?? 'Motorista', chosen?.id);
-                    setAuthModalOpen(null);
-                  }}
-                  className="w-full py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-semibold"
-                >
-                  Iniciar Sessão no AIVAD Driver
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-4 text-xs">
-                <div>
-                  <label htmlFor="auth-adm-role" className="block font-semibold mb-1">
-                    Perfil Administrativo RBAC
-                  </label>
-                  <select
-                    id="auth-adm-role"
-                    value={selectedAdminRole}
-                    onChange={(e) => setSelectedAdminRole(e.target.value as AdminRole)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
-                  >
-                    {ADMIN_ROLES.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="auth-adm-pin" className="block font-semibold mb-1">
-                    Chave de Verificação Interna (Demo: AIVAD-ADMIN)
-                  </label>
+                  <label htmlFor="auth-real-email" className="block font-semibold mb-1">Email</label>
                   <input
-                    id="auth-adm-pin"
-                    type="password"
-                    value={adminPinInput}
-                    onChange={(e) => setAdminPinInput(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                    id="auth-real-email"
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="nome@dominio.pt"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                   />
                 </div>
-                <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-300">
+
+                <div>
+                  <label htmlFor="auth-real-pw" className="block font-semibold mb-1">Palavra-passe</label>
+                  <input
+                    id="auth-real-pw"
+                    type="password"
+                    required
+                    minLength={6}
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+
+                {authModalOpen === 'admin' && (
+                  <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800/70 text-[11px] text-slate-600 dark:text-slate-300">
+                    A consola administrativa valida credenciais no servidor Express (cookie HttpOnly + PBKDF2/scrypt + RBAC 401/403). Contas administrativas reais só podem ser provisionadas por variáveis de ambiente no servidor.
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={authBusy}
+                  className={`w-full py-2.5 rounded-xl text-white font-semibold disabled:opacity-60 ${
+                    authModalOpen === 'admin'
+                      ? 'bg-red-600 hover:bg-red-700'
+                      : 'bg-blue-700 hover:bg-blue-800'
+                  }`}
+                >
+                  {authBusy
+                    ? 'A autenticar no servidor...'
+                    : realMode === 'register' && authModalOpen === 'driver'
+                    ? 'Criar Conta Real e Entrar'
+                    : authModalOpen === 'admin'
+                    ? 'Entrar no AIVAD Management'
+                    : 'Entrar no AIVAD Driver'}
+                </button>
+              </form>
+            ) : (
+              <div className="space-y-4 text-xs">
+                <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-300">
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>
-                    Em produção, este gateway liga-se ao backend JWT/RBAC no Windsurf. Todas as entradas ficam registadas na Auditoria Imutável.
+                    O Modo Demonstração usa dados fictícios isolados no sandbox e nunca se mistura com contas reais ou estatísticas reais nos relatórios.
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (adminPinInput.trim().toUpperCase() !== 'AIVAD-ADMIN') {
-                      setAuthError('Chave de verificação inválida (utilize AIVAD-ADMIN no ambiente de validação).');
-                      return;
-                    }
-                    setAuthError(null);
-                    loginAsRole(selectedAdminRole, 'usr-admin-1');
-                    setAuthModalOpen(null);
-                  }}
-                  className="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold"
-                >
-                  Autenticar e Abrir AIVAD Management
-                </button>
+
+                <div className="grid grid-cols-1 gap-2.5">
+                  <button
+                    type="button"
+                    disabled={authBusy}
+                    onClick={async () => {
+                      setAuthBusy(true);
+                      const res = await enterDemoSandbox('driver');
+                      setAuthBusy(false);
+                      if (!res.ok) setAuthError(res.error ?? 'Erro ao abrir sandbox.');
+                      else setAuthModalOpen(null);
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-semibold text-left flex items-center justify-between"
+                  >
+                    <span>Explorar Sandbox · Motorista Demo</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={authBusy}
+                    onClick={async () => {
+                      setAuthBusy(true);
+                      const res = await enterDemoSandbox('admin');
+                      setAuthBusy(false);
+                      if (!res.ok) setAuthError(res.error ?? 'Erro ao abrir sandbox admin.');
+                      else setAuthModalOpen(null);
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold text-left flex items-center justify-between"
+                  >
+                    <span>Explorar Sandbox · Administração Demo</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             )}
           </Card>

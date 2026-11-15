@@ -1,5 +1,5 @@
-import React from 'react';
-import { Download, Lock, Server, ShieldCheck } from 'lucide-react';
+import React, { useState } from 'react';
+import { Download, Lock, RefreshCw, Server, ShieldCheck } from 'lucide-react';
 import { EXTERNAL_INTEGRATIONS } from '../../../adapters/platformAdapters';
 import { exportToCsv, exportToXlsx } from '../../../core/exportUtils';
 import { useEcosystem } from '../../../services/EcosystemContext';
@@ -21,6 +21,38 @@ const RBAC_MATRIX = [
 
 export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const { state, toggleRemoteFlag, rollbackCms, resetDemoData } = useEcosystem();
+  const [serverProbe, setServerProbe] = useState<{
+    loading: boolean;
+    health?: string;
+    auditStatus?: string;
+    auditDetails?: string;
+  }>({ loading: false });
+
+  const runServerRbacProbe = async () => {
+    setServerProbe({ loading: true });
+    try {
+      const [hRes, aRes] = await Promise.all([
+        fetch('/api/health', { credentials: 'include' }),
+        fetch('/api/admin/audit-summary', { credentials: 'include' }),
+      ]);
+      const hJson = await hRes.json().catch(() => ({}));
+      const aJson = await aRes.json().catch(() => ({}));
+      setServerProbe({
+        loading: false,
+        health: `HTTP ${hRes.status} · Gemini Proxy: ${hJson.geminiConfigured ? 'Configurado (Server)' : 'Fallback Determinístico'}`,
+        auditStatus: `HTTP ${aRes.status} ${aRes.ok ? 'Autorizado' : 'Bloqueado (RBAC)'}`,
+        auditDetails: aRes.ok
+          ? `Contas servidor: ${aJson.totalUsers ?? 0} · Observações zona: ${aJson.totalZoneObservations ?? 0} · Sessão: ${aJson.requestedBy ?? ''}`
+          : aJson.error || 'Acesso administrativo negado pelo servidor Express.',
+      });
+    } catch {
+      setServerProbe({
+        loading: false,
+        health: 'Erro de ligação ao servidor Express',
+        auditStatus: 'Indisponível',
+      });
+    }
+  };
 
   if (activeTab === 'config-remotas') {
     const rc = state.remoteConfig;
@@ -185,25 +217,57 @@ export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTa
 
   if (activeTab === 'seguranca') {
     return (
-      <Card className="p-5 space-y-4 text-xs">
-        <h2 className="text-base font-bold flex items-center gap-2">
-          <Lock className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-          Matriz de Perfis &amp; Permissões RBAC (Verificação Backend Obrigatória em Produção)
-        </h2>
-        <div className="divide-y divide-slate-100 dark:divide-slate-800">
-          {RBAC_MATRIX.map((r) => (
-            <div key={r.role} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <p className="font-bold text-sm">{r.role}</p>
-                <p className="text-slate-600 dark:text-slate-300">{r.scope}</p>
-              </div>
-              {state.activeAdminRole === r.role && (
-                <StatusLabel tone="info" text="Perfil Ativo na Sessão" />
-              )}
+      <div className="space-y-4">
+        <Card className="p-5 space-y-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Server className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Verificação Real de RBAC &amp; Estado no Servidor Express
+              </h2>
+              <p className="text-slate-500">
+                Testa em tempo real os endpoints protegidos <code>/api/health</code> e <code>/api/admin/audit-summary</code> com o cookie de sessão atual.
+              </p>
             </div>
-          ))}
-        </div>
-      </Card>
+            <button
+              type="button"
+              onClick={runServerRbacProbe}
+              disabled={serverProbe.loading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold disabled:opacity-60"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${serverProbe.loading ? 'animate-spin' : ''}`} />
+              Testar Endpoints Express
+            </button>
+          </div>
+          {(serverProbe.health || serverProbe.auditStatus) && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1 font-mono-tabular">
+              <p><strong>Health:</strong> {serverProbe.health}</p>
+              <p><strong>Admin RBAC:</strong> {serverProbe.auditStatus}</p>
+              {serverProbe.auditDetails && <p className="text-slate-600 dark:text-slate-300">{serverProbe.auditDetails}</p>}
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-5 space-y-4 text-xs">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <Lock className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            Matriz de Perfis &amp; Permissões RBAC (Enforced no Servidor Express)
+          </h2>
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {RBAC_MATRIX.map((r) => (
+              <div key={r.role} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <p className="font-bold text-sm">{r.role}</p>
+                  <p className="text-slate-600 dark:text-slate-300">{r.scope}</p>
+                </div>
+                {state.activeAdminRole === r.role && (
+                  <StatusLabel tone="info" text="Perfil Ativo na Sessão" />
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
     );
   }
 

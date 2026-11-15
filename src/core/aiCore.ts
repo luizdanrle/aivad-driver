@@ -5,6 +5,7 @@ import type {
   AutoPilotConfig,
   CampaignRecord,
   ComplianceObligation,
+  ConfidenceStatus,
   DriverDocument,
   DriverRoutinePreferences,
   EpistemicTag,
@@ -18,7 +19,7 @@ import type {
   TripRecord,
   VehicleRecord,
 } from '../models/types';
-import { analyzeProposal, computeFinancialSummary, round2 } from './intelligence';
+import { analyzeProposal, computeFinancialSummary, isCompletedTripStatus, round2 } from './intelligence';
 import { evaluateRolling24hCompliance } from './tachograph';
 
 export interface AiCoreAgentDefinition {
@@ -51,7 +52,7 @@ export const AI_CORE_AGENTS: AiCoreAgentDefinition[] = [
     id: 'trafego',
     name: 'Agente de Tráfego e Localização',
     roleTitle: 'Mobilidade, Zonas & Procura',
-    scope: 'Analisa procura histórica e trânsito reportado, sinalizando explicitamente ausência de feed live.',
+    scope: 'Analisa procura histórica e regras de zona registadas, sinalizando explicitamente ausência de feed live.',
   },
   {
     id: 'veiculos',
@@ -79,6 +80,74 @@ export const AI_CORE_AGENTS: AiCoreAgentDefinition[] = [
   },
 ];
 
+export interface CalibratedConfidenceResult {
+  confidencePct: number | null;
+  confidenceStatus: ConfidenceStatus;
+  explanation: string;
+}
+
+/**
+ * Computes honest confidence strictly from real calibrated sample sizes & factual completeness.
+ * Never returns fabricated static percentages or 100% when data is missing/unavailable.
+ */
+export function computeCalibratedConfidence(params: {
+  calibratedPredictionsCount: number;
+  completedTripsCount: number;
+  isDeterministicExact?: boolean;
+  isUnavailable?: boolean;
+  meanAbsNetErrorEur?: number;
+}): CalibratedConfidenceResult {
+  if (params.isUnavailable) {
+    return {
+      confidencePct: null,
+      confidenceStatus: 'Não aplicável',
+      explanation: 'Fonte em tempo real indisponível nesta sessão — sem índice de confiança numérico aplicável.',
+    };
+  }
+
+  if (params.isDeterministicExact) {
+    if (params.completedTripsCount === 0 && params.calibratedPredictionsCount === 0) {
+      return {
+        confidencePct: null,
+        confidenceStatus: 'Dados insuficientes',
+        explanation: 'Sem histórico registado suficiente para calibrar indicador estatístico.',
+      };
+    }
+    return {
+      confidencePct: null,
+      confidenceStatus: 'Não aplicável',
+      explanation: 'Cálculo determinístico direto sobre os registos fornecidos (não é uma previsão probabilística).',
+    };
+  }
+
+  if (params.calibratedPredictionsCount < 3) {
+    if (params.completedTripsCount >= 5) {
+      return {
+        confidencePct: Math.min(72, 48 + params.completedTripsCount * 2),
+        confidenceStatus: 'Estimativa preliminar',
+        explanation: `Baseada em ${params.completedTripsCount} viagens concluídas (faltam previsões calibradas suficientes).`,
+      };
+    }
+    return {
+      confidencePct: null,
+      confidenceStatus: 'Dados insuficientes',
+      explanation: 'Amostra ainda reduzida (< 3 previsões calibradas) para atribuir confiança estatística fiável.',
+    };
+  }
+
+  const baseFromSample = Math.min(92, 58 + params.calibratedPredictionsCount * 4);
+  const errorPenalty =
+    params.meanAbsNetErrorEur !== undefined
+      ? Math.min(25, Math.round(params.meanAbsNetErrorEur * 4))
+      : 0;
+  const pct = Math.max(40, Math.min(94, baseFromSample - errorPenalty));
+  return {
+    confidencePct: pct,
+    confidenceStatus: 'Calibrada por histórico',
+    explanation: `Calibrada com ${params.calibratedPredictionsCount} previsões reconciliadas do próprio motorista.`,
+  };
+}
+
 export interface ProposalAlternativeComparison {
   action:
     | 'Aceitar corrida atual'
@@ -95,7 +164,8 @@ export interface ProposalAlternativeComparison {
 export interface ProposalAiDecisionPackage {
   analysis: ProposalAnalysis;
   recommendedAction: ProposalAlternativeComparison['action'];
-  confidencePct: number;
+  confidencePct: number | null;
+  confidenceStatus: ConfidenceStatus;
   epistemicTag: EpistemicTag;
   trafficHonestyNote: string;
   alternatives: ProposalAlternativeComparison[];
@@ -110,6 +180,8 @@ export function analyzeProposalWithAiCore(params: {
   zones: MapZoneRecord[];
   savedPlaces: SavedPlace[];
   routine: DriverRoutinePreferences;
+  calibratedPredictions?: AiPredictionRecord[];
+  completedTripsCount?: number;
   currentHour?: number;
 }): ProposalAiDecisionPackage {
   const analysis = analyzeProposal(params.input, params.autoPilot.thresholds);
@@ -184,8 +256,17 @@ export function analyzeProposalWithAiCore(params: {
   }
 
   const bestAlt = [...alternatives].sort((a, b) => b.expectedScore - a.expectedScore)[0];
-  const confidencePct =
-    analysis.classification === 'verde' ? 86 : analysis.classification === 'amarelo' ? 71 : 82;
+  const calPreds = (params.calibratedPredictions ?? []).filter((p) => p.status === 'Calibrado');
+  const meanErr =
+    calPreds.length > 0
+      ? calPreds.reduce((s, p) => s + Math.abs(p.deltaNetEur ?? 0), 0) / calPreds.length
+      : undefined;
+
+  const cal = computeCalibratedConfidence({
+    calibratedPredictionsCount: calPreds.length,
+    completedTripsCount: params.completedTripsCount ?? calPreds.length,
+    meanAbsNetErrorEur: meanErr,
+  });
 
   const trafficHonestyNote = targetZone
     ? `Trânsito na zona baseado em perfil histórico (${targetZone.trafficLevel}). Sem feed de trânsito ou obras em tempo real nesta sessão (Informação indisponível ao vivo).`
@@ -208,9 +289,10 @@ export function analyzeProposalWithAiCore(params: {
       `Comparadas ${alternatives.length} ações alternativas para maximizar líquido por hora segura.`,
     ],
     recommendation: bestAlt.action,
-    justification: bestAlt.rationale,
+    justification: `${bestAlt.rationale} ${cal.explanation}`,
     operationLog: `Snapshot pré-decisão guardado para calibração pós-viagem.`,
-    confidencePct,
+    confidencePct: cal.confidencePct,
+    confidenceStatus: cal.confidenceStatus,
     epistemicTag: 'Estimativa',
     createdAt: new Date().toISOString(),
   };
@@ -218,7 +300,8 @@ export function analyzeProposalWithAiCore(params: {
   return {
     analysis,
     recommendedAction: bestAlt.action,
-    confidencePct,
+    confidencePct: cal.confidencePct,
+    confidenceStatus: cal.confidenceStatus,
     epistemicTag: 'Estimativa',
     trafficHonestyNote,
     alternatives,
@@ -349,6 +432,33 @@ export function runAiCoreBriefing(context: {
     driverPredictions.length > 0
       ? round2(driverPredictions.reduce((a, p) => a + (p.deltaNetEur ?? 0), 0) / driverPredictions.length)
       : 0;
+  const meanAbsError =
+    driverPredictions.length > 0
+      ? driverPredictions.reduce((a, p) => a + Math.abs(p.deltaNetEur ?? 0), 0) / driverPredictions.length
+      : undefined;
+
+  const completedTripsCount = context.trips.filter((t) => isCompletedTripStatus(t.status)).length;
+  const finCal = computeCalibratedConfidence({
+    calibratedPredictionsCount: driverPredictions.length,
+    completedTripsCount,
+    isDeterministicExact: true,
+  });
+  const confCal = computeCalibratedConfidence({
+    calibratedPredictionsCount: driverPredictions.length,
+    completedTripsCount: context.tachograph.activities.length,
+    isDeterministicExact: true,
+  });
+  const vehCal = computeCalibratedConfidence({
+    calibratedPredictionsCount: driverPredictions.length,
+    completedTripsCount,
+    isUnavailable: !activeVehicle,
+    meanAbsNetErrorEur: meanAbsError,
+  });
+  const stratCal = computeCalibratedConfidence({
+    calibratedPredictionsCount: driverPredictions.length,
+    completedTripsCount,
+    meanAbsNetErrorEur: meanAbsError,
+  });
 
   const nowIso = new Date().toISOString();
 
@@ -370,10 +480,11 @@ export function runAiCoreBriefing(context: {
         fin.netEstimated >= context.routine.dailyNetTargetEur
           ? 'Meta líquida atingida — adotar critério seletivo para proteger descanso.'
           : `Faltam €${Math.max(0, context.routine.dailyNetTargetEur - fin.netEstimated).toFixed(2)} líquidos para atingir o objetivo definido.`,
-      justification: `Cálculo transparente auditável pelo perfil do motorista (${context.driverId}).`,
+      justification: `Cálculo determinístico auditável pelo perfil (${context.driverId}). ${finCal.explanation}`,
       operationLog: `Sincronizado com ${context.expenses.length} despesas registadas.`,
-      confidencePct: 92,
-      epistemicTag: 'Informação confirmada',
+      confidencePct: finCal.confidencePct,
+      confidenceStatus: finCal.confidenceStatus,
+      epistemicTag: completedTripsCount > 0 ? 'Informação confirmada' : 'Informação indisponível',
       createdAt: nowIso,
     },
     {
@@ -386,7 +497,7 @@ export function runAiCoreBriefing(context: {
         `${expiringDocs.length} documento(s) a expirar/expirados`,
       ],
       analysisSteps: [
-        'Somado tempo online/condução/disponibilidade em janela deslizante de 24 horas.',
+        'União cronológica de condução/disponibilidade/intervalos em janela deslizante de 24 horas.',
         'Verificada validade documental face às obrigações ativas.',
       ],
       recommendation:
@@ -394,9 +505,10 @@ export function runAiCoreBriefing(context: {
         (expiringDocs.length > 0
           ? `Renovar documento prioritário: ${expiringDocs[0].title} (${expiringDocs[0].expiryDate}).`
           : 'Jornada legal e documentação dentro dos limites regulamentares.'),
-      justification: 'Registo digital operacional para prevenção de infrações (sem promessa de certificação automática).',
+      justification: `Registo digital operacional para prevenção de infrações. ${confCal.explanation}`,
       operationLog: `Restam ${rolling24h.remainingLegalMinutes} min de disponibilidade legal nas próximas 24h.`,
-      confidencePct: 95,
+      confidencePct: confCal.confidencePct,
+      confidenceStatus: confCal.confidenceStatus,
       epistemicTag: 'Informação confirmada',
       createdAt: nowIso,
     },
@@ -419,12 +531,13 @@ export function runAiCoreBriefing(context: {
       ],
       recommendation:
         activeVehicle && activeVehicle.fuelType === 'Elétrico'
-          ? `Priorizar carregamento na janela preferida (${context.routine.preferredChargingWindow}) para manter custo abaixo de €0,25/kWh.`
+          ? `Priorizar carregamento na janela preferida (${context.routine.preferredChargingWindow}) para manter custo controlado.`
           : 'Manter registo de abastecimentos alinhado ao consumo médio real.',
-      justification: 'Evita surpresas de autonomia real em viagens longas para periferia ou aeroporto.',
+      justification: `${vehCal.explanation}`,
       operationLog: activeVehicle?.rangeSource ?? 'Fonte técnica registada',
-      confidencePct: 84,
-      epistemicTag: 'Estimativa',
+      confidencePct: vehCal.confidencePct,
+      confidenceStatus: vehCal.confidenceStatus,
+      epistemicTag: activeVehicle ? 'Estimativa' : 'Informação indisponível',
       createdAt: nowIso,
     },
     {
@@ -444,9 +557,10 @@ export function runAiCoreBriefing(context: {
         context.autoPilot.officialAutomationAuthorized
           ? 'Monitorização ativa com regras configuradas.'
           : 'AutoPilot bloqueado por ausência de API oficial — manter decisões humanas assistidas pelo Cartão Flutuante.',
-      justification: 'Nenhuma informação privada de outros motoristas é cruzada ou partilhada.',
+      justification: `${stratCal.explanation}`,
       operationLog: `${context.autoPilot.adjustmentLogs?.length ?? 0} ajustes registados no histórico auditável.`,
-      confidencePct: 88,
+      confidencePct: stratCal.confidencePct,
+      confidenceStatus: stratCal.confidenceStatus,
       epistemicTag: driverPredictions.length > 0 ? 'Informação histórica' : 'Dados de demonstração',
       createdAt: nowIso,
     },
@@ -473,7 +587,8 @@ export function answerAiCoreQuery(
   answer: string;
   sources: string[];
   epistemicTag: EpistemicTag;
-  confidencePct: number;
+  confidencePct: number | null;
+  confidenceStatus: ConfidenceStatus;
 } {
   const q = query.toLowerCase();
   const fin = computeFinancialSummary(context.trips, context.expenses);
@@ -482,62 +597,97 @@ export function answerAiCoreQuery(
     context.tachograph.activities,
     context.tachograph.platformIntervals
   );
+  const driverPreds = context.predictions.filter((p) => p.driverId === context.driverId && p.status === 'Calibrado');
 
   if (q.includes('hora') || q.includes('tac') || q.includes('10h') || q.includes('pausa') || q.includes('legal')) {
+    const cal = computeCalibratedConfidence({
+      calibratedPredictionsCount: driverPreds.length,
+      completedTripsCount: context.tachograph.activities.length,
+      isDeterministicExact: true,
+    });
     return {
       agentName: 'Agente de Conformidade e Atividade',
       answer: `Nas últimas 24 horas registou ${Math.floor(rolling24h.rolling24hWorkMinutes / 60)}h ${rolling24h.rolling24hWorkMinutes % 60}m de atividade consolidada multi-plataforma (teto legal: 10h / 600 min). Restam ${rolling24h.remainingLegalMinutes} min disponíveis e acumulou ${rolling24h.rolling24hBreakMinutes} min de pausa/refeição. Estado: ${rolling24h.alertLevel}.`,
       sources: ['Registo de atividade TVDE (Portaria n.º 7/2022)', 'Intervalos multi-plataforma'],
       epistemicTag: 'Informação confirmada',
-      confidencePct: 95,
+      confidencePct: cal.confidencePct,
+      confidenceStatus: cal.confidenceStatus,
     };
   }
 
   if (q.includes('trânsito') || q.includes('transito') || q.includes('obra') || q.includes('corte')) {
+    const cal = computeCalibratedConfidence({
+      calibratedPredictionsCount: driverPreds.length,
+      completedTripsCount: fin.tripCount,
+      isUnavailable: true,
+    });
     return {
       agentName: 'Agente de Tráfego e Localização',
-      answer: 'Sem ligação a feed de trânsito ou cortes rodoviários em tempo real nesta sessão web (Informação indisponível ao vivo). As zonas do planeador refletem apenas procura histórica e perfis médios guardados.',
-      sources: ['Locais e rotas', 'Perfis históricos de zona'],
+      answer: 'Sem ligação a feed de trânsito ou cortes rodoviários em tempo real nesta sessão web (Informação indisponível ao vivo). As zonas do planeador refletem apenas procura histórica, regras horárias locais e observações de motoristas.',
+      sources: ['Locais e rotas', 'Inteligência de Zonas'],
       epistemicTag: 'Informação indisponível',
-      confidencePct: 100,
+      confidencePct: cal.confidencePct,
+      confidenceStatus: cal.confidenceStatus,
     };
   }
 
   if (q.includes('estrat') || q.includes('modo') || q.includes('semiautom') || q.includes('autopilot')) {
     const sm = context.autoPilot.strategyMode ?? 'Semiautomático';
+    const cal = computeCalibratedConfidence({
+      calibratedPredictionsCount: driverPreds.length,
+      completedTripsCount: fin.tripCount,
+      isDeterministicExact: true,
+    });
     return {
       agentName: 'Agente de Estratégia',
       answer: `Está no modo ${sm} (mínimo €${context.autoPilot.thresholds.minEurPerKm.toFixed(2)}/km, €${context.autoPilot.thresholds.minEurPerHour.toFixed(2)}/h, recolha máxima ${context.autoPilot.thresholds.maxPickupKm} km). Pode ajustar ou reverter qualquer alteração automática no registo auditável de Estratégia.`,
       sources: ['Estratégia das aplicações', 'Registo de Ajustes'],
       epistemicTag: 'Informação confirmada',
-      confidencePct: 91,
+      confidencePct: cal.confidencePct,
+      confidenceStatus: cal.confidenceStatus,
     };
   }
 
   if (q.includes('autonomia') || q.includes('carro') || q.includes('veículo') || q.includes('veiculo') || q.includes('bateria')) {
     if (!activeVehicle) {
+      const cal = computeCalibratedConfidence({
+        calibratedPredictionsCount: 0,
+        completedTripsCount: 0,
+        isUnavailable: true,
+      });
       return {
         agentName: 'Agente de Veículos e Energia',
-        answer: 'Não existe veículo ativo associado à sua conta.',
+        answer: 'Não existe veículo ativo associado à sua conta (Informação indisponível).',
         sources: ['Veículos e energia'],
         epistemicTag: 'Informação indisponível',
-        confidencePct: 100,
+        confidencePct: cal.confidencePct,
+        confidenceStatus: cal.confidenceStatus,
       };
     }
+    const cal = computeCalibratedConfidence({
+      calibratedPredictionsCount: driverPreds.length,
+      completedTripsCount: fin.tripCount,
+    });
     return {
       agentName: 'Agente de Veículos e Energia',
       answer: `${activeVehicle.brand} ${activeVehicle.model} (${activeVehicle.year}): autonomia homologada de fábrica ${activeVehicle.homologatedRangeKm ?? activeVehicle.rangeKm} km (${activeVehicle.rangeStandard ?? 'WLTP'}) vs autonomia real estimada de ${activeVehicle.realRangeKm ?? Math.round(activeVehicle.rangeKm * 0.82)} km. Tarifa de energia ativa: ${activeVehicle.energyTariffProfile ?? 'Padrão'}.`,
       sources: ['Veículos e energia', 'Perfil tarifário'],
       epistemicTag: 'Estimativa',
-      confidencePct: 86,
+      confidencePct: cal.confidencePct,
+      confidenceStatus: cal.confidenceStatus,
     };
   }
 
+  const cal = computeCalibratedConfidence({
+    calibratedPredictionsCount: driverPreds.length,
+    completedTripsCount: fin.tripCount,
+  });
   return {
     agentName: 'AIVAD AI CORE (Coordenação Multi-Agente)',
     answer: `Resumo operacional atual: ${fin.tripCount} viagens concluídas (€${fin.totalRevenue.toFixed(2)} brutos, €${fin.netEstimated.toFixed(2)} líquidos estimados), ${fin.cancelledOrLostCount} não concluídas excluídas dos ganhos, e ${rolling24h.remainingLegalMinutes} min restantes no teto diário TVDE de 10h.`,
     sources: ['Financeiro', 'Corridas', 'Registo TVDE'],
-    epistemicTag: 'Estimativa',
-    confidencePct: 89,
+    epistemicTag: fin.tripCount > 0 ? 'Estimativa' : 'Informação indisponível',
+    confidencePct: cal.confidencePct,
+    confidenceStatus: cal.confidenceStatus,
   };
 }

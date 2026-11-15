@@ -42,7 +42,12 @@ export interface AuthSession {
   email: string;
   role: UserRole;
   signedInAt: string;
+  isDemoSession?: boolean;
+  authMethod?: 'server_credentials' | 'demo_sandbox';
 }
+
+export type SyncStatusState = 'sincronizado' | 'local' | 'pendente' | 'erro';
+export type DataScopeFilter = 'real' | 'demo' | 'all';
 
 export type PlatformId =
   | 'uber'
@@ -106,6 +111,42 @@ export type EnergyTariffProfile =
   | 'Rápido DC'
   | 'Combustível';
 
+export interface VehicleColorRule {
+  permitted: string[];
+  mandatory?: string[];
+  forbidden?: string[];
+  status: 'Regra confirmada' | 'Sem restrição conhecida' | 'Informação ainda não confirmada';
+  source: string;
+  verifiedAt: string;
+  validUntil?: string;
+}
+
+export interface VehicleMarketEligibilityDetail {
+  status:
+    | 'Elegível'
+    | 'Não elegível'
+    | 'Elegibilidade condicionada'
+    | 'Informação ainda não confirmada';
+  maxAgeYears: number;
+  expiresOnDate: string;
+  source: string;
+  verifiedAt: string;
+  conditions: string[];
+}
+
+export interface VehicleResaleEstimate {
+  minValueEur: number;
+  midValueEur: number;
+  maxValueEur: number;
+  valuationType:
+    | 'Estimativa algorítmica AIVAD'
+    | 'Preço anunciado observado'
+    | 'Transação real declarada';
+  mileagePenaltyPer10kEur: number;
+  caveats: string[];
+  updatedAt: string;
+}
+
 export interface VehicleRecord {
   id: string;
   brand: string;
@@ -136,8 +177,15 @@ export interface VehicleRecord {
   maintenancePerKmEur: number;
   energyCostPerUnitEur: number;
   depreciationMonthlyEur: number;
+  odometerKm?: number;
   countryCode: string;
   city: string;
+  eligibilityValidUntil?: string;
+  catalogSource?: string;
+  catalogVerifiedAt?: string;
+  colorRule?: VehicleColorRule;
+  marketEligibilityDetail?: VehicleMarketEligibilityDetail;
+  resaleEstimate?: VehicleResaleEstimate;
   isActiveDriverVehicle: boolean;
   isDemo: boolean;
 }
@@ -145,11 +193,18 @@ export interface VehicleRecord {
 export interface VehicleEligibilityResult {
   vehicleId: string;
   tvdeLegalEligible: boolean;
+  eligibilityStatus:
+    | 'Elegível'
+    | 'Não elegível'
+    | 'Elegibilidade condicionada'
+    | 'Informação ainda não confirmada';
+  expiresOnDate?: string;
   tvdeReasons: string[];
   platformEligibility: Record<
     string,
     {
       eligible: boolean;
+      statusLabel?: 'Elegível' | 'Não elegível' | 'Elegibilidade condicionada';
       categories: string[];
       reasons: string[];
     }
@@ -402,6 +457,99 @@ export type TripStatus =
 
 export type CancellationBy = 'Motorista' | 'Passageiro' | 'Plataforma' | 'Desconhecida';
 
+export type TripLifecyclePhase =
+  | 'Proposta analisada'
+  | 'Aceite pelo motorista'
+  | 'Confirmada pela plataforma'
+  | 'Em deslocação para recolha'
+  | 'Chegada ao local de recolha'
+  | 'Em espera pelo passageiro'
+  | 'Viagem em curso'
+  | 'Concluída'
+  | 'Cancelada';
+
+export type ArrivalDetectionMethod =
+  | 'Botão manual no AIVAD'
+  | 'Geolocalização no ponto (A validar)'
+  | 'Notificação app externa (A validar)'
+  | 'Entrada manual';
+
+export interface PlatformCancellationRule {
+  id: string;
+  platformId: PlatformId;
+  countryCode: string;
+  category: string;
+  freeWaitMinutes: number;
+  paidWaitStartsAtMinutes: number;
+  cancellationDeadlineMinutes: number;
+  estimatedCompensationEur: number;
+  source: string;
+  verifiedAt: string;
+  validUntil?: string;
+  confirmationStatus:
+    | 'Confirmado por fonte oficial'
+    | 'Referência operacional estimada'
+    | 'Regra não confirmada — consultar app oficial';
+  notes: string;
+}
+
+export interface ActiveTripSession {
+  id: string;
+  proposalId?: string;
+  externalRef: string;
+  platformId: PlatformId;
+  category: string;
+  countryCode: string;
+  phase: TripLifecyclePhase;
+  aiRecommendation: 'Aceitar' | 'Recusar' | 'Aguardar';
+  driverDecision: 'Aceite pelo motorista' | 'Recusado pelo motorista' | 'Não registado';
+  platformConfirmed: boolean;
+  confirmationMethod: 'Confirmação manual' | 'App oficial (A validar)' | 'Não confirmado';
+  acceptedAtIso: string;
+  arrivedAtIso?: string;
+  waitStartedAtIso?: string;
+  tripStartedAtIso?: string;
+  endedAtIso?: string;
+  arrivalMethod?: ArrivalDetectionMethod;
+  pickupDistanceKm: number;
+  tripDistanceKm: number;
+  pickupTimeEstMin: number;
+  tripTimeEstMin: number;
+  pickupZone: string;
+  pickupAddress?: string;
+  destinationZone?: string;
+  destinationAddress?: string;
+  grossEstimatedEur: number;
+  netEstimatedEur: number;
+  ruleApplied: PlatformCancellationRule;
+  cancellationBy?: CancellationBy;
+  cancellationReason?: string;
+  cancellationCompensationEur?: number;
+  isDemo: boolean;
+}
+
+export type DateRangePreset =
+  | 'hoje'
+  | 'ontem'
+  | 'ultimos_7_dias'
+  | 'esta_semana'
+  | 'ultimos_30_dias'
+  | 'este_mes'
+  | 'mes_anterior'
+  | 'este_ano'
+  | 'personalizado';
+
+export interface FinancialCostConfig {
+  includeCommissions: boolean;
+  includeEstimatedVehicleCost: boolean;
+  includeFixedOwnership: boolean;
+  includeTolls: boolean;
+  includeLoggedExpenses: boolean;
+  includeTaxesReservePct: number;
+  monthlyKmEstimate: number;
+  defaultCommissionPct: number;
+}
+
 export interface TripRecord {
   id: string;
   externalRef: string;
@@ -410,6 +558,8 @@ export interface TripRecord {
   date: string;
   time: string;
   grossEur: number;
+  estimatedGrossEur?: number;
+  chargedTotalEur?: number;
   tipEur: number;
   bonusEur: number;
   tollsEur: number;
@@ -424,6 +574,8 @@ export interface TripRecord {
   pickupDistanceKm: number;
   tripDistanceKm: number;
   durationMin: number;
+  travelToPickupSeconds?: number;
+  waitAtPickupSeconds?: number;
   pickupZone: string;
   pickupAddress?: string;
   pickupCoords?: { lat: number; lng: number };
@@ -434,6 +586,13 @@ export interface TripRecord {
   status: TripStatus;
   cancellationBy?: CancellationBy;
   cancellationReason?: string;
+  cancellationCompensationEur?: number;
+  driverNoShowConfirmed?: boolean;
+  officialImpactNote?: string;
+  aiRecommendedAction?: string;
+  driverExecutionConfirmed?: boolean;
+  platformExecutionConfirmed?: boolean;
+  lifecycleEventKey?: string;
   isEstimatedBreakdown?: boolean;
   preDecisionSnapshot?: {
     predictedNetEur: number;
@@ -671,6 +830,12 @@ export type EpistemicTag =
   | 'Informação indisponível'
   | 'Dados de demonstração';
 
+export type ConfidenceStatus =
+  | 'Calibrada por histórico'
+  | 'Estimativa preliminar'
+  | 'Dados insuficientes'
+  | 'Não aplicável';
+
 export interface AiCoreInsight {
   id: string;
   agentId: AiCoreAgentId;
@@ -682,7 +847,8 @@ export interface AiCoreInsight {
   justification: string;
   operationLog: string;
   observedOutcome?: string;
-  confidencePct: number;
+  confidencePct: number | null;
+  confidenceStatus?: ConfidenceStatus;
   epistemicTag: EpistemicTag;
   createdAt: string;
 }
@@ -784,6 +950,52 @@ export interface DashcamClip {
   isDemo: boolean;
 }
 
+export type ZoneConfidenceTier =
+  | '1 · Restrição oficial confirmada'
+  | '2 · Dificuldade recorrente (motoristas)'
+  | '3 · Ocorrência temporária não confirmada';
+
+export interface ZoneScheduleRule {
+  daysOfWeek: number[]; // 0=Dom .. 6=Sáb
+  startHour: string; // HH:mm
+  endHour: string; // HH:mm
+  summary: string;
+}
+
+export interface ZoneAlternativePickup {
+  id: string;
+  label: string;
+  streetOrLandmark: string;
+  walkingDistanceMeters: number;
+  walkingTimeMin: number;
+  safetyNote: string;
+  verifiedByDriverCount: number;
+}
+
+export interface DriverZoneObservation {
+  id: string;
+  zoneId?: string;
+  zoneName: string;
+  city: string;
+  countryCode: string;
+  driverId: string;
+  driverAlias: string;
+  privacyConsent: boolean;
+  observationType:
+    | 'Trânsito intenso'
+    | 'Corte / Feira / Mercado'
+    | 'Obras / Desvio'
+    | 'Recolha difícil'
+    | 'Ponto seguro alternativo';
+  description: string;
+  dayOfWeek?: number;
+  timeWindow?: string;
+  createdAtIso: string;
+  recurrenceCount: number;
+  validationTier: ZoneConfidenceTier;
+  isDemo: boolean;
+}
+
 export interface MapZoneRecord {
   id: string;
   name: string;
@@ -800,6 +1012,14 @@ export interface MapZoneRecord {
   isBase: boolean;
   preference: 'Favorita' | 'Neutra' | 'Evitar';
   activeEvent?: string;
+  tier?: ZoneConfidenceTier;
+  schedules?: ZoneScheduleRule[];
+  restrictionSource?: string;
+  verifiedAt?: string;
+  validUntil?: string;
+  riskSummary?: string;
+  isEventNotConfirmedBan?: boolean;
+  alternativePickups?: ZoneAlternativePickup[];
 }
 
 export interface PlanRecord {

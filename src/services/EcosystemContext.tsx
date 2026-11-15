@@ -15,12 +15,21 @@ import {
   type ProposalAiDecisionPackage,
 } from '../core/aiCore';
 import {
+  buildCancelledTripFromActiveSession,
+  hasExistingLifecycleTrip,
+  markTripArrivedAtPickup,
+  startActiveTripFromProposal,
+  startTripInProgress,
+  startTripPassengerWait,
+} from '../core/lifecycle';
+import {
   confirmLocalMarketAdaptation,
   detectFallbackLocation,
   evaluateCountryChange,
   resolveLocationFromCoordinates,
 } from '../core/localization';
 import { canAccessMode, isAdminRole } from '../core/rbac';
+import { buildComprehensiveReports, type ComprehensiveReportsBundle } from '../core/reports';
 import {
   consolidateMultiPlatformJornada,
   correctTachographRecord,
@@ -32,6 +41,7 @@ import {
   type ConsolidatedTachographSummary,
   type Rolling24hComplianceResult,
 } from '../core/tachograph';
+import { createDriverZoneObservation } from '../core/zones';
 import {
   SEED_AI_PREDICTIONS,
   SEED_AUDIT_LOGS,
@@ -45,6 +55,7 @@ import {
   SEED_DOCUMENTS,
   SEED_EVENTS,
   SEED_EXPENSES,
+  SEED_FINANCIAL_COST_CONFIG,
   SEED_LOCALIZATION,
   SEED_NOTIFICATIONS,
   SEED_OBLIGATIONS,
@@ -67,14 +78,17 @@ import {
   SEED_USERS,
   SEED_VEHICLES,
   SEED_VERSIONS,
+  SEED_ZONE_OBSERVATIONS,
   SEED_ZONES,
 } from '../data/seedData';
 import type {
+  ActiveTripSession,
   AdminRole,
   AiCoreInsight,
   AiPredictionRecord,
   AndroidOverlayConfig,
   AppVersionRecord,
+  ArrivalDetectionMethod,
   AuditLogRecord,
   AuthSession,
   AutoPilotConfig,
@@ -85,12 +99,16 @@ import type {
   ComplianceObligation,
   CountryMarketConfig,
   DashcamClip,
+  DataScopeFilter,
+  DateRangePreset,
   DriverDocument,
   DriverRoutinePreferences,
+  DriverZoneObservation,
   EcosystemEvent,
   EcosystemMode,
   ExpenseRecord,
   FeatureSuggestion,
+  FinancialCostConfig,
   LocalizationProfile,
   MapZoneRecord,
   MarketStatus,
@@ -112,6 +130,7 @@ import type {
   SmartCaptureRecord,
   StrategyMode,
   SubscriptionRecord,
+  SyncStatusState,
   TachographActivityRecord,
   TachographOfflineQueueItem,
   TachographState,
@@ -170,11 +189,36 @@ export interface EcosystemState {
   events: EcosystemEvent[];
   auditLogs: AuditLogRecord[];
   remoteConfig: RemoteConfigState;
+  // Comando 5 extensions
+  syncStatus: SyncStatusState;
+  lastSyncedAt: string | null;
+  activeTrip: ActiveTripSession | null;
+  zoneObservations: DriverZoneObservation[];
+  financialCostConfig: FinancialCostConfig;
+  reportFilters: {
+    preset: DateRangePreset;
+    customStart: string;
+    customEnd: string;
+    dataScope: DataScopeFilter;
+    platformId: string;
+    category: string;
+    tripStatusFilter: string;
+  };
 }
 
-const STORAGE_KEY = 'aivad_ecosystem_state_v1';
+const STORAGE_KEY_DEMO = 'aivad_ecosystem_demo_v2';
+const STORAGE_KEY_REAL = 'aivad_ecosystem_real_v2';
+const EMPTY_TACHOGRAPH: TachographStateStore = {
+  sessions: [],
+  activities: [],
+  platformIntervals: [],
+  offlineQueue: [],
+  discrepancies: [],
+  activeSessionId: null,
+};
 
-function buildInitialState(): EcosystemState {
+function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemState {
+  const isReal = workspaceKind === 'real';
   return {
     mode: 'portal',
     theme: 'light',
@@ -188,90 +232,126 @@ function buildInitialState(): EcosystemState {
     driverDeactivatedPlatformIds: [],
     platforms: SEED_PLATFORMS,
     vehicles: SEED_VEHICLES,
-    trips: SEED_TRIPS,
-    proposals: SEED_PROPOSALS,
-    campaigns: SEED_CAMPAIGNS,
-    expenses: SEED_EXPENSES,
-    shifts: SEED_SHIFTS,
-    tachograph: SEED_TACHOGRAPH,
+    trips: isReal ? [] : SEED_TRIPS,
+    proposals: isReal ? [] : SEED_PROPOSALS,
+    campaigns: isReal ? [] : SEED_CAMPAIGNS,
+    expenses: isReal ? [] : SEED_EXPENSES,
+    shifts: isReal ? [] : SEED_SHIFTS,
+    tachograph: isReal ? EMPTY_TACHOGRAPH : SEED_TACHOGRAPH,
     localization: SEED_LOCALIZATION,
-    captures: SEED_CAPTURES,
+    captures: isReal ? [] : SEED_CAPTURES,
     obligations: SEED_OBLIGATIONS,
-    documents: SEED_DOCUMENTS,
+    documents: isReal ? [] : SEED_DOCUMENTS,
     zones: SEED_ZONES,
-    savedPlaces: SEED_SAVED_PLACES,
+    savedPlaces: isReal ? [] : SEED_SAVED_PLACES,
     routinePreferences: SEED_ROUTINE_PREFS,
-    aiPredictions: SEED_AI_PREDICTIONS,
+    aiPredictions: isReal ? [] : SEED_AI_PREDICTIONS,
     plans: SEED_PLANS,
     users: SEED_USERS,
     organizations: SEED_ORGANIZATIONS,
     subscriptions: SEED_SUBSCRIPTIONS,
-    payments: SEED_PAYMENTS,
-    tickets: SEED_TICKETS,
-    notifications: SEED_NOTIFICATIONS,
+    payments: isReal ? [] : SEED_PAYMENTS,
+    tickets: isReal ? [] : SEED_TICKETS,
+    notifications: isReal ? [] : SEED_NOTIFICATIONS,
     versions: SEED_VERSIONS,
     countries: SEED_COUNTRIES,
     cms: SEED_CMS,
     autoPilot: SEED_AUTOPILOT,
     overlayConfig: SEED_OVERLAY_CONFIG,
-    reviews: SEED_REVIEWS,
-    dashcamClips: SEED_DASHCAM,
+    reviews: isReal ? [] : SEED_REVIEWS,
+    dashcamClips: isReal ? [] : SEED_DASHCAM,
     suggestions: SEED_SUGGESTIONS,
-    events: SEED_EVENTS,
-    auditLogs: SEED_AUDIT_LOGS,
+    events: isReal ? [] : SEED_EVENTS,
+    auditLogs: isReal ? [] : SEED_AUDIT_LOGS,
     remoteConfig: SEED_REMOTE_CONFIG,
+    syncStatus: 'local',
+    lastSyncedAt: null,
+    activeTrip: null,
+    zoneObservations: SEED_ZONE_OBSERVATIONS,
+    financialCostConfig: SEED_FINANCIAL_COST_CONFIG,
+    reportFilters: {
+      preset: 'ultimos_7_dias',
+      customStart: new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10),
+      customEnd: new Date().toISOString().slice(0, 10),
+      dataScope: isReal ? 'real' : 'all',
+      platformId: 'ALL',
+      category: 'ALL',
+      tripStatusFilter: 'ALL',
+    },
   };
 }
 
-function loadState(): EcosystemState {
-  const initial = buildInitialState();
+function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | 'real'): EcosystemState {
+  const initial = buildInitialState(workspaceKind);
+  const migratedCountries =
+    parsed.countries && parsed.countries.length > 0 && 'marketStatus' in parsed.countries[0]
+      ? parsed.countries
+      : initial.countries;
+  const mergedAutoPilot: AutoPilotConfig = {
+    ...initial.autoPilot,
+    ...(parsed.autoPilot ?? {}),
+    modeConfigs: parsed.autoPilot?.modeConfigs ?? initial.autoPilot.modeConfigs,
+    semiAutoBounds: parsed.autoPilot?.semiAutoBounds ?? initial.autoPilot.semiAutoBounds,
+    savedPresets: parsed.autoPilot?.savedPresets ?? initial.autoPilot.savedPresets,
+    adjustmentLogs: parsed.autoPilot?.adjustmentLogs ?? initial.autoPilot.adjustmentLogs,
+  };
+  const mergedCms: CmsContentState = {
+    ...initial.cms,
+    ...(parsed.cms ?? {}),
+    sectionOrder: parsed.cms?.sectionOrder ?? initial.cms.sectionOrder,
+    visibleSections: parsed.cms?.visibleSections ?? initial.cms.visibleSections,
+    benefits: parsed.cms?.benefits ?? initial.cms.benefits,
+    faqs: parsed.cms?.faqs ?? initial.cms.faqs,
+  };
+  return {
+    ...initial,
+    ...parsed,
+    session: parsed.session?.authenticated ? parsed.session : initial.session,
+    rbacDeniedMessage: null,
+    driverDeactivatedPlatformIds: parsed.driverDeactivatedPlatformIds ?? initial.driverDeactivatedPlatformIds,
+    savedPlaces: parsed.savedPlaces ?? initial.savedPlaces,
+    routinePreferences: parsed.routinePreferences ?? initial.routinePreferences,
+    aiPredictions: parsed.aiPredictions ?? initial.aiPredictions,
+    autoPilot: mergedAutoPilot,
+    cms: mergedCms,
+    overlayConfig: {
+      ...initial.overlayConfig,
+      ...(parsed.overlayConfig ?? {}),
+    },
+    countries: migratedCountries,
+    tachograph: parsed.tachograph?.sessions ? parsed.tachograph : initial.tachograph,
+    localization: parsed.localization?.currentLocation ? parsed.localization : initial.localization,
+    payments: parsed.payments ?? initial.payments,
+    zoneObservations: parsed.zoneObservations ?? initial.zoneObservations,
+    financialCostConfig: {
+      ...initial.financialCostConfig,
+      ...(parsed.financialCostConfig ?? {}),
+    },
+    reportFilters: {
+      ...initial.reportFilters,
+      ...(parsed.reportFilters ?? {}),
+    },
+  };
+}
+
+function loadInitialUnauthenticatedState(): EcosystemState {
+  // Always boot unauthenticated on Portal unless server /api/auth/session restores an explicit session
+  const base = buildInitialState('demo');
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return initial;
-    const parsed = JSON.parse(raw) as Partial<EcosystemState>;
-    const migratedCountries =
-      parsed.countries && parsed.countries.length > 0 && 'marketStatus' in parsed.countries[0]
-        ? parsed.countries
-        : initial.countries;
-    const mergedAutoPilot: AutoPilotConfig = {
-      ...initial.autoPilot,
-      ...(parsed.autoPilot ?? {}),
-      modeConfigs: parsed.autoPilot?.modeConfigs ?? initial.autoPilot.modeConfigs,
-      semiAutoBounds: parsed.autoPilot?.semiAutoBounds ?? initial.autoPilot.semiAutoBounds,
-      savedPresets: parsed.autoPilot?.savedPresets ?? initial.autoPilot.savedPresets,
-      adjustmentLogs: parsed.autoPilot?.adjustmentLogs ?? initial.autoPilot.adjustmentLogs,
-    };
-    const mergedCms: CmsContentState = {
-      ...initial.cms,
-      ...(parsed.cms ?? {}),
-      sectionOrder: parsed.cms?.sectionOrder ?? initial.cms.sectionOrder,
-      visibleSections: parsed.cms?.visibleSections ?? initial.cms.visibleSections,
-      benefits: parsed.cms?.benefits ?? initial.cms.benefits,
-      faqs: parsed.cms?.faqs ?? initial.cms.faqs,
-    };
-    return {
-      ...initial,
-      ...parsed,
-      session: parsed.session?.role ? parsed.session : initial.session,
-      rbacDeniedMessage: null,
-      driverDeactivatedPlatformIds: parsed.driverDeactivatedPlatformIds ?? initial.driverDeactivatedPlatformIds,
-      savedPlaces: parsed.savedPlaces ?? initial.savedPlaces,
-      routinePreferences: parsed.routinePreferences ?? initial.routinePreferences,
-      aiPredictions: parsed.aiPredictions ?? initial.aiPredictions,
-      autoPilot: mergedAutoPilot,
-      cms: mergedCms,
-      overlayConfig: {
-        ...initial.overlayConfig,
-        ...(parsed.overlayConfig ?? {}),
-      },
-      countries: migratedCountries,
-      tachograph: parsed.tachograph?.sessions ? parsed.tachograph : initial.tachograph,
-      localization: parsed.localization?.currentLocation ? parsed.localization : initial.localization,
-      payments: parsed.payments ?? initial.payments,
-    };
+    const rawDemo = localStorage.getItem(STORAGE_KEY_DEMO);
+    if (rawDemo) {
+      const parsed = JSON.parse(rawDemo) as Partial<EcosystemState>;
+      const hydrated = hydrateState(parsed, 'demo');
+      return {
+        ...hydrated,
+        mode: 'portal',
+        session: SEED_AUTH_SESSION,
+      };
+    }
   } catch {
-    return initial;
+    // ignore
   }
+  return base;
 }
 
 interface EcosystemContextValue {
@@ -284,12 +364,21 @@ interface EcosystemContextValue {
   visibleDriverPlatforms: PlatformRecord[];
   activeDriverTrips: TripRecord[];
   financialSummary: ReturnType<typeof computeFinancialSummary>;
+  comprehensiveReports: ComprehensiveReportsBundle;
   tachographSummary: ConsolidatedTachographSummary;
   rolling24hCompliance: Rolling24hComplianceResult;
   aiCoreBriefing: AiCoreInsight[];
   driverPredictions: AiPredictionRecord[];
-  // Auth & RBAC
+  // Auth & RBAC (Real Server Auth + Explicit Demo Sandbox)
   setMode: (mode: EcosystemMode) => boolean;
+  loginWithServerCredentials: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  registerRealAccount: (
+    name: string,
+    email: string,
+    password: string,
+    role?: 'Motorista' | 'Operador'
+  ) => Promise<{ ok: boolean; error?: string }>;
+  enterDemoSandbox: (profile: 'driver' | 'admin') => Promise<{ ok: boolean; error?: string }>;
   loginAsRole: (role: UserRole, userId?: string) => void;
   logoutSession: () => void;
   clearRbacDenied: () => void;
@@ -300,6 +389,23 @@ interface EcosystemContextValue {
   setPortalPage: (page: string) => void;
   setAdminRole: (role: AdminRole) => void;
   resetDemoData: () => void;
+  syncNowToServer: () => Promise<{ ok: boolean; message: string }>;
+  // Reports & Cost Config
+  updateFinancialCostConfig: (patch: Partial<FinancialCostConfig>) => void;
+  updateReportFilters: (patch: Partial<EcosystemState['reportFilters']>) => void;
+  // Active Trip Lifecycle & Timers
+  acceptProposalForTrip: (proposal: ProposalRecord, aiRec: ActiveTripSession['aiRecommendation']) => { ok: boolean; error?: string };
+  confirmActiveTripPlatform: () => void;
+  markActiveTripArrived: (method: ArrivalDetectionMethod, startWaitImmediately?: boolean) => void;
+  startActiveTripWait: () => void;
+  startActiveTripInProgress: () => void;
+  completeActiveTripAction: (actualGrossEur?: number, tipEur?: number, tollsEur?: number) => TripRecord | null;
+  cancelActiveTripAction: (
+    cancellationBy: CancellationBy,
+    isNoShow: boolean,
+    reason: string,
+    compensationEur: number
+  ) => TripRecord | null;
   // Localization & Geolocation Services
   requestBrowserGeolocation: () => void;
   simulateOrSelectLocation: (countryCode: string, city: string, region?: string) => void;
@@ -372,8 +478,18 @@ interface EcosystemContextValue {
   addVehicle: (vehicle: Omit<VehicleRecord, 'id' | 'isDemo'>) => void;
   updateVehicle: (vehicleId: string, patch: Partial<VehicleRecord>) => void;
   setActiveVehicle: (vehicleId: string) => void;
-  // Field & Compliance Services
+  // Field & Compliance Services + Zone Intelligence
   toggleZonePreference: (zoneId: string, pref: MapZoneRecord['preference']) => void;
+  addZoneObservation: (input: {
+    zoneId?: string;
+    zoneName: string;
+    city: string;
+    observationType: DriverZoneObservation['observationType'];
+    description: string;
+    privacyConsent: boolean;
+    dayOfWeek?: number;
+    timeWindow?: string;
+  }) => Promise<{ ok: boolean; error?: string }>;
   addPassengerReview: (review: Omit<PassengerReviewRecord, 'id' | 'createdAt' | 'sentViaOfficialApi' | 'isDemo'>) => void;
   incrementReviewCopy: (reviewId: string) => void;
   toggleDashcamProtection: (clipId: string) => void;
@@ -410,11 +526,78 @@ interface EcosystemContextValue {
 const EcosystemContext = createContext<EcosystemContextValue | null>(null);
 
 export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<EcosystemState>(loadState);
+  const [state, setState] = useState<EcosystemState>(loadInitialUnauthenticatedState);
 
+  // Restore server cookie session & shared zone observations on boot
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/session', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.authenticated || !data?.session) return;
+        const srvSession = data.session as AuthSession;
+        const isDemo = Boolean(srvSession.isDemoSession);
+        const key = isDemo ? STORAGE_KEY_DEMO : `${STORAGE_KEY_REAL}_${srvSession.userId}`;
+        setState((prev) => {
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const parsed = JSON.parse(raw) as Partial<EcosystemState>;
+              const hydrated = hydrateState(parsed, isDemo ? 'demo' : 'real');
+              return {
+                ...hydrated,
+                session: srvSession,
+                mode: isAdminRole(srvSession.role) ? 'admin' : 'driver',
+              };
+            }
+          } catch {
+            // ignore
+          }
+          const base = buildInitialState(isDemo ? 'demo' : 'real');
+          return {
+            ...base,
+            session: srvSession,
+            mode: isAdminRole(srvSession.role) ? 'admin' : 'driver',
+          };
+        });
+      })
+      .catch(() => {
+        // Offline / Vite-only fallback
+      });
+
+    fetch('/api/zones/observations')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !Array.isArray(data?.observations) || data.observations.length === 0) return;
+        setState((prev) => {
+          const existingIds = new Set(prev.zoneObservations.map((o) => o.id));
+          const merged = [
+            ...data.observations.filter((o: DriverZoneObservation) => !existingIds.has(o.id)),
+            ...prev.zoneObservations,
+          ];
+          return { ...prev, zoneObservations: merged };
+        });
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist Demo vs Real states in strictly separated storage keys
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (!state.session.authenticated) {
+        localStorage.setItem(STORAGE_KEY_DEMO, JSON.stringify({ ...state, session: SEED_AUTH_SESSION }));
+        return;
+      }
+      const key = state.session.isDemoSession
+        ? STORAGE_KEY_DEMO
+        : `${STORAGE_KEY_REAL}_${state.session.userId}`;
+      localStorage.setItem(key, JSON.stringify(state));
     } catch {
       // Ignore storage quota errors
     }
@@ -508,6 +691,34 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const financialSummary = useMemo(
     () => computeFinancialSummary(activeDriverTrips, state.expenses),
     [activeDriverTrips, state.expenses]
+  );
+
+  const comprehensiveReports = useMemo(
+    () =>
+      buildComprehensiveReports({
+        trips: activeDriverTrips,
+        expenses: state.expenses,
+        proposals: state.proposals,
+        platforms: state.platforms,
+        vehicles: state.vehicles,
+        tachograph: state.tachograph,
+        routine: state.routinePreferences,
+        autoPilot: state.autoPilot,
+        costConfig: state.financialCostConfig,
+        filters: state.reportFilters,
+      }),
+    [
+      activeDriverTrips,
+      state.expenses,
+      state.proposals,
+      state.platforms,
+      state.vehicles,
+      state.tachograph,
+      state.routinePreferences,
+      state.autoPilot,
+      state.financialCostConfig,
+      state.reportFilters,
+    ]
   );
 
   const tachographSummary = useMemo(
@@ -622,6 +833,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     visibleDriverPlatforms,
     activeDriverTrips,
     financialSummary,
+    comprehensiveReports,
     tachographSummary,
     rolling24hCompliance,
     aiCoreBriefing,
@@ -634,8 +846,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           mode: 'portal',
           rbacDeniedMessage:
             mode === 'admin'
-              ? 'Acesso bloqueado (RBAC): o painel administrativo exige autenticação explícita com perfil Administrativo no Portal.'
-              : 'Autenticação necessária para aceder ao AIVAD Driver.',
+              ? 'Acesso bloqueado (RBAC): o painel administrativo exige sessão administrativa autenticada.'
+              : 'Autenticação necessária no Portal para aceder ao AIVAD Driver.',
         }));
         return false;
       }
@@ -643,50 +855,192 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return true;
     },
 
-    loginAsRole: (role, userId) => {
-      setState((prev) => {
-        const matchedUser =
-          (userId && prev.users.find((u) => u.id === userId)) ||
-          prev.users.find((u) => u.role === role) ||
-          prev.users[0];
-        const nextSession: AuthSession = {
-          authenticated: true,
-          userId: matchedUser.id,
-          userName: isAdminRole(role) ? `${matchedUser.name} (${role})` : matchedUser.name,
-          email: matchedUser.email,
-          role,
-          signedInAt: new Date().toISOString(),
-        };
-        const targetMode: EcosystemMode = isAdminRole(role) ? 'admin' : 'driver';
-        return {
-          ...prev,
-          session: nextSession,
-          activeAdminRole: isAdminRole(role) ? role : prev.activeAdminRole,
-          activeDriverUserId: !isAdminRole(role) ? matchedUser.id : prev.activeDriverUserId,
-          mode: targetMode,
-          rbacDeniedMessage: null,
-          auditLogs: pushAudit(
-            prev,
-            'Autenticação de Sessão',
-            nextSession.userId,
-            `Sessão iniciada como ${role} -> ambiente ${targetMode}`,
-            nextSession.userName
-          ),
-        };
-      });
+    loginWithServerCredentials: async (email, password) => {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.session) {
+          return { ok: false, error: data?.error || 'Credenciais inválidas.' };
+        }
+        const srvSession = data.session as AuthSession;
+        const targetMode: EcosystemMode = isAdminRole(srvSession.role) ? 'admin' : 'driver';
+        const storageKey = `${STORAGE_KEY_REAL}_${srvSession.userId}`;
+        setState((prev) => {
+          let nextBase = buildInitialState('real');
+          try {
+            const raw = localStorage.getItem(storageKey);
+            if (raw) {
+              nextBase = hydrateState(JSON.parse(raw) as Partial<EcosystemState>, 'real');
+            }
+          } catch {
+            // ignore
+          }
+          const realUser: UserAccount = {
+            id: srvSession.userId,
+            name: srvSession.userName,
+            email: srvSession.email,
+            role: srvSession.role,
+            countryCode: prev.localization.selectedMarketCode || 'PT',
+            city: prev.localization.currentLocation.city || 'Lisboa',
+            status: 'Ativo',
+            planId: 'plan-pro',
+            osPlatform: 'Web',
+            appVersion: '3.0.0',
+            privacyConsentForSupport: false,
+            createdAt: srvSession.signedInAt.slice(0, 10),
+            isDemo: false,
+          };
+          const hasUser = nextBase.users.some((u) => u.id === realUser.id);
+          return {
+            ...nextBase,
+            theme: prev.theme,
+            localization: prev.localization,
+            session: srvSession,
+            mode: targetMode,
+            activeDriverUserId: realUser.id,
+            activeAdminRole: isAdminRole(srvSession.role) ? srvSession.role : prev.activeAdminRole,
+            users: hasUser ? nextBase.users : [realUser, ...nextBase.users],
+            rbacDeniedMessage: null,
+            syncStatus: 'sincronizado',
+            lastSyncedAt: new Date().toISOString(),
+          };
+        });
+        return { ok: true };
+      } catch {
+        return { ok: false, error: 'Erro de comunicação com o servidor de autenticação.' };
+      }
     },
 
-    logoutSession: () =>
+    registerRealAccount: async (name, email, password, role = 'Motorista') => {
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ name, email, password, role }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.session) {
+          return { ok: false, error: data?.error || 'Não foi possível criar a conta.' };
+        }
+        const srvSession = data.session as AuthSession;
+        const base = buildInitialState('real');
+        const realUser: UserAccount = {
+          id: srvSession.userId,
+          name: srvSession.userName,
+          email: srvSession.email,
+          role: srvSession.role,
+          countryCode: base.localization.selectedMarketCode || 'PT',
+          city: base.localization.currentLocation.city || 'Lisboa',
+          status: 'Ativo',
+          planId: 'plan-pro',
+          osPlatform: 'Web',
+          appVersion: '3.0.0',
+          privacyConsentForSupport: false,
+          createdAt: srvSession.signedInAt.slice(0, 10),
+          isDemo: false,
+        };
+        setState((prev) => ({
+          ...base,
+          theme: prev.theme,
+          localization: prev.localization,
+          session: srvSession,
+          mode: 'driver',
+          activeDriverUserId: realUser.id,
+          users: [realUser, ...base.users],
+          rbacDeniedMessage: null,
+          syncStatus: 'sincronizado',
+          lastSyncedAt: new Date().toISOString(),
+        }));
+        return { ok: true };
+      } catch {
+        return { ok: false, error: 'Erro de ligação ao servidor.' };
+      }
+    },
+
+    enterDemoSandbox: async (profile) => {
+      try {
+        const res = await fetch('/api/auth/demo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ profile }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data?.session) {
+          return { ok: false, error: data?.error || 'Falha ao iniciar Modo Demonstração.' };
+        }
+        const srvSession = data.session as AuthSession;
+        setState((prev) => {
+          let demoBase = buildInitialState('demo');
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY_DEMO);
+            if (raw) {
+              demoBase = hydrateState(JSON.parse(raw) as Partial<EcosystemState>, 'demo');
+            }
+          } catch {
+            // ignore
+          }
+          return {
+            ...demoBase,
+            theme: prev.theme,
+            localization: prev.localization,
+            session: srvSession,
+            mode: profile === 'admin' ? 'admin' : 'driver',
+            activeDriverUserId: profile === 'admin' ? demoBase.activeDriverUserId : 'usr-driver-1',
+            activeAdminRole: profile === 'admin' ? 'Superadministrador' : demoBase.activeAdminRole,
+            rbacDeniedMessage: null,
+            syncStatus: 'sincronizado',
+            lastSyncedAt: new Date().toISOString(),
+          };
+        });
+        return { ok: true };
+      } catch {
+        return { ok: false, error: 'Servidor indisponível para iniciar sandbox.' };
+      }
+    },
+
+    loginAsRole: (role) => {
+      // Explicit sandbox routing without fake password bypass
+      const profile = isAdminRole(role) ? 'admin' : 'driver';
+      void fetch('/api/auth/demo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ profile }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.ok && data?.session) {
+            setState((prev) => ({
+              ...prev,
+              session: data.session as AuthSession,
+              activeAdminRole: isAdminRole(role) ? role : prev.activeAdminRole,
+              mode: isAdminRole(role) ? 'admin' : 'driver',
+              rbacDeniedMessage: null,
+            }));
+          }
+        })
+        .catch(() => {
+          // ignore
+        });
+    },
+
+    logoutSession: () => {
+      void fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
       setState((prev) => ({
         ...prev,
         mode: 'portal',
         rbacDeniedMessage: null,
-        session: {
-          ...prev.session,
-          authenticated: false,
-          role: 'Motorista',
-        },
-      })),
+        session: SEED_AUTH_SESSION,
+        activeTrip: null,
+      }));
+    },
 
     clearRbacDenied: () => setState((prev) => ({ ...prev, rbacDeniedMessage: null })),
     setTheme: (theme) => setState((prev) => ({ ...prev, theme })),
@@ -696,16 +1050,290 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setAdminNav: (activeAdminNav) => setState((prev) => ({ ...prev, activeAdminNav })),
     setPortalPage: (activePortalPage) => setState((prev) => ({ ...prev, activePortalPage })),
     setAdminRole: (activeAdminRole) =>
+      setState((prev) => {
+        if (!prev.session.isDemoSession) return prev;
+        return {
+          ...prev,
+          activeAdminRole,
+          session: isAdminRole(prev.session.role)
+            ? { ...prev.session, role: activeAdminRole }
+            : prev.session,
+        };
+      }),
+    resetDemoData: () => {
+      const fresh = buildInitialState(state.session.isDemoSession ? 'demo' : 'real');
+      setState((prev) => ({
+        ...fresh,
+        session: prev.session,
+        mode: prev.mode,
+        theme: prev.theme,
+      }));
+    },
+
+    syncNowToServer: async () => {
+      if (!state.session.authenticated) {
+        return { ok: false, message: 'Inicie sessão para sincronizar com o servidor.' };
+      }
+      setState((prev) => ({ ...prev, syncStatus: 'pendente' }));
+      try {
+        const key = `sync:${state.session.userId}:${Date.now()}`;
+        const res = await fetch('/api/sync/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            idempotencyKey: key,
+            state: {
+              tripsCount: state.trips.length,
+              expensesCount: state.expenses.length,
+              tachographSessions: state.tachograph.sessions.length,
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) {
+          setState((prev) => ({ ...prev, syncStatus: 'erro' }));
+          return { ok: false, message: data?.error || 'Falha de sincronização no servidor.' };
+        }
+        setState((prev) => ({
+          ...prev,
+          syncStatus: 'sincronizado',
+          lastSyncedAt: data.updatedAt,
+        }));
+        return { ok: true, message: `Sincronizado com servidor (v${data.version}).` };
+      } catch {
+        setState((prev) => ({ ...prev, syncStatus: 'erro' }));
+        return { ok: false, message: 'Sem ligação ao servidor Express.' };
+      }
+    },
+
+    updateFinancialCostConfig: (patch) =>
       setState((prev) => ({
         ...prev,
-        activeAdminRole,
-        session: isAdminRole(prev.session.role)
-          ? { ...prev.session, role: activeAdminRole }
-          : prev.session,
+        financialCostConfig: { ...prev.financialCostConfig, ...patch },
       })),
-    resetDemoData: () => {
-      const fresh = buildInitialState();
-      setState(fresh);
+
+    updateReportFilters: (patch) =>
+      setState((prev) => ({
+        ...prev,
+        reportFilters: { ...prev.reportFilters, ...patch },
+      })),
+
+    acceptProposalForTrip: (proposal, aiRec) => {
+      if (state.activeTrip) {
+        return { ok: false, error: 'Já existe uma viagem ativa em acompanhamento. Conclua-a ou cancele-a antes de iniciar outra.' };
+      }
+      if (hasExistingLifecycleTrip(state.trips, proposal.id)) {
+        return { ok: false, error: 'Esta proposta já gerou um registo no histórico de viagens (bloqueio antiduplicação).' };
+      }
+      const sessionTrip = startActiveTripFromProposal({
+        proposal,
+        countryCode: activeMarket.code,
+        aiRecommendation: aiRec,
+      });
+      const now = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        activeTrip: sessionTrip,
+        proposals: prev.proposals.map((p) =>
+          p.id === proposal.id
+            ? {
+                ...p,
+                lifecycleState: 'Aceite pelo motorista',
+                stateTimestamps: { ...p.stateTimestamps, 'Aceite pelo motorista': now },
+              }
+            : p
+        ),
+        auditLogs: pushAudit(
+          prev,
+          'Aceitação de Proposta',
+          proposal.id,
+          `Iniciada deslocação para recolha (${proposal.input.platformId.toUpperCase()}). Espera ainda a 0s.`,
+          prev.activeDriverUserId
+        ),
+      }));
+      return { ok: true };
+    },
+
+    confirmActiveTripPlatform: () =>
+      setState((prev) => {
+        if (!prev.activeTrip) return prev;
+        return {
+          ...prev,
+          activeTrip: {
+            ...prev.activeTrip,
+            platformConfirmed: true,
+            confirmationMethod: 'Confirmação manual',
+          },
+        };
+      }),
+
+    markActiveTripArrived: (method, startWaitImmediately = true) =>
+      setState((prev) => {
+        if (!prev.activeTrip) return prev;
+        return {
+          ...prev,
+          activeTrip: markTripArrivedAtPickup(prev.activeTrip, method, startWaitImmediately),
+        };
+      }),
+
+    startActiveTripWait: () =>
+      setState((prev) => {
+        if (!prev.activeTrip) return prev;
+        return {
+          ...prev,
+          activeTrip: startTripPassengerWait(prev.activeTrip),
+        };
+      }),
+
+    startActiveTripInProgress: () =>
+      setState((prev) => {
+        if (!prev.activeTrip) return prev;
+        return {
+          ...prev,
+          activeTrip: startTripInProgress(prev.activeTrip),
+        };
+      }),
+
+    completeActiveTripAction: (actualGrossEur, tipEur = 0, tollsEur = 0) => {
+      if (!state.activeTrip) return null;
+      if (hasExistingLifecycleTrip(state.trips, state.activeTrip.proposalId, state.activeTrip.externalRef)) {
+        setState((prev) => ({ ...prev, activeTrip: null }));
+        return null;
+      }
+      const sess = state.activeTrip;
+      const nowIso = new Date().toISOString();
+      const plat = state.platforms.find((p) => p.id === sess.platformId);
+      const commPct = plat?.commissionPct ?? 25;
+      const gross = actualGrossEur ?? sess.grossEstimatedEur;
+      const commissionEur = round2(gross * (commPct / 100));
+      const operationalCostEur = round2((sess.pickupDistanceKm + sess.tripDistanceKm) * 0.12 + tollsEur);
+      const netEur = round2(gross + tipEur - commissionEur - operationalCostEur);
+      const travelSec = sess.arrivedAtIso
+        ? Math.max(0, Math.floor((new Date(sess.arrivedAtIso).getTime() - new Date(sess.acceptedAtIso).getTime()) / 1000))
+        : Math.max(0, Math.floor((Date.now() - new Date(sess.acceptedAtIso).getTime()) / 1000));
+      const waitSec =
+        sess.waitStartedAtIso && sess.tripStartedAtIso
+          ? Math.max(0, Math.floor((new Date(sess.tripStartedAtIso).getTime() - new Date(sess.waitStartedAtIso).getTime()) / 1000))
+          : 0;
+
+      const trip: TripRecord = {
+        id: `trip-${Date.now()}`,
+        externalRef: sess.externalRef,
+        platformId: sess.platformId,
+        vehicleId: activeVehicle.id,
+        date: nowIso.slice(0, 10),
+        time: nowIso.slice(11, 16),
+        grossEur: gross,
+        estimatedGrossEur: sess.grossEstimatedEur,
+        chargedTotalEur: round2(gross + tipEur),
+        tipEur,
+        bonusEur: 0,
+        tollsEur,
+        commissionEur,
+        operationalCostEur,
+        netEur,
+        currency: activeMarket.currency,
+        countryCode: sess.countryCode,
+        pickupDistanceKm: sess.pickupDistanceKm,
+        tripDistanceKm: sess.tripDistanceKm,
+        durationMin: Math.max(1, sess.pickupTimeEstMin + sess.tripTimeEstMin),
+        travelToPickupSeconds: travelSec,
+        waitAtPickupSeconds: waitSec,
+        pickupZone: sess.pickupZone,
+        pickupAddress: sess.pickupAddress,
+        destinationZone: sess.destinationZone,
+        destinationAddress: sess.destinationAddress,
+        category: sess.category,
+        status: 'Concluída',
+        aiRecommendedAction: sess.aiRecommendation,
+        driverExecutionConfirmed: true,
+        platformExecutionConfirmed: sess.platformConfirmed,
+        lifecycleEventKey: `lifecycle:${sess.id}`,
+        isEstimatedBreakdown: actualGrossEur === undefined,
+        preDecisionSnapshot: {
+          predictedNetEur: sess.netEstimatedEur,
+          predictedDurationMin: sess.pickupTimeEstMin + sess.tripTimeEstMin,
+          predictedClassification: 'verde',
+          recommendedAction: sess.aiRecommendation,
+        },
+        source: 'Manual',
+        proposalId: sess.proposalId,
+        isDemo: Boolean(state.session.isDemoSession),
+      };
+
+      setState((prev) => ({
+        ...prev,
+        activeTrip: null,
+        trips: [trip, ...prev.trips],
+        proposals: sess.proposalId
+          ? prev.proposals.map((p) =>
+              p.id === sess.proposalId
+                ? {
+                    ...p,
+                    lifecycleState: 'Concluída',
+                    stateTimestamps: { ...p.stateTimestamps, Concluída: nowIso },
+                  }
+                : p
+            )
+          : prev.proposals,
+        campaigns: prev.campaigns.map((c) =>
+          c.platformId === trip.platformId && c.status === 'Ativa'
+            ? { ...c, completedTrips: Math.min(c.targetTrips, c.completedTrips + 1) }
+            : c
+        ),
+        events: pushEvent(prev, {
+          idempotencyKey: `trip_completed:${trip.lifecycleEventKey}`,
+          type: 'TRIP_COMPLETED',
+          source: 'Active Trip Lifecycle',
+          target: 'Finance · Reports · Campaigns · AI CORE',
+          userId: prev.activeDriverUserId,
+          payloadSummary: `Viagem ${trip.externalRef} concluída (€${trip.grossEur.toFixed(2)}).`,
+        }),
+      }));
+      return trip;
+    },
+
+    cancelActiveTripAction: (cancellationBy, isNoShow, reason, compensationEur) => {
+      if (!state.activeTrip) return null;
+      const plat = state.platforms.find((p) => p.id === state.activeTrip!.platformId);
+      const cancelledTrip = buildCancelledTripFromActiveSession({
+        session: {
+          ...state.activeTrip,
+          isDemo: Boolean(state.session.isDemoSession),
+        },
+        cancellationBy,
+        isNoShow,
+        reason,
+        compensationEur,
+        commissionPct: plat?.commissionPct ?? 25,
+      });
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        activeTrip: null,
+        trips: [cancelledTrip, ...prev.trips],
+        proposals: prev.activeTrip?.proposalId
+          ? prev.proposals.map((p) =>
+              p.id === prev.activeTrip!.proposalId
+                ? {
+                    ...p,
+                    lifecycleState: 'Cancelada',
+                    stateTimestamps: { ...p.stateTimestamps, Cancelada: nowIso },
+                  }
+                : p
+            )
+          : prev.proposals,
+        auditLogs: pushAudit(
+          prev,
+          'Cancelamento Registado',
+          cancelledTrip.externalRef,
+          `${cancelledTrip.status} (${cancellationBy}): ${reason}`,
+          prev.activeDriverUserId
+        ),
+      }));
+      return cancelledTrip;
     },
 
     requestBrowserGeolocation: () => {
@@ -1004,6 +1632,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         zones: state.zones,
         savedPlaces: state.savedPlaces,
         routine: state.routinePreferences,
+        calibratedPredictions: driverPredictions,
+        completedTripsCount: activeDriverTrips.filter((t) => isCompletedTripStatus(t.status)).length,
       });
       const decision = evaluateAutoPilot(
         id,
@@ -1014,6 +1644,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
       const now = new Date().toISOString();
       const isSandbox = Boolean(options?.isSimulatedSandbox);
+      const isDemoRecord = Boolean(state.session.isDemoSession);
       const record: ProposalRecord = {
         id,
         createdAt: now,
@@ -1028,9 +1659,13 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         autoPilotDecision: decision,
         source,
         isSimulatedSandbox: isSandbox,
-        isDemo: true,
+        isDemo: isDemoRecord,
       };
       if (!isSandbox) {
+        const confTxt =
+          aiPackage.confidencePct !== null
+            ? `${aiPackage.confidencePct}%`
+            : aiPackage.confidenceStatus;
         const pred: AiPredictionRecord = {
           id: `pred-${Date.now()}`,
           driverId: activeDriver.id,
@@ -1041,7 +1676,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           predictedDurationMin: aiPackage.analysis.totalTimeMin,
           predictedEurPerHour: aiPackage.analysis.eurPerHour,
           status: 'Pendente resultado',
-          learningNote: `Recomendação: ${aiPackage.recommendedAction} (confiança ${aiPackage.confidencePct}%).`,
+          learningNote: `Recomendação: ${aiPackage.recommendedAction} (confiança: ${confTxt}).`,
           epistemicTag: 'Previsão',
         };
         setState((prev) => ({
@@ -1124,7 +1759,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             },
             source: 'Manual',
             proposalId,
-            isDemo: true,
+            isDemo: Boolean(prev.session.isDemoSession),
           };
           updatedTrips = [newTrip, ...prev.trips];
           updatedCampaigns = prev.campaigns.map((c) =>
@@ -1165,7 +1800,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 syncStatus: 'Sincronizado',
                 idempotencyKey: `tach:trip:${newTrip.id}`,
                 revisions: [],
-                isDemo: true,
+                isDemo: Boolean(prev.session.isDemoSession),
               };
               updatedTachograph = {
                 ...prev.tachograph,
@@ -1454,6 +2089,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         commissionEur,
         operationalCostEur,
         netEur,
+        isDemo: trip.isDemo ?? Boolean(state.session.isDemoSession),
       };
       setState((prev) => {
         let updatedTachograph = prev.tachograph;
@@ -1485,7 +2121,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               syncStatus: 'Sincronizado',
               idempotencyKey: `tach:trip:${record.id}`,
               revisions: [],
-              isDemo: true,
+              isDemo: Boolean(prev.session.isDemoSession),
             };
             updatedTachograph = {
               ...prev.tachograph,
@@ -1591,7 +2227,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             currency: expense.currency ?? activeMarket.currency,
             originalAmount: expense.originalAmount ?? expense.amountEur,
             id: `exp-${Date.now()}`,
-            isDemo: true,
+            isDemo: Boolean(prev.session.isDemoSession),
           },
           ...prev.expenses,
         ],
@@ -1727,7 +2363,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             ...shift,
             id: `shf-${Date.now()}`,
             auditHistory: [{ at: new Date().toISOString(), change: 'Turno registado pelo motorista.' }],
-            isDemo: true,
+            isDemo: Boolean(prev.session.isDemoSession),
           },
           ...prev.shifts,
         ],
@@ -1785,13 +2421,13 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     addCampaign: (campaign) =>
       setState((prev) => ({
         ...prev,
-        campaigns: [{ ...campaign, id: `cmp-${Date.now()}`, isDemo: true }, ...prev.campaigns],
+        campaigns: [{ ...campaign, id: `cmp-${Date.now()}`, isDemo: Boolean(prev.session.isDemoSession) }, ...prev.campaigns],
       })),
 
     addVehicle: (vehicle) =>
       setState((prev) => ({
         ...prev,
-        vehicles: [{ ...vehicle, id: `veh-${Date.now()}`, isDemo: true }, ...prev.vehicles],
+        vehicles: [{ ...vehicle, id: `veh-${Date.now()}`, isDemo: Boolean(prev.session.isDemoSession) }, ...prev.vehicles],
       })),
 
     updateVehicle: (vehicleId, patch) =>
@@ -1815,6 +2451,49 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         zones: prev.zones.map((z) => (z.id === zoneId ? { ...z, preference: pref } : z)),
       })),
 
+    addZoneObservation: async (input) => {
+      const outcome = createDriverZoneObservation({
+        ...input,
+        countryCode: activeMarket.code,
+        driverId: activeDriver.id,
+        existingObservations: state.zoneObservations,
+        isDemo: Boolean(state.session.isDemoSession),
+      });
+      if (!outcome.ok || !outcome.observation) {
+        return { ok: false, error: outcome.error };
+      }
+      let savedObs = outcome.observation;
+      try {
+        const res = await fetch('/api/zones/observations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            zoneId: input.zoneId,
+            zoneName: input.zoneName,
+            city: input.city,
+            countryCode: activeMarket.code,
+            privacyConsent: input.privacyConsent,
+            observationType: input.observationType,
+            description: input.description,
+            dayOfWeek: input.dayOfWeek,
+            timeWindow: input.timeWindow,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.observation) savedObs = data.observation as DriverZoneObservation;
+        }
+      } catch {
+        // Keep local observation even if offline
+      }
+      setState((prev) => ({
+        ...prev,
+        zoneObservations: [savedObs, ...prev.zoneObservations],
+      }));
+      return { ok: true };
+    },
+
     addPassengerReview: (review) =>
       setState((prev) => ({
         ...prev,
@@ -1824,7 +2503,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             id: `rev-${Date.now()}`,
             createdAt: new Date().toISOString(),
             sentViaOfficialApi: false,
-            isDemo: true,
+            isDemo: Boolean(prev.session.isDemoSession),
           },
           ...prev.reviews,
         ],
@@ -1867,7 +2546,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             retentionDays: 30,
             privacyZoneMasked: true,
             status: 'Armazenado Localmente',
-            isDemo: true,
+            isDemo: Boolean(prev.session.isDemoSession),
           },
           ...prev.dashcamClips,
         ],
@@ -1876,7 +2555,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     addDocument: (doc) =>
       setState((prev) => ({
         ...prev,
-        documents: [{ ...doc, id: `doc-${Date.now()}`, isDemo: true }, ...prev.documents],
+        documents: [{ ...doc, id: `doc-${Date.now()}`, isDemo: Boolean(prev.session.isDemoSession) }, ...prev.documents],
       })),
 
     markNotificationRead: (id) =>

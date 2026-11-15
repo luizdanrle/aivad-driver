@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Award,
   CalendarClock,
   CheckCircle2,
@@ -87,6 +88,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     togglePlaceFavorite,
     updateRoutinePreferences,
     toggleZonePreference,
+    addZoneObservation,
     getPlatformLifecycleState,
     setDriverNav,
   } = useEcosystem();
@@ -146,6 +148,18 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     favorites: true,
   });
   const [selectedZoneId, setSelectedZoneId] = useState(state.zones[0]?.id ?? '');
+  const [zoneObsForm, setZoneObsForm] = useState({
+    observationType: 'Corte / Feira / Mercado' as import('../../../models/types').DriverZoneObservation['observationType'],
+    description: '',
+    timeWindow: '',
+    privacyConsent: false,
+  });
+  const [zoneObsFeedback, setZoneObsFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    if (activeTab === 'mapas-zonas') setPlacesSubTab('zones');
+    else if (activeTab === 'locais-rotas') setPlacesSubTab('places');
+  }, [activeTab]);
 
   // Quick Trip Form
   const [newTripForm, setNewTripForm] = useState({
@@ -897,7 +911,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 countryCode: activeMarket.code,
                 status: 'Concluída',
                 source: 'Manual' as CaptureSource,
-                isDemo: true,
+                isDemo: Boolean(state.session.isDemoSession),
               });
               setSelectedTripId(created.id);
               setNewTripForm((f) => ({
@@ -1265,10 +1279,30 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                   </span>
                 </div>
 
-                {selectedTrip.cancellationReason && (
-                  <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-800 dark:text-red-200">
-                    <strong>Atribuição ({selectedTrip.cancellationBy ?? 'Sistema'}):</strong>{' '}
-                    {selectedTrip.cancellationReason}
+                {(selectedTrip.travelToPickupSeconds !== undefined || selectedTrip.waitAtPickupSeconds !== undefined) && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                    <span className="text-slate-500">Tempos (Deslocação / Espera Recolha)</span>
+                    <span className="font-mono-tabular">
+                      {Math.floor((selectedTrip.travelToPickupSeconds ?? 0) / 60)}m {(selectedTrip.travelToPickupSeconds ?? 0) % 60}s /{' '}
+                      {Math.floor((selectedTrip.waitAtPickupSeconds ?? 0) / 60)}m {(selectedTrip.waitAtPickupSeconds ?? 0) % 60}s
+                    </span>
+                  </div>
+                )}
+
+                {(selectedTrip.cancellationReason || selectedTrip.cancellationBy || !isCompletedTripStatus(selectedTrip.status)) && (
+                  <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-800 dark:text-red-200 space-y-1">
+                    <p>
+                      <strong>Atribuição ({selectedTrip.cancellationBy ?? 'Sistema'}):</strong>{' '}
+                      {selectedTrip.cancellationReason || 'Viagem não concluída — impacto financeiro excluído dos ganhos.'}
+                    </p>
+                    {selectedTrip.cancellationCompensationEur !== undefined && selectedTrip.cancellationCompensationEur > 0 && (
+                      <p className="font-mono-tabular">
+                        Taxa de compensação registada: {formatMoney(selectedTrip.cancellationCompensationEur, selectedTrip.currency ?? 'EUR')}
+                      </p>
+                    )}
+                    <p className="text-[10px] opacity-80">
+                      Nota: Taxas finais e impacto em métricas de conta são confirmados apenas na app oficial da plataforma.
+                    </p>
                   </div>
                 )}
 
@@ -1364,7 +1398,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
               {(
                 [
                   ['demand', 'Procura histórica'],
-                  ['events', 'Eventos'],
+                  ['events', 'Eventos & Feiras'],
                   ['traffic', 'Perfil trânsito histórico'],
                   ['tolls', 'Portagens'],
                   ['chargers', 'Carregamento EV'],
@@ -1385,7 +1419,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
             </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              <Card className="lg:col-span-8 p-4">
+              <Card className="lg:col-span-7 p-4 space-y-3">
                 <div className="relative w-full h-80 sm:h-96 rounded-xl bg-slate-900 overflow-hidden border border-slate-700">
                   <svg viewBox="0 0 100 100" className="w-full h-full">
                     <path
@@ -1400,6 +1434,8 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                           ? '#1D4ED8'
                           : mapLayers.favorites && z.preference === 'Evitar'
                           ? '#DC2626'
+                          : z.activeEvent
+                          ? '#D97706'
                           : '#475569';
                       return (
                         <g
@@ -1424,7 +1460,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                             y={z.y - 4}
                             textAnchor="middle"
                             fill="#E2E8F0"
-                            fontSize="3.2"
+                            fontSize="3.0"
                             fontWeight="bold"
                           >
                             {z.name.split('/')[0].trim()}
@@ -1434,13 +1470,47 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                     })}
                   </svg>
                 </div>
+
+                {/* Quick selector chips for zones */}
+                <div className="flex flex-wrap gap-1.5 text-[11px]">
+                  {state.zones.map((z) => (
+                    <button
+                      key={z.id}
+                      type="button"
+                      onClick={() => setSelectedZoneId(z.id)}
+                      className={`px-2.5 py-1 rounded-lg border font-medium ${
+                        selectedZone?.id === z.id
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {z.name.split('/')[0].trim()}
+                      {z.schedules && z.schedules.length > 0 ? ' ⚠' : ''}
+                    </button>
+                  ))}
+                </div>
               </Card>
 
-              <Card className="lg:col-span-4 p-5 space-y-4 text-xs">
-                <h3 className="text-sm font-bold flex items-center gap-2">
-                  <MapPin className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                  {selectedZone.name} ({selectedZone.city})
-                </h3>
+              <Card className="lg:col-span-5 p-5 space-y-4 text-xs">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <h3 className="text-sm font-bold flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                    {selectedZone.name} ({selectedZone.city})
+                  </h3>
+                  {selectedZone.tier && (
+                    <StatusLabel
+                      tone={
+                        selectedZone.tier.startsWith('1')
+                          ? 'danger'
+                          : selectedZone.tier.startsWith('2')
+                          ? 'warning'
+                          : 'info'
+                      }
+                      text={selectedZone.tier}
+                    />
+                  )}
+                </div>
+
                 <div className="space-y-1.5">
                   <p><strong>Procura histórica:</strong> {selectedZone.historicalDemand}</p>
                   {mapLayers.traffic && <p><strong>Trânsito (perfil histórico):</strong> {selectedZone.trafficLevel}</p>}
@@ -1448,12 +1518,67 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                   {mapLayers.parking && <p><strong>Lugares estacionamento:</strong> {selectedZone.parkingSpots}</p>}
                   {mapLayers.tolls && <p><strong>Portagens próximas:</strong> {selectedZone.tollsNearby ? 'Sim' : 'Não'}</p>}
                   {mapLayers.bases && <p><strong>Base Operacional:</strong> {selectedZone.isBase ? 'Sim' : 'Não'}</p>}
-                  {mapLayers.events && selectedZone.activeEvent && (
-                    <p className="text-blue-700 dark:text-blue-400">
-                      <strong>Evento:</strong> {selectedZone.activeEvent}
-                    </p>
-                  )}
                 </div>
+
+                {/* Schedules & Event vs Ban Distinction */}
+                {(selectedZone.activeEvent || selectedZone.riskSummary || (selectedZone.schedules && selectedZone.schedules.length > 0)) && (
+                  <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 space-y-1.5">
+                    {selectedZone.activeEvent && (
+                      <p className="font-bold text-amber-900 dark:text-amber-200 flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {selectedZone.activeEvent}
+                      </p>
+                    )}
+                    {selectedZone.schedules && selectedZone.schedules.length > 0 && (
+                      <ul className="space-y-0.5 text-amber-800 dark:text-amber-300 font-medium">
+                        {selectedZone.schedules.map((sc, i) => (
+                          <li key={i}>• Horário crítico: {sc.summary} ({sc.startHour}–{sc.endHour})</li>
+                        ))}
+                      </ul>
+                    )}
+                    {selectedZone.riskSummary && (
+                      <p className="text-slate-700 dark:text-slate-200">{selectedZone.riskSummary}</p>
+                    )}
+                    {selectedZone.isEventNotConfirmedBan && (
+                      <p className="text-[11px] font-semibold text-blue-800 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 px-2 py-1 rounded">
+                        Distinção operacional: Evento/feira regular conhecido; não constitui proibição legal total confirmada salvo corte policial no local.
+                      </p>
+                    )}
+                    {selectedZone.restrictionSource && (
+                      <p className="text-[10px] text-slate-500">
+                        Fonte: {selectedZone.restrictionSource}
+                        {selectedZone.verifiedAt ? ` · Verificado em ${selectedZone.verifiedAt}` : ''}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Safe Alternative Pickups (Informational Only) */}
+                {selectedZone.alternativePickups && selectedZone.alternativePickups.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <span className="font-bold block text-emerald-700 dark:text-emerald-400">
+                      Pontos Alternativos Seguros de Recolha (Sugestão Informativa):
+                    </span>
+                    <div className="space-y-2">
+                      {selectedZone.alternativePickups.map((alt) => (
+                        <div
+                          key={alt.id}
+                          className="p-2.5 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900 space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2 font-semibold">
+                            <span>{alt.label}</span>
+                            <span className="font-mono-tabular text-[11px] text-emerald-700 dark:text-emerald-300">
+                              {alt.walkingDistanceMeters}m · ~{alt.walkingTimeMin} min a pé
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">{alt.streetOrLandmark}</p>
+                          <p className="text-[10px] text-slate-500">{alt.safetyNote} · {alt.verifiedByDriverCount} validações</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
                   <span className="font-semibold block">Classificação pelo Motorista:</span>
                   <div className="flex gap-1.5">
@@ -1472,6 +1597,137 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                       </button>
                     ))}
                   </div>
+                </div>
+              </Card>
+            </div>
+
+            {/* Collaborative Zone Observations + Privacy-Consent Submission */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 text-xs">
+              <Card className="lg:col-span-6 p-5 space-y-3">
+                <h3 className="text-sm font-bold flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                  Reportar Observação de Zona ({selectedZone.name})
+                </h3>
+                <p className="text-slate-500">
+                  Partilhe ocorrências operacionais (feiras, obras, cortes, pontos seguros). Requer consentimento explícito e é partilhado de forma anónima.
+                </p>
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const res = await addZoneObservation({
+                      zoneId: selectedZone.id,
+                      zoneName: selectedZone.name,
+                      city: selectedZone.city,
+                      observationType: zoneObsForm.observationType,
+                      description: zoneObsForm.description,
+                      timeWindow: zoneObsForm.timeWindow || undefined,
+                      privacyConsent: zoneObsForm.privacyConsent,
+                    });
+                    if (res.ok) {
+                      setZoneObsFeedback({ ok: true, text: 'Observação registada e partilhada de forma anónima no ecossistema.' });
+                      setZoneObsForm((f) => ({ ...f, description: '', timeWindow: '' }));
+                    } else {
+                      setZoneObsFeedback({ ok: false, text: res.error ?? 'Verifique os campos obrigatórios.' });
+                    }
+                  }}
+                  className="space-y-3"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="zobs-type" className="block font-medium mb-1">Tipo de Ocorrência</label>
+                      <select
+                        id="zobs-type"
+                        value={zoneObsForm.observationType}
+                        onChange={(e) =>
+                          setZoneObsForm((f) => ({
+                            ...f,
+                            observationType: e.target.value as import('../../../models/types').DriverZoneObservation['observationType'],
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      >
+                        <option value="Corte / Feira / Mercado">Corte / Feira / Mercado</option>
+                        <option value="Trânsito intenso">Trânsito intenso</option>
+                        <option value="Obras / Desvio">Obras / Desvio</option>
+                        <option value="Recolha difícil">Recolha difícil</option>
+                        <option value="Ponto seguro alternativo">Ponto seguro alternativo</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="zobs-win" className="block font-medium mb-1">Janela Horária (Opcional)</label>
+                      <input
+                        id="zobs-win"
+                        type="text"
+                        placeholder="Ex: Dom 07:00–14:00"
+                        value={zoneObsForm.timeWindow}
+                        onChange={(e) => setZoneObsForm((f) => ({ ...f, timeWindow: e.target.value }))}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="zobs-desc" className="block font-medium mb-1">Descrição Operacional</label>
+                    <textarea
+                      id="zobs-desc"
+                      rows={2}
+                      placeholder="Ex: Acesso à praça condicionado por bancas; recolha recomendada junto à paragem lateral."
+                      value={zoneObsForm.description}
+                      onChange={(e) => setZoneObsForm((f) => ({ ...f, description: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={zoneObsForm.privacyConsent}
+                      onChange={(e) => setZoneObsForm((f) => ({ ...f, privacyConsent: e.target.checked }))}
+                      className="mt-0.5"
+                    />
+                    <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                      Concordo com a partilha agregada e anónima desta observação de zona, sem exposição do meu nome ou dados pessoais.
+                    </span>
+                  </label>
+                  {zoneObsFeedback && (
+                    <StatusLabel
+                      tone={zoneObsFeedback.ok ? 'success' : 'danger'}
+                      text={zoneObsFeedback.text}
+                    />
+                  )}
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+                  >
+                    Submeter Observação de Zona
+                  </button>
+                </form>
+              </Card>
+
+              <Card className="lg:col-span-6 p-5 space-y-3">
+                <h3 className="text-sm font-bold">
+                  Observações Colaborativas da Rede ({state.zoneObservations.length})
+                </h3>
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {state.zoneObservations.map((obs) => (
+                    <div
+                      key={obs.id}
+                      className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold">
+                          {obs.zoneName} · {obs.observationType}
+                        </span>
+                        <StatusLabel
+                          tone={obs.validationTier.startsWith('2') ? 'warning' : 'info'}
+                          text={obs.validationTier}
+                        />
+                      </div>
+                      <p className="text-slate-700 dark:text-slate-200">{obs.description}</p>
+                      <p className="text-[10px] text-slate-500">
+                        {obs.driverAlias} · Recorrência: {obs.recurrenceCount}x
+                        {obs.timeWindow ? ` · ${obs.timeWindow}` : ''}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </Card>
             </div>

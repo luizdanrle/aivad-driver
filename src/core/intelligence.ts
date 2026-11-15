@@ -490,26 +490,60 @@ export function evaluateVehicleEligibility(
   const age = currentYear - vehicle.year;
   const tvdeReasons: string[] = [];
   let tvdeLegalEligible = true;
-  const legalAgeLimit = maxLegalAgeYears ?? (vehicle.countryCode === 'PT' ? 7 : vehicle.countryCode === 'ES' ? 10 : 8);
+  let hasCondition = false;
+  const legalAgeLimit =
+    vehicle.marketEligibilityDetail?.maxAgeYears ??
+    maxLegalAgeYears ??
+    (vehicle.countryCode === 'PT' ? 7 : vehicle.countryCode === 'ES' ? 10 : 8);
+  const expiresOnDate =
+    vehicle.marketEligibilityDetail?.expiresOnDate ??
+    vehicle.eligibilityValidUntil ??
+    `${vehicle.year + legalAgeLimit}-${(vehicle.firstRegistration || `${vehicle.year}-12-31`).slice(5, 10)}`;
 
-  if (vehicle.countryCode === 'PT') {
-    if (age > legalAgeLimit) {
-      tvdeLegalEligible = false;
-      tvdeReasons.push(`Idade do veículo (${age} anos) excede o limite legal TVDE de ${legalAgeLimit} anos em Portugal.`);
-    } else {
-      tvdeReasons.push(`Cumpre idade máxima TVDE (${age} / ${legalAgeLimit} anos desde a primeira matrícula).`);
-    }
-    if (vehicle.doors < 4 || vehicle.seats < 4) {
-      tvdeLegalEligible = false;
-      tvdeReasons.push('Exige mínimo de 4 portas e 4 lugares para passageiros.');
-    }
+  if (age > legalAgeLimit) {
+    tvdeLegalEligible = false;
+    tvdeReasons.push(
+      `Idade do veículo (${age} anos) excede o limite legal máximo de ${legalAgeLimit} anos em ${vehicle.countryCode}.`
+    );
   } else {
-    if (age > legalAgeLimit) {
+    tvdeReasons.push(
+      `Cumpre idade máxima para ${vehicle.countryCode} (${age} / ${legalAgeLimit} anos desde ${vehicle.firstRegistration}; elegível até ${expiresOnDate}).`
+    );
+  }
+
+  if (vehicle.doors < 4 || vehicle.seats < 4) {
+    tvdeLegalEligible = false;
+    tvdeReasons.push('Exige mínimo de 4 portas e 4 lugares totais para passageiros.');
+  }
+
+  if (vehicle.colorRule) {
+    const colorLower = vehicle.color.toLowerCase();
+    const isForbidden = vehicle.colorRule.forbidden?.some((c) => colorLower.includes(c.toLowerCase()));
+    if (isForbidden) {
       tvdeLegalEligible = false;
-      tvdeReasons.push(`Idade (${age} anos) excede o limite local de ${legalAgeLimit} anos para ${vehicle.countryCode}.`);
-    } else {
-      tvdeReasons.push(`Regras locais para ${vehicle.countryCode}: verificação válida até ${vehicle.year + legalAgeLimit}.`);
+      tvdeReasons.push(`Cor "${vehicle.color}" restrita pela regra local (${vehicle.colorRule.source}).`);
+    } else if (
+      vehicle.colorRule.mandatory &&
+      vehicle.colorRule.mandatory.length > 0 &&
+      !vehicle.colorRule.mandatory.some((c) => colorLower.includes(c.toLowerCase()))
+    ) {
+      hasCondition = true;
+      tvdeReasons.push(
+        `Atenção à cor "${vehicle.color}": mercado pode exigir ${vehicle.colorRule.mandatory.join(', ')}.`
+      );
+    } else if (vehicle.colorRule.status === 'Informação ainda não confirmada') {
+      hasCondition = true;
+      tvdeReasons.push('Regra oficial de cor para este mercado/categoria ainda não confirmada.');
     }
+  }
+
+  let eligibilityStatus: VehicleEligibilityResult['eligibilityStatus'] = 'Elegível';
+  if (!tvdeLegalEligible) {
+    eligibilityStatus = 'Não elegível';
+  } else if (vehicle.marketEligibilityDetail?.status === 'Informação ainda não confirmada') {
+    eligibilityStatus = 'Informação ainda não confirmada';
+  } else if (hasCondition || vehicle.marketEligibilityDetail?.status === 'Elegibilidade condicionada' || age >= legalAgeLimit) {
+    eligibilityStatus = 'Elegibilidade condicionada';
   }
 
   const platformEligibility: VehicleEligibilityResult['platformEligibility'] = {};
@@ -531,9 +565,13 @@ export function evaluateVehicleEligibility(
       for (const cat of plat.categories) {
         const lower = cat.toLowerCase();
         if (lower.includes('green') || lower.includes('eco')) {
-          if (vehicle.fuelType === 'Elétrico' || vehicle.fuelType === 'Híbrido') cats.push(cat);
+          if (vehicle.fuelType === 'Elétrico' || vehicle.fuelType === 'Híbrido' || vehicle.fuelType === 'Plug-in') {
+            cats.push(cat);
+          }
         } else if (lower.includes('comfort') || lower.includes('executivo') || lower.includes('executive') || lower.includes('black')) {
-          if (vehicle.trunkLiters >= 420 && age <= 5 && vehicle.powerKw >= 95) cats.push(cat);
+          if (vehicle.trunkLiters >= 420 && age <= 5 && vehicle.powerKw >= 95) {
+            cats.push(cat);
+          }
         } else if (lower.includes('xl')) {
           if (vehicle.seats >= 6) cats.push(cat);
         } else {
@@ -548,6 +586,7 @@ export function evaluateVehicleEligibility(
     }
     platformEligibility[plat.id] = {
       eligible: cats.length > 0,
+      statusLabel: cats.length === 0 ? 'Não elegível' : hasCondition ? 'Elegibilidade condicionada' : 'Elegível',
       categories: cats,
       reasons,
     };
@@ -556,8 +595,121 @@ export function evaluateVehicleEligibility(
   return {
     vehicleId: vehicle.id,
     tvdeLegalEligible,
+    eligibilityStatus,
+    expiresOnDate,
     tvdeReasons,
     platformEligibility,
+  };
+}
+
+export interface VehicleCatalogFilters {
+  searchQuery?: string;
+  countryCode?: string;
+  city?: string;
+  platformId?: string;
+  category?: string;
+  fuelType?: string;
+  minSeats?: number;
+  minTrunkLiters?: number;
+  minRangeKm?: number;
+  onlyEligible?: boolean;
+  colorQuery?: string;
+}
+
+export function filterVehiclesCatalog(
+  vehicles: VehicleRecord[],
+  filters: VehicleCatalogFilters,
+  platforms?: Array<{ id: string; name: string; categories: string[]; countryScope: string[]; status: string }>
+): VehicleRecord[] {
+  return vehicles.filter((v) => {
+    if (filters.countryCode && filters.countryCode !== 'ALL' && v.countryCode !== filters.countryCode) {
+      return false;
+    }
+    if (filters.city && filters.city !== 'ALL' && v.city.toLowerCase() !== filters.city.toLowerCase()) {
+      return false;
+    }
+    if (filters.fuelType && filters.fuelType !== 'ALL' && v.fuelType !== filters.fuelType) {
+      return false;
+    }
+    if (filters.minSeats && v.seats < filters.minSeats) {
+      return false;
+    }
+    if (filters.minTrunkLiters && v.trunkLiters < filters.minTrunkLiters) {
+      return false;
+    }
+    if (filters.minRangeKm && (v.realRangeKm ?? v.rangeKm) < filters.minRangeKm) {
+      return false;
+    }
+    if (filters.colorQuery && !v.color.toLowerCase().includes(filters.colorQuery.toLowerCase())) {
+      return false;
+    }
+    if (filters.searchQuery) {
+      const q = filters.searchQuery.toLowerCase();
+      const text = `${v.brand} ${v.model} ${v.version} ${v.color} ${v.equipment.join(' ')}`.toLowerCase();
+      if (!text.includes(q)) return false;
+    }
+
+    const elig = evaluateVehicleEligibility(v, new Date().getFullYear(), platforms);
+    if (filters.onlyEligible && !elig.tvdeLegalEligible) {
+      return false;
+    }
+    if (filters.platformId && filters.platformId !== 'ALL') {
+      const pElig = elig.platformEligibility[filters.platformId];
+      if (!pElig || !pElig.eligible) return false;
+      if (filters.category && filters.category !== 'ALL' && !pElig.categories.includes(filters.category)) {
+        return false;
+      }
+    } else if (filters.category && filters.category !== 'ALL') {
+      const anyMatch = Object.values(elig.platformEligibility).some((pe) =>
+        pe.categories.includes(filters.category!)
+      );
+      if (!anyMatch) return false;
+    }
+    return true;
+  });
+}
+
+export function estimateVehicleResaleValue(
+  vehicle: VehicleRecord,
+  odometerKm = vehicle.odometerKm ?? 55000,
+  referenceYear = new Date().getFullYear()
+): {
+  minValueEur: number;
+  midValueEur: number;
+  maxValueEur: number;
+  valuationType: 'Estimativa algorítmica AIVAD' | 'Preço anunciado observado' | 'Transação real declarada';
+  annualDepreciationRatePct: number;
+  caveats: string[];
+} {
+  if (vehicle.resaleEstimate) {
+    const delta10k = (odometerKm - (vehicle.odometerKm ?? 55000)) / 10000;
+    const adj = Math.round(delta10k * vehicle.resaleEstimate.mileagePenaltyPer10kEur);
+    return {
+      minValueEur: Math.max(2500, vehicle.resaleEstimate.minValueEur - adj),
+      midValueEur: Math.max(3000, vehicle.resaleEstimate.midValueEur - adj),
+      maxValueEur: Math.max(3500, vehicle.resaleEstimate.maxValueEur - adj),
+      valuationType: vehicle.resaleEstimate.valuationType,
+      annualDepreciationRatePct: vehicle.fuelType === 'Elétrico' ? 11.5 : 9.8,
+      caveats: vehicle.resaleEstimate.caveats,
+    };
+  }
+
+  const baseNewPrice = vehicle.fuelType === 'Elétrico' ? 39500 : vehicle.fuelType === 'Híbrido' ? 32000 : 25500;
+  const ageYears = Math.max(0, referenceYear - vehicle.year);
+  const annualRate = vehicle.fuelType === 'Elétrico' ? 0.115 : 0.098;
+  const ageFactor = Math.pow(1 - annualRate, ageYears);
+  const kmPenalty = Math.max(0, (odometerKm - ageYears * 18000) / 10000) * 650;
+  const mid = Math.max(3500, Math.round(baseNewPrice * ageFactor - kmPenalty));
+  return {
+    minValueEur: Math.round(mid * 0.91),
+    midValueEur: mid,
+    maxValueEur: Math.round(mid * 1.09),
+    valuationType: 'Estimativa algorítmica AIVAD',
+    annualDepreciationRatePct: round2(annualRate * 100),
+    caveats: [
+      'Estimativa algorítmica indicativa por idade, motorização e quilometragem informada.',
+      'Não representa preço anunciado em portais nem valor garantido de transação real.',
+    ],
   };
 }
 

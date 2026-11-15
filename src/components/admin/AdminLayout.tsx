@@ -19,6 +19,7 @@ import {
   PackageCheck,
   Palette,
   Plug,
+  RefreshCw,
   Scale,
   Server,
   ShieldCheck,
@@ -83,7 +84,7 @@ const ADMIN_ROLES: AdminRole[] = [
 ];
 
 export const AdminLayout: React.FC = () => {
-  const { state, availableMarketsForPortal, setAdminNav, setAdminRole, setMode, toggleTheme } =
+  const { state, availableMarketsForPortal, setAdminNav, setAdminRole, setMode, toggleTheme, syncNowToServer } =
     useEcosystem();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -169,18 +170,24 @@ export const AdminLayout: React.FC = () => {
 
         <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
           <label htmlFor="admin-role-sel" className="block text-[11px] text-slate-500">
-            Perfil RBAC Ativo
+            {state.session.isDemoSession ? 'Perfil Sandbox (Demo)' : 'Perfil RBAC Autenticado'}
           </label>
-          <select
-            id="admin-role-sel"
-            value={state.activeAdminRole}
-            onChange={(e) => setAdminRole(e.target.value as AdminRole)}
-            className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium"
-          >
-            {ADMIN_ROLES.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
+          {state.session.isDemoSession ? (
+            <select
+              id="admin-role-sel"
+              value={state.activeAdminRole}
+              onChange={(e) => setAdminRole(e.target.value as AdminRole)}
+              className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium"
+            >
+              {ADMIN_ROLES.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          ) : (
+            <div className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-semibold">
+              {state.activeAdminRole} (Servidor)
+            </div>
+          )}
         </div>
       </aside>
 
@@ -250,6 +257,23 @@ export const AdminLayout: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <span
+              className={`hidden md:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                state.session.isDemoSession
+                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                  : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+              }`}
+            >
+              {state.session.isDemoSession ? 'MODO DEMO' : 'CONTA REAL'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void syncNowToServer()}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-medium hover:border-blue-600"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-emerald-600" />
+              <span className="hidden sm:inline capitalize">{state.syncStatus}</span>
+            </button>
             <ThemeToggleButton theme={state.theme} onToggle={toggleTheme} />
             <button
               type="button"

@@ -244,3 +244,93 @@ test('Rolling 24h TVDE compliance triggers preventive 8h/9h/10h alerts without d
   assert.ok(PORTARIA_7_2022_CHECKLIST.length >= 4);
 });
 
+test('Rolling 24h unifies overlapping manual Condução em serviço + platform intervals across midnight rollover without counting pauses or invalid spans', async () => {
+  const { evaluateRolling24hCompliance } = await import('./tachograph.ts');
+  const refIso = '2026-11-15T03:00:00Z';
+  const res = evaluateRolling24hCompliance(
+    [
+      // Shift started before midnight 22:00 -> 01:00 (180m across midnight!)
+      {
+        id: 'act-1',
+        shiftSessionId: 's1',
+        driverId: 'drv-1',
+        vehicleId: 'v1',
+        operatorName: 'Op',
+        date: '2026-11-14',
+        state: 'Condução em serviço',
+        startIso: '2026-11-14T22:00:00Z',
+        endIso: '2026-11-15T01:00:00Z',
+        durationMinutes: 180,
+        odometerStartKm: 100,
+        source: 'Manual',
+        notes: '',
+        status: 'Fechado',
+        syncStatus: 'Sincronizado',
+        idempotencyKey: 'k1',
+        revisions: [],
+        isDemo: false,
+      },
+      // Pause 01:00 -> 02:00 must NOT count toward driving/work limit
+      {
+        id: 'act-pause',
+        shiftSessionId: 's1',
+        driverId: 'drv-1',
+        vehicleId: 'v1',
+        operatorName: 'Op',
+        date: '2026-11-15',
+        state: 'Pausa',
+        startIso: '2026-11-15T01:00:00Z',
+        endIso: '2026-11-15T02:00:00Z',
+        durationMinutes: 60,
+        odometerStartKm: 160,
+        source: 'Manual',
+        notes: '',
+        status: 'Fechado',
+        syncStatus: 'Sincronizado',
+        idempotencyKey: 'k2',
+        revisions: [],
+        isDemo: false,
+      },
+      // Invalid / corrupt timestamp must be safely ignored without NaN
+      {
+        id: 'act-bad',
+        shiftSessionId: 's1',
+        driverId: 'drv-1',
+        vehicleId: 'v1',
+        operatorName: 'Op',
+        date: '2026-11-15',
+        state: 'Condução em serviço',
+        startIso: 'invalid-date',
+        endIso: '2026-11-15T02:30:00Z',
+        durationMinutes: 30,
+        odometerStartKm: 160,
+        source: 'Manual',
+        notes: '',
+        status: 'Fechado',
+        syncStatus: 'Sincronizado',
+        idempotencyKey: 'k3',
+        revisions: [],
+        isDemo: false,
+      },
+    ],
+    [
+      // Uber interval overlaps 23:00 -> 02:30 (only 01:00..02:30 is non-overlapping with act-1, i.e., +90m)
+      {
+        id: 'pi-1',
+        platformId: 'uber',
+        date: '2026-11-14',
+        startIso: '2026-11-14T23:00:00Z',
+        endIso: '2026-11-15T02:30:00Z',
+        kind: 'Online',
+      },
+    ],
+    refIso,
+    600
+  );
+  // Union of [22:00..01:00] and [23:00..02:30] = [22:00..02:30] = 270 minutes
+  assert.equal(res.rolling24hWorkMinutes, 270);
+  assert.equal(res.alertLevel, 'Normal');
+  assert.equal(res.remainingLegalMinutes, 330);
+});
+
+

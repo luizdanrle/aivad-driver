@@ -17,7 +17,9 @@ import {
   LifeBuoy,
   MapPin,
   Menu,
+  Cloud,
   Plug,
+  RefreshCw,
   Search,
   Settings,
   Smartphone,
@@ -225,7 +227,10 @@ export const DriverLayout: React.FC = () => {
     setDriverNav,
     setMode,
     toggleTheme,
+    syncNowToServer,
   } = useEcosystem();
+
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
@@ -594,6 +599,28 @@ export const DriverLayout: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <span
+              className={`hidden md:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                state.session.isDemoSession
+                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800'
+                  : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800'
+              }`}
+            >
+              {state.session.isDemoSession ? 'MODO DEMONSTRAÇÃO' : 'CONTA REAL'}
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await syncNowToServer();
+                setSyncNotice(res.message);
+                setTimeout(() => setSyncNotice(null), 4000);
+              }}
+              title={syncNotice ?? 'Sincronizar estado com servidor Express'}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-[11px] font-medium hover:border-blue-600"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${state.syncStatus === 'pendente' ? 'animate-spin text-blue-600' : 'text-emerald-600'}`} />
+              <span className="hidden xl:inline capitalize">{state.syncStatus}</span>
+            </button>
             <div className="hidden sm:block">
               <LocationPillButton onClick={() => setLocationModalOpen(true)} />
             </div>
@@ -622,6 +649,22 @@ export const DriverLayout: React.FC = () => {
             </button>
           </div>
         </header>
+
+        {state.session.isDemoSession && (
+          <div className="bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 px-4 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              <strong>Modo Demonstração (Sandbox):</strong> dados fictícios de exemplo isolados da conta real.{' '}
+              {syncNotice ? `· ${syncNotice}` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => setMode('portal')}
+              className="underline font-semibold hover:opacity-80"
+            >
+              Entrar com Conta Real no Portal
+            </button>
+          </div>
+        )}
 
         <main className="flex-1 p-4 sm:p-6 pb-24 lg:pb-8 max-w-7xl w-full mx-auto space-y-6">
           <div className="sm:hidden flex items-center justify-between gap-2">

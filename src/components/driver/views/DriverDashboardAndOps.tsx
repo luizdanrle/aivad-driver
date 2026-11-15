@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -8,10 +8,12 @@ import {
   Calculator,
   Car,
   CheckCircle2,
+  Clock,
   Database,
   Gauge,
   History,
   Layers,
+  MapPin,
   Play,
   Radio,
   RotateCcw,
@@ -23,11 +25,15 @@ import {
 } from 'lucide-react';
 import { analyzeProposalWithAiCore, type ProposalAiDecisionPackage } from '../../../core/aiCore';
 import { isCompletedTripStatus, round2 } from '../../../core/intelligence';
+import { computeTripTimersSnapshot } from '../../../core/lifecycle';
 import { formatDistance, formatDistanceRate, formatMoney, getTodayIso } from '../../../core/localization';
+import { evaluateProposalZoneAlerts } from '../../../core/zones';
 import type {
   AnalysisMode,
   AndroidOverlayConfig,
+  ArrivalDetectionMethod,
   AutoPilotMode,
+  CancellationBy,
   CaptureSource,
   FloatingMetricKey,
   ProposalInput,
@@ -63,6 +69,13 @@ const ALL_FLOATING_METRICS: FloatingMetricKey[] = [
   'score',
 ];
 
+function formatMmSs(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+}
+
 export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
@@ -76,11 +89,39 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     setDriverNav,
     createAndAnalyzeProposal,
     updateProposalLifecycle,
+    acceptProposalForTrip,
+    confirmActiveTripPlatform,
+    markActiveTripArrived,
+    startActiveTripWait,
+    startActiveTripInProgress,
+    completeActiveTripAction,
+    cancelActiveTripAction,
     updateAutoPilotConfig,
     updateOverlayConfig,
     captureExternalEvent,
     confirmPendingCapture,
   } = useEcosystem();
+
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [arrivalMethod, setArrivalMethod] = useState<ArrivalDetectionMethod>('Botão manual no AIVAD');
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
+  const [cancelPanelOpen, setCancelPanelOpen] = useState(false);
+  const [cancelActor, setCancelActor] = useState<CancellationBy>('Passageiro');
+  const [cancelNoShow, setCancelNoShow] = useState(true);
+  const [cancelReason, setCancelReason] = useState('Passageiro não compareceu no ponto dentro do prazo');
+  const [cancelComp, setCancelComp] = useState(3.2);
+
+  useEffect(() => {
+    if (!state.activeTrip) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [state.activeTrip]);
+
+  const activeTripTimers = useMemo(
+    () => (state.activeTrip ? computeTripTimersSnapshot(state.activeTrip, nowMs) : null),
+    [state.activeTrip, nowMs]
+  );
 
   const todayIso = getTodayIso();
 
@@ -312,6 +353,248 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     ]
   );
 
+  const calcZoneAlerts = useMemo(
+    () =>
+      evaluateProposalZoneAlerts({
+        input: {
+          pickupAddress: calcInput.pickupAddress,
+          destinationAddress: calcInput.destinationAddress,
+          region: calcInput.region,
+        },
+        zones: state.zones,
+        observations: state.zoneObservations,
+      }),
+    [calcInput.pickupAddress, calcInput.destinationAddress, calcInput.region, state.zones, state.zoneObservations]
+  );
+
+  const sandboxZoneAlerts = useMemo(
+    () =>
+      evaluateProposalZoneAlerts({
+        input: {
+          pickupAddress: sandboxInput.pickupAddress,
+          destinationAddress: sandboxInput.destinationAddress,
+          region: sandboxInput.region,
+        },
+        zones: state.zones,
+        observations: state.zoneObservations,
+      }),
+    [sandboxInput.pickupAddress, sandboxInput.destinationAddress, sandboxInput.region, state.zones, state.zoneObservations]
+  );
+
+  const renderActiveTripLifecyclePanel = () => {
+    const sess = state.activeTrip;
+    const snap = activeTripTimers;
+    if (!sess || !snap) return null;
+
+    return (
+      <Card data-testid="active-trip-lifecycle-panel" className="p-5 border-2 border-blue-600 dark:border-blue-500 bg-blue-50/40 dark:bg-blue-950/25 space-y-4 text-xs">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-blue-700 text-white font-bold uppercase text-[10px]">
+                Viagem Ativa · {sess.phase}
+              </span>
+              <span className="font-mono-tabular font-bold">
+                {sess.platformId.toUpperCase()} · {sess.category} ({sess.externalRef})
+              </span>
+              <StatusLabel
+                tone={sess.platformConfirmed ? 'success' : 'warning'}
+                text={sess.platformConfirmed ? 'Confirmada na Plataforma' : 'Aguarda Confirmação na Plataforma'}
+              />
+            </div>
+            <p className="text-slate-700 dark:text-slate-200 font-medium">
+              Recolha: <strong>{sess.pickupAddress || sess.pickupZone}</strong> → Destino:{' '}
+              <strong>{sess.destinationAddress || sess.destinationZone || 'A confirmar'}</strong>
+            </p>
+          </div>
+
+          {!sess.platformConfirmed && (
+            <button
+              type="button"
+              onClick={() => confirmActiveTripPlatform()}
+              className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold shrink-0"
+            >
+              Confirmar na Plataforma
+            </button>
+          )}
+        </div>
+
+        {/* Separated Timers: Deslocação vs Espera */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 block">
+              Deslocação até à recolha
+            </span>
+            <p data-testid="timer-travel-pickup" className="text-xl font-extrabold font-mono-tabular text-blue-700 dark:text-blue-400">
+              {formatMmSs(snap.travelToPickupSeconds)}
+            </p>
+            <span className="text-[11px] text-slate-500">
+              Estimado: {sess.pickupTimeEstMin} min ({sess.pickupDistanceKm} km)
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 block">
+              Espera pelo passageiro
+            </span>
+            <p data-testid="timer-passenger-wait" className="text-xl font-extrabold font-mono-tabular text-amber-700 dark:text-amber-400">
+              {formatMmSs(snap.waitAtPickupSeconds)}
+            </p>
+            <span className="text-[11px] text-slate-500">
+              {sess.waitStartedAtIso
+                ? `Espera gratuita restante: ${formatMmSs(snap.remainingFreeWaitSeconds)} · Prazo ref.: ${formatMmSs(snap.remainingToCancelDeadlineSeconds)}`
+                : 'A 00:00 até assinalar chegada e espera'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 block">
+              Orientação de cancelamento (Nunca auto-cancela a 0)
+            </span>
+            <p className="text-sm font-bold text-slate-900 dark:text-white mt-0.5">
+              {snap.waitPhaseStatus}
+            </p>
+            <span className="text-[11px] text-slate-500 block">
+              Fonte: {sess.ruleApplied.source} (verif. {sess.ruleApplied.verifiedAt})
+            </span>
+          </div>
+        </div>
+
+        {/* Actions per phase */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-blue-200/70 dark:border-blue-900">
+          {sess.phase === 'Em deslocação para recolha' && (
+            <>
+              <select
+                aria-label="Método de deteção de chegada"
+                value={arrivalMethod}
+                onChange={(e) => setArrivalMethod(e.target.value as ArrivalDetectionMethod)}
+                className="px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="Botão manual no AIVAD">Botão manual no AIVAD</option>
+                <option value="Geolocalização no ponto (A validar)">Geolocalização no ponto (A validar)</option>
+                <option value="Notificação app externa (A validar)">Notificação app externa (A validar)</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => markActiveTripArrived(arrivalMethod, true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                Cheguei ao local (Iniciar Espera)
+              </button>
+            </>
+          )}
+
+          {sess.phase === 'Chegada ao local de recolha' && (
+            <button
+              type="button"
+              onClick={() => startActiveTripWait()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              Iniciar Cronómetro de Espera
+            </button>
+          )}
+
+          {(sess.phase === 'Chegada ao local de recolha' || sess.phase === 'Em espera pelo passageiro') && (
+            <button
+              type="button"
+              onClick={() => startActiveTripInProgress()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold"
+            >
+              <Play className="w-3.5 h-3.5" />
+              Passageiro a Bordo (Iniciar Viagem)
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              completeActiveTripAction(sess.grossEstimatedEur, 0, 0);
+              setCancelPanelOpen(false);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            Concluir Viagem (€{sess.grossEstimatedEur.toFixed(2)})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setCancelPanelOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30"
+          >
+            Registar Cancelamento / No-Show
+          </button>
+        </div>
+
+        {cancelPanelOpen && (
+          <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900 space-y-3">
+            <p className="font-bold text-red-700 dark:text-red-300">
+              Registo Manual de Cancelamento (O AIVAD nunca cancela automaticamente na app externa)
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+              <select
+                aria-label="Quem cancelou"
+                value={cancelActor}
+                onChange={(e) => setCancelActor(e.target.value as CancellationBy)}
+                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="Passageiro">Passageiro</option>
+                <option value="Motorista">Motorista</option>
+                <option value="Plataforma">Plataforma</option>
+                <option value="Desconhecido">Desconhecido</option>
+              </select>
+              <label className="inline-flex items-center gap-2 px-2">
+                <input
+                  type="checkbox"
+                  checked={cancelNoShow}
+                  onChange={(e) => setCancelNoShow(e.target.checked)}
+                />
+                <span>Passageiro não compareceu</span>
+              </label>
+              <input
+                type="number"
+                step="0.1"
+                aria-label="Compensação recebida (€)"
+                value={cancelComp}
+                onChange={(e) => setCancelComp(Number(e.target.value))}
+                placeholder="Compensação €"
+                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+              <input
+                type="text"
+                aria-label="Motivo do cancelamento"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  cancelActiveTripAction(cancelActor, cancelNoShow, cancelReason, cancelComp);
+                  setCancelPanelOpen(false);
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold"
+              >
+                Confirmar Registo de Cancelamento
+              </button>
+              <button
+                type="button"
+                onClick={() => setCancelPanelOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700"
+              >
+                Voltar
+              </button>
+            </div>
+          </div>
+        )}
+      </Card>
+    );
+  };
+
   // Smart Data Capture Form
   const [capForm, setCapForm] = useState<{
     externalTxId: string;
@@ -355,6 +638,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
     return (
       <div className="space-y-6">
+        {renderActiveTripLifecyclePanel()}
         {/* Live Commercial Cockpit Strip */}
         <Card className="p-5 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white border-blue-900">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -1145,6 +1429,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   analysis={sandboxPackage.analysis}
                   recommendedAction={sandboxPackage.recommendedAction}
                   confidencePct={sandboxPackage.confidencePct}
+                  confidenceStatus={sandboxPackage.confidenceStatus}
+                  zoneAlerts={sandboxZoneAlerts}
                   isPreviewSurface
                   onAccept={() =>
                     setSandboxActionFeedback(
@@ -1201,9 +1487,11 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     return (
       <div className="space-y-6">
         {renderCorridasRibbon()}
+        {renderActiveTripLifecyclePanel()}
+        {lifecycleError && <StatusLabel tone="danger" text={lifecycleError} />}
         <ContextualHelpBanner
           title="AIVAD Real-Time Offer Analyzer & Decisão Contextual AI CORE"
-          description="Avalie rentabilidade em €/km, €/hora e €/minuto, compare alternativas antes de aceitar e sincronize automaticamente com Viagens, Tacógrafo, Financeiro e Previsões IA."
+          description="Avalie rentabilidade em €/km, €/hora e €/minuto, alertas de zona ativos, alternativas antes de aceitar e acompanhe a viagem com cronómetros separados."
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1406,7 +1694,11 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-bold flex items-center gap-1.5 text-blue-700 dark:text-blue-400">
                   <Sparkles className="w-4 h-4" />
-                  Alternativas Comparadas pelo AI CORE ({displayedPackage.confidencePct}% confiança)
+                  Alternativas Comparadas pelo AI CORE (
+                  {displayedPackage.confidencePct !== null
+                    ? `${displayedPackage.confidencePct}% confiança`
+                    : displayedPackage.confidenceStatus}
+                  )
                 </span>
                 <EpistemicTagBadge tag={displayedPackage.epistemicTag} />
               </div>
@@ -1519,6 +1811,25 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 analysis={liveAnalysis}
                 recommendedAction={displayedPackage.recommendedAction}
                 confidencePct={displayedPackage.confidencePct}
+                confidenceStatus={displayedPackage.confidenceStatus}
+                zoneAlerts={calcZoneAlerts}
+                onAccept={() => {
+                  const created = createAndAnalyzeProposal(calcInput, 'Manual');
+                  setLastCreatedPropId(created.record.id);
+                  setLastSavedAiPackage(created.aiPackage);
+                  const mappedAiRec =
+                    created.aiPackage.recommendedAction === 'Aceitar corrida atual'
+                      ? 'Aceitar'
+                      : created.aiPackage.recommendedAction === 'Esperar próxima oferta'
+                      ? 'Recusar'
+                      : 'Aguardar';
+                  const startRes = acceptProposalForTrip(created.record, mappedAiRec);
+                  if (!startRes.ok) {
+                    setLifecycleError(startRes.error ?? 'Não foi possível iniciar viagem ativa.');
+                  } else {
+                    setLifecycleError(null);
+                  }
+                }}
               />
             </Card>
           </div>
@@ -1547,9 +1858,11 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     return (
       <div className="space-y-6">
         {renderCorridasRibbon()}
+        {renderActiveTripLifecyclePanel()}
+        {lifecycleError && <StatusLabel tone="danger" text={lifecycleError} />}
         <ContextualHelpBanner
           title="Propostas em Tempo Real & Ciclo de Vida Separado"
-          description="O clique de aceitação do motorista nunca é confundido com a confirmação efetiva pela plataforma. Teste uma proposta simulada ou avance estados manualmente."
+          description="A recomendação da IA, a aceitação do motorista e a confirmação efetiva pela plataforma são estados distintos. Aceitar inicia o acompanhamento sem iniciar a espera antes da chegada."
           demoNotice="INTEGRAÇÃO A VALIDAR para captura automática"
         />
 
@@ -1629,22 +1942,43 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 </p>
               )}
 
-              <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
-                <span className="text-[11px] text-slate-500 mr-1">Transição de estado:</span>
-                {states.map((st) => (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-slate-500 mr-1">Transição de estado:</span>
+                  {states.map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => updateProposalLifecycle(prop.id, st)}
+                      className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
+                        prop.lifecycleState === st
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {st}
+                    </button>
+                  ))}
+                </div>
+                {prop.lifecycleState === 'Apresentada' && (
                   <button
-                    key={st}
                     type="button"
-                    onClick={() => updateProposalLifecycle(prop.id, st)}
-                    className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
-                      prop.lifecycleState === st
-                        ? 'bg-blue-700 text-white border-blue-700'
-                        : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }`}
+                    onClick={() => {
+                      const mappedRec =
+                        prop.autoPilotDecision?.action === 'Aceitar sugerido'
+                          ? 'Aceitar'
+                          : prop.autoPilotDecision?.action === 'Recusar sugerido'
+                          ? 'Recusar'
+                          : 'Aguardar';
+                      const res = acceptProposalForTrip(prop, mappedRec);
+                      if (!res.ok) setLifecycleError(res.error ?? 'Erro ao aceitar proposta.');
+                      else setLifecycleError(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold shrink-0"
                   >
-                    {st}
+                    Aceitar e Acompanhar Viagem
                   </button>
-                ))}
+                )}
               </div>
             </Card>
           ))}

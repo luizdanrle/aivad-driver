@@ -34,13 +34,16 @@ export const DriverAiCoreView: React.FC = () => {
   const {
     state,
     activeDriver,
+    activeVehicle,
     activeDriverTrips,
+    rolling24hCompliance,
     aiCoreBriefing,
     driverPredictions,
   } = useEcosystem();
 
   const [selectedAgentId, setSelectedAgentId] = useState<string>('ALL');
   const [question, setQuestion] = useState('');
+  const [askingBusy, setAskingBusy] = useState(false);
   const [chatHistory, setChatHistory] = useState<
     Array<{
       q: string;
@@ -48,14 +51,19 @@ export const DriverAiCoreView: React.FC = () => {
       answer: string;
       sources: string[];
       epistemicTag: EpistemicTag;
-      confidencePct: number;
+      confidencePct: number | null;
+      confidenceStatus: string;
+      engineMode: 'gemini' | 'deterministico';
     }>
   >([]);
 
-  const handleAsk = (qText: string) => {
+  const handleAsk = async (qText: string) => {
     const clean = qText.trim();
-    if (!clean) return;
-    const res = answerAiCoreQuery(clean, {
+    if (!clean || askingBusy) return;
+    setAskingBusy(true);
+    setQuestion('');
+
+    const deterministic = answerAiCoreQuery(clean, {
       driverId: activeDriver.id,
       trips: activeDriverTrips,
       expenses: state.expenses,
@@ -68,8 +76,58 @@ export const DriverAiCoreView: React.FC = () => {
       autoPilot: state.autoPilot,
       predictions: driverPredictions,
     });
-    setChatHistory((prev) => [{ q: clean, ...res }, ...prev]);
-    setQuestion('');
+
+    try {
+      const res = await fetch('/api/ai/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          prompt: clean,
+          contextSummary: {
+            driverName: activeDriver.name,
+            city: state.localization.currentLocation.city,
+            country: state.localization.selectedMarketCode,
+            rolling24hWorkMinutes: rolling24hCompliance.rolling24hWorkMinutes,
+            remainingLegalMinutes: rolling24hCompliance.remainingLegalMinutes,
+            activeVehicle: `${activeVehicle.brand} ${activeVehicle.model} (WLTP ${activeVehicle.homologatedRangeKm ?? activeVehicle.rangeKm}km / Real ${activeVehicle.realRangeKm ?? activeVehicle.rangeKm}km)`,
+            tripsCount: activeDriverTrips.length,
+            strategyMode: state.autoPilot.strategyMode ?? 'Manual',
+            deterministicBaseline: deterministic.answer,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok && !data?.fallback && typeof data?.text === 'string') {
+        setChatHistory((prev) => [
+          {
+            q: clean,
+            agentName: `AIVAD AI CORE · ${deterministic.agentName} (Gemini Server)`,
+            answer: data.text,
+            sources: [...deterministic.sources, 'Gemini Proxy (/api/ai/query)'],
+            epistemicTag: deterministic.epistemicTag,
+            confidencePct: deterministic.confidencePct,
+            confidenceStatus: deterministic.confidenceStatus,
+            engineMode: 'gemini',
+          },
+          ...prev,
+        ]);
+        setAskingBusy(false);
+        return;
+      }
+    } catch {
+      // Fallback safely to deterministic response
+    }
+
+    setChatHistory((prev) => [
+      {
+        q: clean,
+        ...deterministic,
+        engineMode: 'deterministico',
+      },
+      ...prev,
+    ]);
+    setAskingBusy(false);
   };
 
   const visibleBriefings =
@@ -81,7 +139,7 @@ export const DriverAiCoreView: React.FC = () => {
     <div className="space-y-6">
       <ContextualHelpBanner
         title="AIVAD AI CORE — O Cérebro Inteligente do Motorista"
-        description="Coordena 8 agentes especializados sobre os seus dados reais. Todas as recomendações indicam inputs considerados, justificação, confiança numérica (%) e etiqueta epistémica."
+        description="Coordena 8 agentes especializados sobre os seus dados. A confiança (%) é calibrada apenas com amostra suficiente e fica indisponível quando não calculável."
         demoNotice="Aprendizagem isolada por utilizador"
       />
 
@@ -138,7 +196,7 @@ export const DriverAiCoreView: React.FC = () => {
         </div>
       </Card>
 
-      {/* Briefings with Epistemic Tags, Confidence & Explainability */}
+      {/* Briefings with Epistemic Tags, Null-Safe Calibrated Confidence & Explainability */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {visibleBriefings.map((item) => (
           <Card key={item.id} className="p-5 space-y-3">
@@ -154,7 +212,7 @@ export const DriverAiCoreView: React.FC = () => {
                   {item.epistemicTag}
                 </span>
                 <span className="font-mono-tabular text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                  {item.confidencePct}% conf.
+                  {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
                 </span>
               </div>
             </div>
@@ -249,13 +307,13 @@ export const DriverAiCoreView: React.FC = () => {
 
       {/* Interactive Grounded AI CORE Consultation */}
       <Card className="p-5 space-y-4">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-base font-display font-bold flex items-center gap-2">
             <Bot className="w-4 h-4 text-blue-700 dark:text-blue-400" />
             Consultar AIVAD AI CORE
           </h2>
           <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Nunca inventa tráfego ao vivo ou dados ausentes
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Proxy servidor seguro + fallback determinístico transparente
           </span>
         </div>
 
@@ -269,7 +327,7 @@ export const DriverAiCoreView: React.FC = () => {
             <button
               key={preset}
               type="button"
-              onClick={() => handleAsk(preset)}
+              onClick={() => void handleAsk(preset)}
               className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 text-xs font-medium hover:border-blue-600 text-left"
             >
               {preset}
@@ -280,7 +338,7 @@ export const DriverAiCoreView: React.FC = () => {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            handleAsk(question);
+            void handleAsk(question);
           }}
           className="flex gap-2"
         >
@@ -294,10 +352,11 @@ export const DriverAiCoreView: React.FC = () => {
           />
           <button
             type="submit"
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
+            disabled={askingBusy}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold disabled:opacity-60"
           >
             <Send className="w-3.5 h-3.5" />
-            <span>Analisar</span>
+            <span>{askingBusy ? 'A analisar...' : 'Analisar'}</span>
           </button>
         </form>
 
@@ -315,14 +374,17 @@ export const DriverAiCoreView: React.FC = () => {
                       {item.epistemicTag}
                     </span>
                     <span className="font-mono-tabular text-[11px] font-semibold">
-                      {item.confidencePct}% conf.
+                      {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
                     </span>
                   </div>
                 </div>
-                <p className="text-slate-700 dark:text-slate-200 leading-relaxed">{item.answer}</p>
+                <p className="text-slate-700 dark:text-slate-200 leading-relaxed whitespace-pre-line">{item.answer}</p>
                 <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
-                  <span>{item.agentName} · Fontes: {item.sources.join(', ')}</span>
+                  <span>
+                    {item.agentName} ({item.engineMode === 'gemini' ? 'Gemini Servidor' : 'Determinístico'}) · Fontes:{' '}
+                    {item.sources.join(', ')}
+                  </span>
                 </p>
               </div>
             ))}

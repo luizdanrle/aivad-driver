@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import {
+  AlertTriangle,
   CheckCircle2,
   Download,
+  MapPin,
   Maximize2,
   Minimize2,
+  Navigation,
   QrCode,
   ShieldCheck,
   Sparkles,
@@ -12,6 +15,7 @@ import {
 } from 'lucide-react';
 import type {
   AndroidOverlayConfig,
+  ConfidenceStatus,
   FloatingMetricKey,
   PlatformId,
   ProposalAnalysis,
@@ -19,6 +23,7 @@ import type {
   TachographActivityRecord,
   TachographState,
 } from '../../models/types';
+import type { ZoneOperationalAlert } from '../../core/zones';
 
 export const PlatformLogo: React.FC<{
   platformId: PlatformId;
@@ -121,7 +126,9 @@ export const DynamicFloatingProposalCard: React.FC<{
   proposalInput: ProposalInput;
   analysis: ProposalAnalysis;
   recommendedAction?: string;
-  confidencePct?: number;
+  confidencePct?: number | null;
+  confidenceStatus?: ConfidenceStatus;
+  zoneAlerts?: ZoneOperationalAlert[];
   isPreviewSurface?: boolean;
   onAccept?: () => void;
   onReject?: () => void;
@@ -131,7 +138,9 @@ export const DynamicFloatingProposalCard: React.FC<{
   proposalInput,
   analysis,
   recommendedAction,
-  confidencePct,
+  confidencePct = null,
+  confidenceStatus,
+  zoneAlerts = [],
   isPreviewSurface = false,
   onAccept,
   onReject,
@@ -139,26 +148,25 @@ export const DynamicFloatingProposalCard: React.FC<{
 }) => {
   const [minimized, setMinimized] = useState(false);
 
-  // Strictly dynamic visual treatment based on analysis classification
   const verdict =
     analysis.classification === 'verde'
       ? {
           label: 'VERDE · FAVORÁVEL',
           accentHex: '#10B981',
-          badgeBg: 'rgba(16, 185, 129, 0.18)',
+          badgeBg: 'rgba(16, 185, 129, 0.20)',
           badgeText: '#34D399',
         }
       : analysis.classification === 'amarelo'
       ? {
           label: 'AMARELO · ATENÇÃO',
           accentHex: '#F59E0B',
-          badgeBg: 'rgba(245, 158, 11, 0.18)',
+          badgeBg: 'rgba(245, 158, 11, 0.20)',
           badgeText: '#FBBF24',
         }
       : {
           label: 'VERMELHO · REJEITAR',
           accentHex: '#EF4444',
-          badgeBg: 'rgba(239, 68, 68, 0.22)',
+          badgeBg: 'rgba(239, 68, 68, 0.24)',
           badgeText: '#FCA5A5',
         };
 
@@ -188,8 +196,15 @@ export const DynamicFloatingProposalCard: React.FC<{
     }
   };
 
+  const confidenceLabel =
+    confidencePct !== null && confidencePct !== undefined
+      ? `${confidencePct}% conf.`
+      : confidenceStatus ?? 'Confiança não calculável';
+
   return (
     <div
+      data-testid="floating-proposal-card"
+      data-classification={analysis.classification}
       style={{
         width: isPreviewSurface ? `${overlayConfig.widthPercent}%` : '100%',
         opacity: overlayConfig.opacityPercent / 100,
@@ -200,10 +215,10 @@ export const DynamicFloatingProposalCard: React.FC<{
       }}
       className={`rounded-2xl border-2 p-4 shadow-xl transition-all duration-300 space-y-3 mx-auto ${fontClass}`}
     >
-      {/* Top Status Strip */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={28} />
+      {/* Top Status & Gross Strip */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={32} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="font-bold uppercase tracking-tight">
@@ -216,16 +231,24 @@ export const DynamicFloatingProposalCard: React.FC<{
                 {verdict.label}
               </span>
             </div>
-            <p className="text-[11px] opacity-75 truncate">
-              {proposalInput.region} · Recolha {proposalInput.pickupDistanceKm} km + Viagem {proposalInput.tripDistanceKm} km
+            <p className="text-[11px] opacity-80 truncate">
+              {proposalInput.region} · Deslocação: {proposalInput.pickupDistanceKm} km ({proposalInput.pickupTimeMin} min) · Viagem: {proposalInput.tripDistanceKm} km ({proposalInput.tripTimeMin} min)
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-lg font-extrabold font-mono-tabular">
-            €{proposalInput.grossValueEur.toFixed(2)}
-          </span>
+        <div className="flex items-start gap-1.5 shrink-0">
+          <div className="text-right">
+            <span className="text-[10px] uppercase tracking-wider opacity-70 block leading-none">
+              Valor bruto
+            </span>
+            <span className="text-xl font-extrabold font-mono-tabular leading-tight block">
+              €{proposalInput.grossValueEur.toFixed(2)}
+            </span>
+            <span className="text-[11px] font-mono-tabular opacity-85 block">
+              Líquido est.: €{analysis.estimatedNetEur.toFixed(2)}
+            </span>
+          </div>
           {(overlayConfig.allowMinimize ?? true) && (
             <button
               type="button"
@@ -251,6 +274,70 @@ export const DynamicFloatingProposalCard: React.FC<{
 
       {!minimized && (
         <>
+          {/* Pickup & Destination Addresses */}
+          <div className="rounded-xl bg-white/10 border border-white/10 p-2.5 space-y-1.5 text-[11px]">
+            <div className="flex items-start gap-2">
+              <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-400" />
+              <div className="min-w-0 flex-1">
+                <span className="opacity-70 uppercase text-[10px] font-bold">Recolha: </span>
+                <span className="font-semibold break-words">
+                  {proposalInput.pickupAddress || proposalInput.region}
+                </span>
+              </div>
+              <span className="font-mono-tabular opacity-85 shrink-0">
+                {proposalInput.pickupDistanceKm} km · {proposalInput.pickupTimeMin}m
+              </span>
+            </div>
+            <div className="flex items-start gap-2">
+              <Navigation className="w-3.5 h-3.5 shrink-0 mt-0.5 text-blue-400" />
+              <div className="min-w-0 flex-1">
+                <span className="opacity-70 uppercase text-[10px] font-bold">Destino: </span>
+                <span className="font-semibold break-words">
+                  {proposalInput.destinationAddress || 'Destino não indicado pela plataforma'}
+                </span>
+              </div>
+              <span className="font-mono-tabular opacity-85 shrink-0">
+                {proposalInput.tripDistanceKm} km · {proposalInput.tripTimeMin}m
+              </span>
+            </div>
+          </div>
+
+          {/* Active Zone Intelligence Alerts inside Floating Card */}
+          {zoneAlerts.length > 0 && (
+            <div
+              data-testid="floating-card-zone-alerts"
+              className="rounded-xl bg-amber-500/20 border border-amber-400/50 p-2.5 space-y-1 text-[11px]"
+            >
+              {zoneAlerts.slice(0, 2).map((al) => {
+                const alt = al.alternatives[0];
+                return (
+                  <div key={`${al.zoneId ?? al.zoneName}`} className="flex items-start gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                    <div className="min-w-0">
+                      <p className="font-bold text-amber-200">
+                        {al.zoneName} · {al.tier}
+                        {al.isScheduleCurrentlyActive ? ' · ATIVO AGORA' : ''}
+                      </p>
+                      <p className="opacity-90 leading-snug">
+                        {al.title}{al.scheduleSummary ? ` (${al.scheduleSummary})` : ''} — {al.description}
+                      </p>
+                      {al.isEventNotConfirmedBan && (
+                        <p className="text-[10px] text-amber-100/90 italic mt-0.5">
+                          Nota: Evento regular identificado; não confirma proibição total oficial sem sinalização no local.
+                        </p>
+                      )}
+                      {alt && (
+                        <p className="text-emerald-200 font-semibold mt-0.5">
+                          Alternativa segura: {alt.label} ({alt.walkingDistanceMeters}m / ~{alt.walkingTimeMin} min a pé)
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* Dynamic Metrics Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {overlayConfig.visibleMetrics.map((key) => {
@@ -269,13 +356,12 @@ export const DynamicFloatingProposalCard: React.FC<{
             })}
           </div>
 
-          {/* AI Recommended Action + Reasons */}
+          {/* AI Recommended Action + Calibrated Confidence */}
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-white/10">
             <div className="flex items-center gap-1.5 min-w-0">
               <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color: verdict.accentHex }} />
               <span className="truncate font-semibold">
-                {recommendedAction ?? analysis.reasons[0]}
-                {confidencePct ? ` (${confidencePct}% conf.)` : ''}
+                {recommendedAction ?? analysis.reasons[0]} ({confidenceLabel})
               </span>
             </div>
             <span className="text-[10px] opacity-70 font-mono-tabular">
@@ -292,7 +378,7 @@ export const DynamicFloatingProposalCard: React.FC<{
                   style={{ backgroundColor: verdict.accentHex }}
                   className="flex-1 py-2 px-3 rounded-xl text-white text-xs font-bold hover:opacity-90 transition-opacity"
                 >
-                  Aceitar (Registar Decisão)
+                  Aceitar e Acompanhar Viagem
                 </button>
               )}
               {onReject && (

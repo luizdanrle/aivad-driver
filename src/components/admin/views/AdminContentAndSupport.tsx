@@ -242,9 +242,13 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="CMS Integrado — Gestão Visual, Páginas & Publicações do Site Oficial"
+          title="CMS do Portal Integrado — Gestão Visual, Páginas & Publicações"
           description="Edite identidade visual, ordem e visibilidade de secções, textos, benefícios, FAQs e comunicados com Rascunho, Pré-visualização, Publicação imediata e Rollback."
         />
+
+        <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-200">
+          <strong>Âmbito Real do CMS:</strong> Todas as alterações publicadas aplicam-se de imediato ao <strong>Portal Institucional Integrado nesta aplicação AIVAD</strong> (e persistem na sessão/servidor). Não gere alojamento DNS nem sites externos fora desta instância.
+        </div>
 
         {cmsNotice && (
           <StatusLabel tone="info" text={cmsNotice} />
