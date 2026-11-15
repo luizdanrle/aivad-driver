@@ -1,8 +1,25 @@
 import React, { useMemo, useState } from 'react';
-import { Award, CalendarClock, Compass, History, Plus, Target } from 'lucide-react';
-import { calculateSmartPlan } from '../../../core/intelligence';
+import {
+  Award,
+  CalendarClock,
+  CheckCircle2,
+  Compass,
+  ExternalLink,
+  History,
+  Layers,
+  Plus,
+  ShieldAlert,
+  Target,
+} from 'lucide-react';
+import { calculateSmartPlan, round2 } from '../../../core/intelligence';
+import {
+  formatDistance,
+  formatHistoricalMoney,
+  formatMoney,
+} from '../../../core/localization';
 import type { CaptureSource, TripRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import { HorizontalBreakdownBars, PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ContextualHelpBanner,
@@ -15,15 +32,23 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
   const {
     state,
     activeVehicle,
+    activeMarket,
     visibleDriverPlatforms,
     completeTrip,
     addCampaign,
     addShift,
     updateShiftNotes,
+    setDriverNav,
   } = useEcosystem();
+
+  const unitSystem = state.localization.unitSystem;
+  const currency = activeMarket.currency;
+  const symbol = activeMarket.currencySymbol;
 
   const [tripFilterPlatform, setTripFilterPlatform] = useState('ALL');
   const [selectedTrip, setSelectedTrip] = useState<TripRecord | null>(state.trips[0] ?? null);
+  const [selectedConsolidatedPlatId, setSelectedConsolidatedPlatId] = useState<string | null>(null);
+
   const [newTripForm, setNewTripForm] = useState({
     externalRef: `UB-${String(Date.now()).slice(-5)}`,
     platformId: visibleDriverPlatforms[0]?.id ?? 'uber',
@@ -34,9 +59,9 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     pickupDistanceKm: 1.5,
     tripDistanceKm: 10.5,
     durationMin: 22,
-    pickupZone: 'Saldanha',
-    destinationZone: 'Oriente',
-    category: 'UberX',
+    pickupZone: state.localization.currentLocation.city || 'Centro',
+    destinationZone: 'Aeroporto / Zona Central',
+    category: 'Standard',
   });
 
   // Shift Calendar & Form
@@ -53,7 +78,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     waitMinutes: 80,
     totalKm: 128,
     passengerKm: 104,
-    notes: 'Turno tarde Lisboa Centro',
+    notes: 'Turno tarde operação local',
   });
   const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
   const [editingNotes, setEditingNotes] = useState('');
@@ -95,12 +120,247 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     name: 'Campanha Fim de Semana Extra',
     rewardEur: 35,
     targetTrips: 20,
-    zone: 'Lisboa',
+    zone: state.localization.currentLocation.city || 'Área Metropolitana',
     scheduleWindow: '18:00 - 23:00',
     requirements: 'Taxa de aceitação >= 75%',
     estimatedExtraCostEur: 7.5,
   });
 
+  const multiPlatformSummary = useMemo(() => {
+    return state.platforms.map((plat) => {
+      const platTrips = state.trips.filter((t) => t.platformId === plat.id);
+      const gross = round2(platTrips.reduce((s, t) => s + t.grossEur + t.tipEur + t.bonusEur, 0));
+      const commissions = round2(platTrips.reduce((s, t) => s + t.commissionEur, 0));
+      const net = round2(platTrips.reduce((s, t) => s + t.netEur, 0));
+      const km = round2(platTrips.reduce((s, t) => s + t.pickupDistanceKm + t.tripDistanceKm, 0));
+      const minutes = platTrips.reduce((s, t) => s + t.durationMin, 0);
+      return {
+        platform: plat,
+        tripsCount: platTrips.length,
+        gross,
+        commissions,
+        net,
+        km,
+        hours: round2(minutes / 60),
+      };
+    });
+  }, [state.platforms, state.trips]);
+
+  // ==========================================================
+  // CONSOLIDADO MULTI-APP (Plataformas Independentes)
+  // ==========================================================
+  if (activeTab === 'consolidado-plataformas') {
+    const activeEntries = multiPlatformSummary.filter((x) => x.platform.status === 'Ativa');
+    const totalMultiGross = round2(multiPlatformSummary.reduce((s, x) => s + x.gross, 0));
+    const totalMultiNet = round2(multiPlatformSummary.reduce((s, x) => s + x.net, 0));
+    const totalMultiComm = round2(multiPlatformSummary.reduce((s, x) => s + x.commissions, 0));
+    const totalMultiTrips = multiPlatformSummary.reduce((s, x) => s + x.tripsCount, 0);
+
+    const barItems = multiPlatformSummary
+      .filter((x) => x.tripsCount > 0 || x.platform.status === 'Ativa')
+      .map((x) => ({
+        id: x.platform.id,
+        label: x.platform.name,
+        sublabel: `${x.tripsCount} viagens · ${x.platform.commissionPct}% comissão`,
+        value: x.net > 0 ? x.net : 0.1,
+        formattedValue: formatMoney(x.net, currency),
+        color: x.platform.brandColor ?? '#1D4ED8',
+      }));
+
+    return (
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Consolidado Multi-Plataforma Independente"
+          description="Reúne ganhos, comissões, tempos e elegibilidade de Uber, Bolt, POP, VLOZ, Frenalty, Cabify, FREE NOW e parceiros adicionados pela administração — sem misturar regras exclusivas como Uber Pro ou Bolt Score."
+          demoNotice="Estado de ligações automáticas às apps externas: INTEGRAÇÃO A VALIDAR (sem armazenamento de credenciais externas)."
+        />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <MetricCard
+            label="Receita Consolidada Multi-App"
+            value={formatMoney(totalMultiGross, currency)}
+            subtext={`${totalMultiTrips} viagens agregadas`}
+            explanation="Soma bruta de todas as plataformas registadas no ecossistema."
+            formula="Σ (Bruto + Gorjetas + Bónus)"
+            accent="blue"
+          />
+          <MetricCard
+            label="Comissões Retidas"
+            value={formatMoney(totalMultiComm, currency)}
+            subtext="Conforme taxa real de cada plataforma"
+            explanation="Total deduzido pelas diferentes plataformas."
+            formula="Σ (Bruto × % Comissão)"
+            accent="red"
+          />
+          <MetricCard
+            label="Líquido Operacional Agregado"
+            value={formatMoney(totalMultiNet, currency)}
+            subtext="Após comissões e custo/km do veículo"
+            explanation="Rendimento líquido operacional consolidado."
+            formula="Receita - Comissões - Custo/Km"
+          />
+          <MetricCard
+            label="Plataformas Ativas no Mercado"
+            value={`${activeEntries.length} / ${state.platforms.length}`}
+            subtext={`Mercado: ${activeMarket.name} (${activeMarket.code})`}
+            explanation="Total de plataformas ativas configuradas para operação atual."
+            formula="Contagem com estado = Ativa"
+          />
+        </div>
+
+        <Card className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Layers className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Comparação de Rendimento Líquido por Plataforma
+              </h2>
+              <p className="text-xs text-slate-500">
+                Clique numa barra para destacar os requisitos e detalhes operacionais da plataforma.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setDriverNav('desempenho-uber')}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-blue-600 font-medium"
+              >
+                <span>Módulo Uber Pro</span>
+                <ExternalLink className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDriverNav('desempenho-bolt')}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-blue-600 font-medium"
+              >
+                <span>Módulo Bolt Score</span>
+                <ExternalLink className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+
+          <HorizontalBreakdownBars
+            items={barItems}
+            selectedId={selectedConsolidatedPlatId}
+            onSelect={(id) =>
+              setSelectedConsolidatedPlatId((prev) => (prev === id ? null : id))
+            }
+          />
+        </Card>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {multiPlatformSummary.map(({ platform, tripsCount, gross, net, km, hours }) => {
+            const highlighted = selectedConsolidatedPlatId === platform.id;
+            const availableInMarket = platform.countryScope.includes(activeMarket.code);
+            return (
+              <Card
+                key={platform.id}
+                className={`p-5 space-y-3 transition-all ${
+                  highlighted ? 'ring-2 ring-blue-600' : ''
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <PlatformBadge
+                      name={platform.name}
+                      shortCode={platform.shortCode}
+                      brandColor={platform.brandColor}
+                    />
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold truncate">{platform.name}</h3>
+                      <p className="text-[11px] text-slate-500 truncate">
+                        Comissão {platform.commissionPct}% · {platform.countryScope.join(', ')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <StatusLabel
+                      tone={platform.status === 'Ativa' ? 'success' : 'neutral'}
+                      text={platform.status}
+                    />
+                    <span className="text-[10px] font-mono-tabular text-amber-700 dark:text-amber-400">
+                      {platform.integrationLabel}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/60 text-xs font-mono-tabular">
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Viagens</span>
+                    <span className="font-bold">{tripsCount}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Bruto</span>
+                    <span className="font-bold">{formatMoney(gross, currency)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-500 block">Líquido</span>
+                    <span className="font-bold text-blue-700 dark:text-blue-400">
+                      {formatMoney(net, currency)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-600 dark:text-slate-300 space-y-1.5">
+                  <p>
+                    <strong>Categorias:</strong> {platform.categories.join(' · ')}
+                  </p>
+                  {platform.citiesScope && platform.citiesScope.length > 0 && (
+                    <p>
+                      <strong>Cidades configuradas:</strong> {platform.citiesScope.join(', ')}
+                    </p>
+                  )}
+                  {platform.requirements && platform.requirements.length > 0 && (
+                    <p>
+                      <strong>Requisitos:</strong> {platform.requirements.join(' · ')}
+                    </p>
+                  )}
+                  {platform.benefits && platform.benefits.length > 0 && (
+                    <p>
+                      <strong>Benefícios:</strong> {platform.benefits.join(' · ')}
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="inline-flex items-center gap-1 text-slate-500">
+                    {availableInMarket ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Ativa em {activeMarket.code}</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldAlert className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Fora de {activeMarket.code} ({formatDistance(km, unitSystem)} / {hours}h)</span>
+                      </>
+                    )}
+                  </span>
+                  {(platform.id === 'uber' || platform.id === 'bolt') && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDriverNav(
+                          platform.id === 'uber' ? 'desempenho-uber' : 'desempenho-bolt'
+                        )
+                      }
+                      className="font-semibold text-blue-700 dark:text-blue-400 hover:underline"
+                    >
+                      Ver Regras Isoladas →
+                    </button>
+                  )}
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // HISTÓRICO DE VIAGENS (Preserva moeda original!)
+  // ==========================================================
   if (activeTab === 'historico-viagens') {
     const filtered = state.trips.filter(
       (t) => tripFilterPlatform === 'ALL' || t.platformId === tripFilterPlatform
@@ -109,15 +369,15 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="Histórico Completo de Viagens"
-          description="Preserva todo o histórico mesmo se uma plataforma for desativada pelo administrador. Clique em qualquer viagem para abrir o detalhe individual."
+          title="Histórico Completo de Viagens (Com Preservação de Moeda Original)"
+          description="Preserva todo o histórico na moeda em que cada viagem foi registada (ex: viagens em EUR não mudam para BRL se viajar para o Brasil) e mesmo se uma plataforma for desativada."
         />
 
         {/* Quick Register Trip */}
         <Card className="p-5 space-y-3">
           <h2 className="text-sm font-bold flex items-center gap-2">
             <Plus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Registar Viagem Concluída (Dispara Fluxo de Integração)
+            Registar Viagem Concluída em {activeMarket.name} ({currency})
           </h2>
           <form
             onSubmit={(e) => {
@@ -127,6 +387,9 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 vehicleId: activeVehicle.id,
                 date: '2026-11-14',
                 time: new Date().toTimeString().slice(0, 5),
+                currency,
+                originalGrossAmount: newTripForm.grossEur,
+                countryCode: activeMarket.code,
                 status: 'Concluída',
                 source: 'Manual' as CaptureSource,
                 isDemo: true,
@@ -153,7 +416,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
               </select>
             </div>
             <div>
-              <label htmlFor="nt-gross" className="block mb-1 font-medium">Bruto (€)</label>
+              <label htmlFor="nt-gross" className="block mb-1 font-medium">Bruto ({symbol})</label>
               <input
                 id="nt-gross"
                 type="number"
@@ -237,27 +500,54 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {filtered.map((t) => (
-                  <tr
-                    key={t.id}
-                    onClick={() => setSelectedTrip(t)}
-                    className={`cursor-pointer hover:bg-blue-50/50 dark:hover:bg-blue-950/20 ${
-                      selectedTrip?.id === t.id ? 'bg-blue-50 dark:bg-blue-950/30' : ''
-                    }`}
-                  >
-                    <td className="p-3 font-mono-tabular font-semibold">{t.externalRef}</td>
-                    <td className="p-3 font-mono-tabular">{t.date} {t.time}</td>
-                    <td className="p-3">{t.platformId.toUpperCase()} · {t.category}</td>
-                    <td className="p-3 font-mono-tabular">€{t.grossEur.toFixed(2)}</td>
-                    <td className="p-3 font-mono-tabular">€{t.tipEur.toFixed(2)}</td>
-                    <td className="p-3 font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
-                      €{t.netEur.toFixed(2)}
-                    </td>
-                    <td className="p-3">
-                      <StatusLabel tone={t.status === 'Cancelada' ? 'danger' : 'success'} text={t.status} />
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((t) => {
+                  const platObj = state.platforms.find((p) => p.id === t.platformId);
+                  return (
+                    <tr
+                      key={t.id}
+                      onClick={() => setSelectedTrip(t)}
+                      className={`cursor-pointer hover:bg-blue-50/50 dark:hover:bg-blue-950/20 ${
+                        selectedTrip?.id === t.id ? 'bg-blue-50 dark:bg-blue-950/30' : ''
+                      }`}
+                    >
+                      <td className="p-3 font-mono-tabular font-semibold">{t.externalRef}</td>
+                      <td className="p-3 font-mono-tabular">{t.date} {t.time}</td>
+                      <td className="p-3">
+                        <span className="inline-flex items-center gap-1.5">
+                          <PlatformBadge
+                            name={platObj?.name ?? t.platformId}
+                            shortCode={platObj?.shortCode}
+                            brandColor={platObj?.brandColor}
+                            size="sm"
+                          />
+                          <span>{platObj?.name ?? t.platformId.toUpperCase()} · {t.category}</span>
+                        </span>
+                      </td>
+                      <td className="p-3 font-mono-tabular">
+                        {formatHistoricalMoney(
+                          t.grossEur,
+                          t.originalGrossAmount ?? t.grossEur,
+                          t.currency ?? 'EUR',
+                          currency
+                        )}
+                      </td>
+                      <td className="p-3 font-mono-tabular">
+                        {formatMoney(t.tipEur, t.currency ?? 'EUR')}
+                      </td>
+                      <td className="p-3 font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                        {formatHistoricalMoney(
+                          t.netEur,
+                          t.originalNetAmount ?? t.netEur,
+                          t.currency ?? 'EUR',
+                          currency
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <StatusLabel tone={t.status === 'Cancelada' ? 'danger' : 'success'} text={t.status} />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </Card>
@@ -271,12 +561,20 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                   <span className="font-mono-tabular font-semibold">{selectedTrip.externalRef}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
+                  <span className="text-slate-500">Mercado / Moeda Original</span>
+                  <span className="font-mono-tabular">
+                    {selectedTrip.countryCode ?? 'PT'} · {selectedTrip.currency ?? 'EUR'}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
                   <span className="text-slate-500">Origem → Destino</span>
                   <span className="text-right">{selectedTrip.pickupZone} → {selectedTrip.destinationZone ?? 'N/D'}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
                   <span className="text-slate-500">Distância (Recolha + Viagem)</span>
-                  <span className="font-mono-tabular">{selectedTrip.pickupDistanceKm} + {selectedTrip.tripDistanceKm} km</span>
+                  <span className="font-mono-tabular">
+                    {formatDistance(selectedTrip.pickupDistanceKm, unitSystem)} + {formatDistance(selectedTrip.tripDistanceKm, unitSystem)}
+                  </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
                   <span className="text-slate-500">Duração</span>
@@ -285,13 +583,17 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
                   <span className="text-slate-500">Bruto / Gorjeta / Bónus</span>
                   <span className="font-mono-tabular">
-                    €{selectedTrip.grossEur.toFixed(2)} / €{selectedTrip.tipEur.toFixed(2)} / €{selectedTrip.bonusEur.toFixed(2)}
+                    {formatMoney(selectedTrip.grossEur, selectedTrip.currency ?? 'EUR')} /{' '}
+                    {formatMoney(selectedTrip.tipEur, selectedTrip.currency ?? 'EUR')} /{' '}
+                    {formatMoney(selectedTrip.bonusEur, selectedTrip.currency ?? 'EUR')}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
                   <span className="text-slate-500">Comissão / Custos / Portagens</span>
                   <span className="font-mono-tabular">
-                    €{selectedTrip.commissionEur.toFixed(2)} / €{selectedTrip.operationalCostEur.toFixed(2)} / €{selectedTrip.tollsEur.toFixed(2)}
+                    {formatMoney(selectedTrip.commissionEur, selectedTrip.currency ?? 'EUR')} /{' '}
+                    {formatMoney(selectedTrip.operationalCostEur, selectedTrip.currency ?? 'EUR')} /{' '}
+                    {formatMoney(selectedTrip.tollsEur, selectedTrip.currency ?? 'EUR')}
                   </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
@@ -299,8 +601,15 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                   <span>{selectedTrip.source}</span>
                 </div>
                 <div className="flex justify-between pt-2 text-sm font-bold text-blue-700 dark:text-blue-400">
-                  <span>Líquido Estimado</span>
-                  <span className="font-mono-tabular">€{selectedTrip.netEur.toFixed(2)}</span>
+                  <span>Líquido Estimado (Moeda Original)</span>
+                  <span className="font-mono-tabular">
+                    {formatHistoricalMoney(
+                      selectedTrip.netEur,
+                      selectedTrip.originalNetAmount ?? selectedTrip.netEur,
+                      selectedTrip.currency ?? 'EUR',
+                      currency
+                    )}
+                  </span>
                 </div>
               </div>
             ) : (
@@ -325,14 +634,23 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
             const pct = Math.min(100, Math.round((c.completedTrips / c.targetTrips) * 100));
             const remainingTrips = Math.max(0, c.targetTrips - c.completedTrips);
             const incrementalNet = c.rewardEur - c.estimatedExtraCostEur;
+            const plat = state.platforms.find((p) => p.id === c.platformId);
             return (
               <Card key={c.id} className="p-5 space-y-3">
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
-                      {c.platformId.toUpperCase()} · {c.zone}
-                    </span>
-                    <h3 className="text-base font-bold">{c.name}</h3>
+                  <div className="flex items-center gap-2.5">
+                    <PlatformBadge
+                      name={plat?.name ?? c.platformId}
+                      shortCode={plat?.shortCode}
+                      brandColor={plat?.brandColor}
+                      size="sm"
+                    />
+                    <div>
+                      <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
+                        {plat?.name ?? c.platformId.toUpperCase()} · {c.zone}
+                      </span>
+                      <h3 className="text-base font-bold">{c.name}</h3>
+                    </div>
                   </div>
                   <StatusLabel tone={c.status === 'Ativa' ? 'success' : 'neutral'} text={c.status} />
                 </div>
@@ -340,7 +658,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 <div className="space-y-1 text-xs">
                   <div className="flex justify-between font-mono-tabular">
                     <span>Progresso: {c.completedTrips}/{c.targetTrips} viagens ({remainingTrips} em falta)</span>
-                    <span className="font-bold">Recompensa: €{c.rewardEur.toFixed(2)}</span>
+                    <span className="font-bold">Recompensa: {formatMoney(c.rewardEur, currency)}</span>
                   </div>
                   <div className="h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
                     <div className="h-full bg-blue-700" style={{ width: `${pct}%` }} />
@@ -349,12 +667,12 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
                   <div>
                     <span className="text-slate-500 block">Custo Adicional Est.</span>
-                    <span className="font-mono-tabular font-semibold">€{c.estimatedExtraCostEur.toFixed(2)}</span>
+                    <span className="font-mono-tabular font-semibold">{formatMoney(c.estimatedExtraCostEur, currency)}</span>
                   </div>
                   <div>
                     <span className="text-slate-500 block">Líquido Incremental</span>
                     <span className="font-mono-tabular font-bold text-emerald-700 dark:text-emerald-400">
-                      €{incrementalNet.toFixed(2)}
+                      {formatMoney(incrementalNet, currency)}
                     </span>
                   </div>
                   <div>
@@ -411,7 +729,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
               />
             </div>
             <div>
-              <label htmlFor="cmp-rew" className="block mb-1 font-medium">Prémio (€)</label>
+              <label htmlFor="cmp-rew" className="block mb-1 font-medium">Prémio ({symbol})</label>
               <input
                 id="cmp-rew"
                 type="number"
@@ -441,7 +759,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
       <div className="space-y-6">
         <ContextualHelpBanner
           title="Desempenho Uber & Uber Pro (Regras Independentes)"
-          description="Módulo dedicado exclusivamente à estrutura Uber Pro (níveis, pontos, classificação, elogios e cancelamentos), sem misturar regras da Bolt."
+          description="Módulo dedicado exclusivamente à estrutura Uber Pro (níveis, pontos, classificação, elogios e cancelamentos), sem misturar regras da Bolt ou de outras apps."
           demoNotice="Sincronização direta Uber: INTEGRAÇÃO A VALIDAR"
         />
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -469,7 +787,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
           />
           <MetricCard
             label="Faturação Uber Registada"
-            value={`€${uberGross.toFixed(2)}`}
+            value={formatMoney(uberGross, currency)}
             subtext={`${uberTrips.length} viagens concluídas no histórico`}
             explanation="Receita total apurada nas viagens Uber do seu histórico."
             formula="Σ (Bruto + Gorjetas + Bónus Uber)"
@@ -513,7 +831,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
           <MetricCard
             label="Viagens Bolt Concluídas"
             value={`${boltTrips.length}`}
-            subtext={`€${boltGross.toFixed(2)} acumulados`}
+            subtext={`${formatMoney(boltGross, currency)} acumulados`}
             explanation="Total de viagens Bolt concluídas no período registado."
             formula="Contagem de viagens Bolt concluídas"
           />
@@ -541,7 +859,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
       <div className="space-y-6">
         <ContextualHelpBanner
           title="Agenda, Turnos & Linha Temporal Auditável"
-          description="Registe início, fim, pausas, refeições, descanso, tempo online, produtivo e espera. Todas as alterações mantêm trilha auditável."
+          description="Registe início, fim, pausas, refeições, descanso, tempo online, produtivo e espera. Todas as alterações mantêm trilha auditável (complementa o Tacógrafo TVDE)."
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -635,7 +953,11 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 </span>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
-                <span>Km Totais: {s.totalKm} km (Passageiro: {s.passengerKm} km · Vazio: {s.emptyKm} km)</span>
+                <span>
+                  Totais: {formatDistance(s.totalKm, unitSystem)} (Passageiro:{' '}
+                  {formatDistance(s.passengerKm, unitSystem)} · Vazio:{' '}
+                  {formatDistance(s.emptyKm, unitSystem)})
+                </span>
                 {editingShiftId === s.id ? (
                   <div className="flex items-center gap-2">
                     <input
@@ -690,10 +1012,10 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
         <Card className="lg:col-span-5 p-5 space-y-4 text-xs">
           <h2 className="text-base font-bold flex items-center gap-2">
             <Compass className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Parâmetros do Objetivo
+            Parâmetros do Objetivo ({currency})
           </h2>
           <div>
-            <label htmlFor="pl-target" className="block font-medium mb-1">Meta Líquida (€)</label>
+            <label htmlFor="pl-target" className="block font-medium mb-1">Meta Líquida ({symbol})</label>
             <input
               id="pl-target"
               type="number"
@@ -756,15 +1078,15 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <MetricCard
               label="Em Falta para Meta"
-              value={`€${planResult.remainingNetEur.toFixed(2)}`}
-              subtext={`Já acumulado: €${earnedSoFar.toFixed(2)}`}
+              value={formatMoney(planResult.remainingNetEur, currency)}
+              subtext={`Já acumulado: ${formatMoney(earnedSoFar, currency)}`}
               explanation="Diferença entre a meta líquida pretendida e o valor líquido já realizado no turno/semana."
               formula="Meta Líquida - Líquido Acumulado"
               accent="blue"
             />
             <MetricCard
               label="Média Bruta Exigida"
-              value={`€${planResult.requiredGrossPerHour.toFixed(2)}/h`}
+              value={`${formatMoney(planResult.requiredGrossPerHour, currency)}/h`}
               subtext={`Em ${planResult.totalProductiveHours}h produtivas`}
               explanation="Faturação horária bruta média necessária para cobrir energia/manutenção e atingir a meta."
               formula="(Meta Restante + Custos Est.) ÷ Horas Produtivas"
@@ -772,23 +1094,29 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
             <MetricCard
               label="Carregamentos & Custos"
               value={`${planResult.chargingStopsRecommended} paragens`}
-              subtext={`€${planResult.estimatedEnergyOrFuelCostEur.toFixed(2)} energia/manutenção`}
+              subtext={`${formatMoney(planResult.estimatedEnergyOrFuelCostEur, currency)} energia/manutenção`}
               explanation="Paragens recomendadas consoante autonomia real e consumo do veículo ativo."
               formula="Distância Estimada ÷ (75% Autonomia)"
             />
           </div>
 
           <Card className="p-5 space-y-3">
-            <h3 className="text-sm font-bold">Cenários de Previsão (Base Histórica: €{historicalAvgRate.toFixed(2)}/h)</h3>
+            <h3 className="text-sm font-bold">
+              Cenários de Previsão (Base Histórica: {formatMoney(historicalAvgRate, currency)}/h)
+            </h3>
             <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
               {planResult.scenarios.map((sc) => (
                 <div key={sc.name} className="py-2.5 flex items-center justify-between gap-2">
                   <div>
                     <p className="font-semibold">{sc.name}</p>
-                    <p className="text-slate-500 font-mono-tabular">Média assumida: €{sc.grossPerHour.toFixed(2)}/h</p>
+                    <p className="text-slate-500 font-mono-tabular">
+                      Média assumida: {formatMoney(sc.grossPerHour, currency)}/h
+                    </p>
                   </div>
                   <div className="text-right">
-                    <p className="font-mono-tabular font-bold">€{sc.projectedNetEur.toFixed(2)}</p>
+                    <p className="font-mono-tabular font-bold">
+                      {formatMoney(sc.projectedNetEur, currency)}
+                    </p>
                     <StatusLabel
                       tone={sc.feasible ? 'success' : 'warning'}
                       text={sc.feasible ? 'Atinge meta' : 'Abaixo da meta'}

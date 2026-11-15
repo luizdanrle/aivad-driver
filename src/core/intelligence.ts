@@ -483,59 +483,81 @@ export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
 
 export function evaluateVehicleEligibility(
   vehicle: VehicleRecord,
-  currentYear = 2026
+  currentYear = 2026,
+  platforms?: Array<{ id: string; name: string; categories: string[]; countryScope: string[]; status: string }>,
+  maxLegalAgeYears?: number
 ): VehicleEligibilityResult {
   const age = currentYear - vehicle.year;
   const tvdeReasons: string[] = [];
   let tvdeLegalEligible = true;
+  const legalAgeLimit = maxLegalAgeYears ?? (vehicle.countryCode === 'PT' ? 7 : vehicle.countryCode === 'ES' ? 10 : 8);
 
   if (vehicle.countryCode === 'PT') {
-    if (age > 7) {
+    if (age > legalAgeLimit) {
       tvdeLegalEligible = false;
-      tvdeReasons.push(`Idade do veículo (${age} anos) excede o limite legal TVDE de 7 anos em Portugal.`);
+      tvdeReasons.push(`Idade do veículo (${age} anos) excede o limite legal TVDE de ${legalAgeLimit} anos em Portugal.`);
     } else {
-      tvdeReasons.push(`Cumpre idade máxima TVDE (${age} / 7 anos desde a primeira matrícula).`);
+      tvdeReasons.push(`Cumpre idade máxima TVDE (${age} / ${legalAgeLimit} anos desde a primeira matrícula).`);
     }
     if (vehicle.doors < 4 || vehicle.seats < 4) {
       tvdeLegalEligible = false;
       tvdeReasons.push('Exige mínimo de 4 portas e 4 lugares para passageiros.');
     }
   } else {
-    tvdeReasons.push(`Regras locais para ${vehicle.countryCode}: verificação válida até ${vehicle.year + 8}.`);
+    if (age > legalAgeLimit) {
+      tvdeLegalEligible = false;
+      tvdeReasons.push(`Idade (${age} anos) excede o limite local de ${legalAgeLimit} anos para ${vehicle.countryCode}.`);
+    } else {
+      tvdeReasons.push(`Regras locais para ${vehicle.countryCode}: verificação válida até ${vehicle.year + legalAgeLimit}.`);
+    }
   }
 
-  const uberCats: string[] = [];
-  const uberReasons: string[] = [];
-  if (tvdeLegalEligible) {
-    uberCats.push('UberX');
-    if (vehicle.fuelType === 'Elétrico') uberCats.push('Uber Green');
-    if (vehicle.trunkLiters >= 420 && age <= 5 && vehicle.powerKw >= 95) uberCats.push('Uber Comfort');
-    if (vehicle.seats >= 6) uberCats.push('UberXL');
-    uberReasons.push('Elegível conforme critérios comerciais configurados para a cidade.');
-  } else {
-    uberReasons.push('Bloqueado por não cumprir elegibilidade legal TVDE.');
-  }
+  const platformEligibility: VehicleEligibilityResult['platformEligibility'] = {};
 
-  const boltCats: string[] = [];
-  const boltReasons: string[] = [];
-  if (tvdeLegalEligible) {
-    boltCats.push('Bolt');
-    if (vehicle.fuelType === 'Elétrico' || vehicle.fuelType === 'Híbrido') boltCats.push('Bolt Green');
-    if (vehicle.trunkLiters >= 430 && age <= 6) boltCats.push('Bolt Comfort');
-    if (vehicle.seats >= 6) boltCats.push('Bolt XL');
-    boltReasons.push('Elegível para categorias Bolt selecionadas.');
-  } else {
-    boltReasons.push('Inelegível até regularização dos requisitos legais locais.');
+  const targetPlatforms =
+    platforms && platforms.length > 0
+      ? platforms.filter((p) => p.status === 'Ativa' && (p.countryScope.length === 0 || p.countryScope.includes(vehicle.countryCode)))
+      : [
+          { id: 'uber', name: 'Uber', categories: ['UberX', 'Uber Green', 'Uber Comfort', 'UberXL'] },
+          { id: 'bolt', name: 'Bolt', categories: ['Bolt', 'Bolt Green', 'Bolt Comfort', 'Bolt XL'] },
+        ];
+
+  for (const plat of targetPlatforms) {
+    const cats: string[] = [];
+    const reasons: string[] = [];
+    if (!tvdeLegalEligible) {
+      reasons.push('Bloqueado por não cumprir elegibilidade legal do mercado.');
+    } else {
+      for (const cat of plat.categories) {
+        const lower = cat.toLowerCase();
+        if (lower.includes('green') || lower.includes('eco')) {
+          if (vehicle.fuelType === 'Elétrico' || vehicle.fuelType === 'Híbrido') cats.push(cat);
+        } else if (lower.includes('comfort') || lower.includes('executivo') || lower.includes('executive') || lower.includes('black')) {
+          if (vehicle.trunkLiters >= 420 && age <= 5 && vehicle.powerKw >= 95) cats.push(cat);
+        } else if (lower.includes('xl')) {
+          if (vehicle.seats >= 6) cats.push(cat);
+        } else {
+          cats.push(cat);
+        }
+      }
+      if (cats.length > 0) {
+        reasons.push(`Elegível conforme critérios comerciais para ${plat.name} (${vehicle.city || vehicle.countryCode}).`);
+      } else {
+        reasons.push(`Sem categorias compatíveis em ${plat.name} para os parâmetros atuais.`);
+      }
+    }
+    platformEligibility[plat.id] = {
+      eligible: cats.length > 0,
+      categories: cats,
+      reasons,
+    };
   }
 
   return {
     vehicleId: vehicle.id,
     tvdeLegalEligible,
     tvdeReasons,
-    platformEligibility: {
-      uber: { eligible: uberCats.length > 0, categories: uberCats, reasons: uberReasons },
-      bolt: { eligible: boltCats.length > 0, categories: boltCats, reasons: boltReasons },
-    },
+    platformEligibility,
   };
 }
 

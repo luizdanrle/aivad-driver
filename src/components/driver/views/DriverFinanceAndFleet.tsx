@@ -7,8 +7,15 @@ import {
   exportToXlsx,
 } from '../../../core/exportUtils';
 import { evaluateVehicleEligibility, round2 } from '../../../core/intelligence';
+import {
+  formatDistance,
+  formatDistanceRate,
+  formatHistoricalMoney,
+  formatMoney,
+} from '../../../core/localization';
 import type { ExpenseRecord, FuelType } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import { HorizontalBreakdownBars, PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ContextualHelpBanner,
@@ -18,7 +25,18 @@ import {
 } from '../../ui/DesignSystem';
 
 export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeTab }) => {
-  const { state, financialSummary, addExpense, addVehicle, setActiveVehicle } = useEcosystem();
+  const {
+    state,
+    activeMarket,
+    financialSummary,
+    addExpense,
+    addVehicle,
+    setActiveVehicle,
+  } = useEcosystem();
+
+  const currency = activeMarket.currency;
+  const symbol = activeMarket.currencySymbol;
+  const unitSystem = state.localization.unitSystem;
 
   // Reports Hierarchy Drill-down: Mês -> Plataforma -> Dia -> Viagem
   const [reportScope, setReportScope] = useState<'mensal' | 'plataforma' | 'categoria' | 'campanhas'>('mensal');
@@ -53,7 +71,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     trunkLiters: 475,
     monthlyLeaseOrFinanceEur: 490,
     insuranceAnnualEur: 1350,
-    city: 'Lisboa',
+    city: state.localization.currentLocation.city || 'Lisboa',
   });
 
   // Vehicle Comparator selection
@@ -62,10 +80,12 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   );
 
   const platformBreakdown = useMemo(() => {
-    const map = new Map<string, { platform: string; trips: number; gross: number; tips: number; net: number }>();
+    const map = new Map<string, { platform: string; color?: string; trips: number; gross: number; tips: number; net: number }>();
     for (const t of state.trips) {
+      const plat = state.platforms.find((p) => p.id === t.platformId);
       const cur = map.get(t.platformId) ?? {
-        platform: t.platformId.toUpperCase(),
+        platform: plat?.name ?? t.platformId.toUpperCase(),
+        color: plat?.brandColor,
         trips: 0,
         gross: 0,
         tips: 0,
@@ -78,7 +98,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       map.set(t.platformId, cur);
     }
     return Array.from(map.entries()).map(([id, data]) => ({ id, ...data }));
-  }, [state.trips]);
+  }, [state.trips, state.platforms]);
 
   if (activeTab === 'relatorios') {
     const drillTrips = state.trips.filter((t) => {
@@ -87,25 +107,38 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       return true;
     });
 
-    const headers = ['Ref', 'Data', 'Hora', 'Plataforma', 'Categoria', 'Bruto (€)', 'Gorjeta (€)', 'Bónus (€)', 'Comissão (€)', 'Líquido (€)'];
+    const headers = [
+      'Ref',
+      'Data',
+      'Hora',
+      'Plataforma',
+      'Categoria',
+      'Moeda Orig.',
+      'Bruto',
+      'Gorjeta',
+      'Bónus',
+      'Comissão',
+      'Líquido',
+    ];
     const rows = drillTrips.map((t) => [
       t.externalRef,
       t.date,
       t.time,
       t.platformId.toUpperCase(),
       t.category,
-      t.grossEur.toFixed(2),
+      t.currency ?? currency,
+      (t.originalGrossAmount ?? t.grossEur).toFixed(2),
       t.tipEur.toFixed(2),
       t.bonusEur.toFixed(2),
       t.commissionEur.toFixed(2),
-      t.netEur.toFixed(2),
+      (t.originalNetAmount ?? t.netEur).toFixed(2),
     ]);
 
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
           title="Relatórios Hierárquicos & Exportações Profissionais"
-          description="Navegue de Mês → Plataforma → Dia → Viagem individual. Exporte em CSV, XLSX verdadeiro, PDF/Impressão ou imagem PNG."
+          description="Navegue de Mês → Plataforma → Dia → Viagem individual. Exporte em CSV, XLSX verdadeiro, PDF/Impressão ou imagem PNG preservando a moeda original de cada registo."
         />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -140,7 +173,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               onClick={() =>
                 exportPrintablePdfReport(
                   'Relatório Operacional AIVAD',
-                  `Novembro 2026 · ${drillTrips.length} viagens`,
+                  `Novembro 2026 · ${drillTrips.length} viagens · Mercado ${activeMarket.name}`,
                   headers,
                   rows
                 )
@@ -157,14 +190,14 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                   'AIVAD — Resumo Operacional',
                   `Período: Novembro 2026 · ${drillTrips.length} viagens`,
                   [
-                    { label: 'Receita Total', value: `€${financialSummary.totalRevenue.toFixed(2)}` },
-                    { label: 'Líquido Est.', value: `€${financialSummary.netEstimated.toFixed(2)}` },
-                    { label: 'Média / Hora', value: `€${financialSummary.avgPerHour.toFixed(2)}` },
-                    { label: 'Média / Km', value: `€${financialSummary.avgPerKm.toFixed(2)}` },
+                    { label: 'Receita Total', value: formatMoney(financialSummary.totalRevenue, currency) },
+                    { label: 'Líquido Est.', value: formatMoney(financialSummary.netEstimated, currency) },
+                    { label: 'Média / Hora', value: `${formatMoney(financialSummary.avgPerHour, currency)}/h` },
+                    { label: 'Média / Dist.', value: formatDistanceRate(financialSummary.avgPerKm, currency, unitSystem) },
                   ],
                   platformBreakdown.map((p) => ({
                     label: `${p.platform} (${p.trips} viagens)`,
-                    value: `€${p.net.toFixed(2)} líq.`,
+                    value: `${formatMoney(p.net, currency)} líq.`,
                   }))
                 )
               }
@@ -212,37 +245,18 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
           <h3 className="text-sm font-bold">
             Desagregação por Plataforma (Clique numa barra para filtrar até às viagens)
           </h3>
-          <div className="space-y-3">
-            {platformBreakdown.map((p) => {
-              const max = Math.max(...platformBreakdown.map((x) => x.gross), 1);
-              const w = Math.round((p.gross / max) * 100);
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setDrillPlatform(drillPlatform === p.id ? null : p.id)}
-                  className="w-full text-left space-y-1 group"
-                >
-                  <div className="flex justify-between text-xs">
-                    <span className="font-semibold group-hover:text-blue-700 dark:group-hover:text-blue-400">
-                      {p.platform} ({p.trips} viagens)
-                    </span>
-                    <span className="font-mono-tabular">
-                      Bruto €{p.gross.toFixed(2)} · Gorjetas €{p.tips.toFixed(2)} · Líquido €{p.net.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="h-3 rounded bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                    <div
-                      className={`h-full transition-all ${
-                        drillPlatform === p.id ? 'bg-red-600' : 'bg-blue-700'
-                      }`}
-                      style={{ width: `${w}%` }}
-                    />
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+          <HorizontalBreakdownBars
+            items={platformBreakdown.map((p) => ({
+              id: p.id,
+              label: `${p.platform} (${p.trips} viagens)`,
+              sublabel: `Gorjetas ${formatMoney(p.tips, currency)} · Líquido ${formatMoney(p.net, currency)}`,
+              value: p.gross,
+              formattedValue: formatMoney(p.gross, currency),
+              color: p.color,
+            }))}
+            selectedId={drillPlatform}
+            onSelect={(id) => setDrillPlatform(drillPlatform === id ? null : id)}
+          />
         </Card>
 
         {/* Underlying Records Table */}
@@ -271,11 +285,26 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                   <td className="p-3 font-mono-tabular">{t.time}</td>
                   <td className="p-3">{t.platformId.toUpperCase()}</td>
                   <td className="p-3">{t.category}</td>
-                  <td className="p-3 font-mono-tabular">€{t.grossEur.toFixed(2)}</td>
-                  <td className="p-3 font-mono-tabular">€{t.tipEur.toFixed(2)}</td>
-                  <td className="p-3 font-mono-tabular">€{t.bonusEur.toFixed(2)}</td>
-                  <td className="p-3 font-mono-tabular">€{t.commissionEur.toFixed(2)}</td>
-                  <td className="p-3 font-mono-tabular font-bold">€{t.netEur.toFixed(2)}</td>
+                  <td className="p-3 font-mono-tabular">{t.currency ?? 'EUR'}</td>
+                  <td className="p-3 font-mono-tabular">
+                    {formatHistoricalMoney(
+                      t.grossEur,
+                      t.originalGrossAmount ?? t.grossEur,
+                      t.currency ?? 'EUR',
+                      currency
+                    )}
+                  </td>
+                  <td className="p-3 font-mono-tabular">{formatMoney(t.tipEur, t.currency ?? 'EUR')}</td>
+                  <td className="p-3 font-mono-tabular">{formatMoney(t.bonusEur, t.currency ?? 'EUR')}</td>
+                  <td className="p-3 font-mono-tabular">{formatMoney(t.commissionEur, t.currency ?? 'EUR')}</td>
+                  <td className="p-3 font-mono-tabular font-bold">
+                    {formatHistoricalMoney(
+                      t.netEur,
+                      t.originalNetAmount ?? t.netEur,
+                      t.currency ?? 'EUR',
+                      currency
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -294,50 +323,68 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     const simCommission = round2(simGross * 0.22);
     const simNet = round2(simGross - simCommission - simEnergyCost - simMaintCost - simFixedCost);
 
+    const expenseByCat = state.expenses.reduce<Record<string, number>>((acc, ex) => {
+      acc[ex.category] = round2((acc[ex.category] ?? 0) + ex.amountEur);
+      return acc;
+    }, {});
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
           title="Gestão Financeira Integrada & Simulador de Rentabilidade"
-          description="Receitas provenientes de viagens, gorjetas e campanhas cruzadas com todas as categorias de despesas TVDE."
+          description="Receitas provenientes de viagens, gorjetas e campanhas cruzadas com todas as categorias de despesas TVDE. Lançamentos passados preservam a moeda original."
         />
 
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <MetricCard
             label="Receita Total Integrada"
-            value={`€${financialSummary.totalRevenue.toFixed(2)}`}
-            subtext={`Gorjetas: €${financialSummary.tipsTotal.toFixed(2)} · Bónus: €${financialSummary.bonusTotal.toFixed(2)}`}
+            value={formatMoney(financialSummary.totalRevenue, currency)}
+            subtext={`Gorjetas: ${formatMoney(financialSummary.tipsTotal, currency)} · Bónus: ${formatMoney(financialSummary.bonusTotal, currency)}`}
             explanation="Soma de tarifas, gorjetas reconciliadas e bónus."
             formula="Bruto + Gorjetas + Bónus"
             accent="blue"
           />
           <MetricCard
             label="Comissões Plataformas"
-            value={`€${financialSummary.commissionsTotal.toFixed(2)}`}
+            value={formatMoney(financialSummary.commissionsTotal, currency)}
             subtext="Calculado conforme taxa de cada plataforma"
             explanation="Total retido pelas plataformas intermediárias."
             formula="Σ (Bruto × % Comissão)"
           />
           <MetricCard
             label="Despesas Registadas"
-            value={`€${financialSummary.loggedExpenses.toFixed(2)}`}
+            value={formatMoney(financialSummary.loggedExpenses, currency)}
             subtext={`${state.expenses.length} lançamentos`}
             explanation="Despesas operacionais e fixas lançadas pelo motorista."
             formula="Σ Despesas"
           />
           <MetricCard
             label="Resultado Líquido Estimado"
-            value={`€${financialSummary.netEstimated.toFixed(2)}`}
+            value={formatMoney(financialSummary.netEstimated, currency)}
             subtext="Após comissões, energia e despesas"
             explanation="Lucro operacional estimado no período atual."
             formula="Receita - Comissões - Custo/Km - Despesas"
           />
         </div>
 
+        <Card className="p-5 space-y-3">
+          <h3 className="text-sm font-bold">Estrutura Visual de Custos por Categoria</h3>
+          <HorizontalBreakdownBars
+            items={Object.entries(expenseByCat).map(([cat, total]) => ({
+              id: cat,
+              label: cat,
+              value: total,
+              formattedValue: formatMoney(total, currency),
+              color: '#DC2626',
+            }))}
+          />
+        </Card>
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card className="lg:col-span-6 p-5 space-y-4">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <Wallet className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-              Registar Nova Despesa
+              Registar Nova Despesa ({currency})
             </h3>
             <form
               onSubmit={(e) => {
@@ -348,6 +395,8 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                   category: expForm.category,
                   description: expForm.description,
                   amountEur: expForm.amountEur,
+                  currency,
+                  originalAmount: expForm.amountEur,
                   vehicleId: activeVeh.id,
                   deductible: true,
                 });
@@ -392,7 +441,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="exp-amt" className="block mb-1 font-medium">Valor (€)</label>
+                <label htmlFor="exp-amt" className="block mb-1 font-medium">Valor ({symbol})</label>
                 <input
                   id="exp-amt"
                   type="number"
@@ -419,7 +468,14 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                     <span className="font-semibold">{ex.category}</span> · {ex.description}
                     <span className="text-slate-400 ml-2">{ex.date}</span>
                   </div>
-                  <span className="font-mono-tabular font-semibold">€{ex.amountEur.toFixed(2)}</span>
+                  <span className="font-mono-tabular font-semibold">
+                    {formatHistoricalMoney(
+                      ex.amountEur,
+                      ex.originalAmount ?? ex.amountEur,
+                      ex.currency ?? 'EUR',
+                      currency
+                    )}
+                  </span>
                 </div>
               ))}
             </div>
@@ -429,7 +485,9 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             <h3 className="text-sm font-bold">Simulador Mensal de Cenários ({activeVeh.brand} {activeVeh.model})</h3>
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div>
-                <label htmlFor="sim-km" className="block mb-1 font-medium">Km mensais ({simKmMonth} km)</label>
+                <label htmlFor="sim-km" className="block mb-1 font-medium">
+                  Distância mensal ({formatDistance(simKmMonth, unitSystem)})
+                </label>
                 <input
                   id="sim-km"
                   type="range"
@@ -442,7 +500,9 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="sim-rate" className="block mb-1 font-medium">Faturação Bruta (€/km)</label>
+                <label htmlFor="sim-rate" className="block mb-1 font-medium">
+                  Faturação Bruta ({symbol}/km)
+                </label>
                 <input
                   id="sim-rate"
                   type="number"
@@ -456,27 +516,27 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             <div className="space-y-2 text-xs pt-2 border-t border-slate-100 dark:border-slate-800">
               <div className="flex justify-between">
                 <span>Faturação Bruta Simulada</span>
-                <span className="font-mono-tabular font-semibold">€{simGross.toFixed(2)}</span>
+                <span className="font-mono-tabular font-semibold">{formatMoney(simGross, currency)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Comissão Média (22%)</span>
-                <span className="font-mono-tabular">-€{simCommission.toFixed(2)}</span>
+                <span className="font-mono-tabular">-{formatMoney(simCommission, currency)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Energia / Combustível ({activeVeh.consumptionPer100Km} {activeVeh.consumptionUnit}/100km)</span>
-                <span className="font-mono-tabular">-€{simEnergyCost.toFixed(2)}</span>
+                <span className="font-mono-tabular">-{formatMoney(simEnergyCost, currency)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Manutenção Estimada</span>
-                <span className="font-mono-tabular">-€{simMaintCost.toFixed(2)}</span>
+                <span className="font-mono-tabular">-{formatMoney(simMaintCost, currency)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Renda/Financiamento + Seguro Mensal</span>
-                <span className="font-mono-tabular">-€{simFixedCost.toFixed(2)}</span>
+                <span className="font-mono-tabular">-{formatMoney(simFixedCost, currency)}</span>
               </div>
               <div className="flex justify-between pt-2 border-t border-slate-200 dark:border-slate-700 text-sm font-bold text-blue-700 dark:text-blue-400">
                 <span>Líquido Mensal Projetado</span>
-                <span className="font-mono-tabular">€{simNet.toFixed(2)}</span>
+                <span className="font-mono-tabular">{formatMoney(simNet, currency)}</span>
               </div>
             </div>
           </Card>
@@ -489,13 +549,19 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="Base de Dados Técnica de Veículos"
-          description="Suporta Elétricos, Híbridos, Plug-in, Gasolina, Gasóleo, GPL e Bi-fuel. Defina o veículo ativo para alimentar a Calculadora e o Planeador."
+          title="Base de Dados Técnica de Veículos & Elegibilidade Multi-Plataforma"
+          description="Suporta Elétricos, Híbridos, Plug-in, Gasolina, Gasóleo, GPL e Bi-fuel. Avalia elegibilidade legal local e comercial em todas as plataformas ativas do catálogo."
         />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {state.vehicles.map((v) => {
-            const elig = evaluateVehicleEligibility(v);
+            const marketCfg = state.countries.find((c) => c.code === v.countryCode);
+            const elig = evaluateVehicleEligibility(
+              v,
+              2026,
+              state.platforms,
+              marketCfg?.vehicleMaxAgeYears
+            );
             return (
               <Card key={v.id} className="p-5 space-y-3">
                 <div className="flex items-start justify-between gap-2">
@@ -519,20 +585,39 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-xs font-mono-tabular">
                   <div><span className="text-slate-500 block">Potência</span>{v.powerKw} kW</div>
-                  <div><span className="text-slate-500 block">Autonomia</span>{v.rangeKm} km</div>
+                  <div><span className="text-slate-500 block">Autonomia</span>{formatDistance(v.rangeKm, unitSystem)}</div>
                   <div><span className="text-slate-500 block">Consumo</span>{v.consumptionPer100Km} {v.consumptionUnit}/100</div>
                   <div><span className="text-slate-500 block">Lotação/Portas</span>{v.seats}L / {v.doors}P</div>
                   <div><span className="text-slate-500 block">Bagageira</span>{v.trunkLiters} L</div>
-                  <div><span className="text-slate-500 block">Renda/Mês</span>€{v.monthlyLeaseOrFinanceEur}</div>
+                  <div><span className="text-slate-500 block">Renda/Mês</span>{formatMoney(v.monthlyLeaseOrFinanceEur, currency)}</div>
                 </div>
-                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-xs space-y-1">
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-xs space-y-2">
                   <StatusLabel
                     tone={elig.tvdeLegalEligible ? 'success' : 'danger'}
-                    text={elig.tvdeLegalEligible ? 'Elegível Legal TVDE' : 'Fora do limite legal TVDE'}
+                    text={elig.tvdeLegalEligible ? `Elegível Legal (${v.countryCode})` : `Fora do limite legal (${v.countryCode})`}
                   />
-                  <p className="text-slate-500">
-                    Uber: {elig.platformEligibility.uber.categories.join(', ') || 'Nenhuma'} · Bolt: {elig.platformEligibility.bolt.categories.join(', ') || 'Nenhuma'}
-                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {Object.entries(elig.platformEligibility).map(([platId, res]) => {
+                      const plat = state.platforms.find((p) => p.id === platId);
+                      return (
+                        <span
+                          key={platId}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px]"
+                        >
+                          <PlatformBadge
+                            name={plat?.name ?? platId}
+                            shortCode={plat?.shortCode}
+                            brandColor={plat?.brandColor}
+                            size="sm"
+                          />
+                          <span>
+                            <strong>{plat?.name ?? platId.toUpperCase()}:</strong>{' '}
+                            {res.eligible ? res.categories.join(', ') : 'Inelegível'}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
                 </div>
               </Card>
             );
@@ -542,7 +627,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
         <Card className="p-5 space-y-3">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <Car className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Adicionar Veículo à Base Técnica
+            Adicionar Veículo à Base Técnica ({activeMarket.code})
           </h3>
           <form
             onSubmit={(e) => {
@@ -556,7 +641,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 maintenancePerKmEur: vehForm.fuelType === 'Elétrico' ? 0.04 : 0.06,
                 energyCostPerUnitEur: vehForm.fuelType === 'Elétrico' ? 0.21 : 1.72,
                 depreciationMonthlyEur: 220,
-                countryCode: 'PT',
+                countryCode: activeMarket.code,
                 isActiveDriverVehicle: false,
               });
             }}
@@ -621,8 +706,8 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   return (
     <div className="space-y-6">
       <ContextualHelpBanner
-        title="Comparador de Veículos — TCO, Elegibilidade Legal TVDE & Categorias Comerciais"
-        description="Separa rigorosamente a elegibilidade legal TVDE da elegibilidade comercial das plataformas Uber e Bolt por cidade e ano."
+        title="Comparador de Veículos — TCO, Elegibilidade Legal & Multi-Plataforma"
+        description="Separa rigorosamente a elegibilidade legal local da elegibilidade comercial de cada plataforma catalogada."
       />
 
       <Card className="p-4 flex flex-wrap items-center gap-3 text-xs">
@@ -665,34 +750,39 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             <tr>
               <td className="p-3 font-medium">Motorização &amp; Autonomia</td>
               {selectedVehicles.map((v) => (
-                <td key={v.id} className="p-3">{v.fuelType} · {v.rangeKm} km</td>
+                <td key={v.id} className="p-3">{v.fuelType} · {formatDistance(v.rangeKm, unitSystem)}</td>
               ))}
             </tr>
             <tr>
-              <td className="p-3 font-medium">Custo Energia + Manutenção / km</td>
+              <td className="p-3 font-medium">Custo Energia + Manutenção / dist.</td>
               {selectedVehicles.map((v) => {
                 const cpk = (v.consumptionPer100Km / 100) * v.energyCostPerUnitEur + v.maintenancePerKmEur;
-                return <td key={v.id} className="p-3 font-mono-tabular">€{cpk.toFixed(3)}/km</td>;
+                return (
+                  <td key={v.id} className="p-3 font-mono-tabular">
+                    {formatDistanceRate(cpk, currency, unitSystem)}
+                  </td>
+                );
               })}
             </tr>
             <tr>
               <td className="p-3 font-medium">Aluguer / Financiamento + Depreciação</td>
               {selectedVehicles.map((v) => (
                 <td key={v.id} className="p-3 font-mono-tabular">
-                  €{v.monthlyLeaseOrFinanceEur}/mês (+ €{v.depreciationMonthlyEur} depr.)
+                  {formatMoney(v.monthlyLeaseOrFinanceEur, currency)}/mês (+ {formatMoney(v.depreciationMonthlyEur, currency)} depr.)
                 </td>
               ))}
             </tr>
             <tr>
               <td className="p-3 font-medium">Seguro Anual Estimado</td>
               {selectedVehicles.map((v) => (
-                <td key={v.id} className="p-3 font-mono-tabular">€{v.insuranceAnnualEur}/ano</td>
+                <td key={v.id} className="p-3 font-mono-tabular">{formatMoney(v.insuranceAnnualEur, currency)}/ano</td>
               ))}
             </tr>
             <tr>
-              <td className="p-3 font-medium">Elegibilidade Legal TVDE</td>
+              <td className="p-3 font-medium">Elegibilidade Legal</td>
               {selectedVehicles.map((v) => {
-                const el = evaluateVehicleEligibility(v);
+                const mkt = state.countries.find((c) => c.code === v.countryCode);
+                const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
                 return (
                   <td key={v.id} className="p-3">
                     <StatusLabel
@@ -703,20 +793,24 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 );
               })}
             </tr>
-            <tr>
-              <td className="p-3 font-medium">Elegibilidade Comercial Uber</td>
-              {selectedVehicles.map((v) => {
-                const el = evaluateVehicleEligibility(v);
-                return <td key={v.id} className="p-3">{el.platformEligibility.uber.categories.join(', ')}</td>;
-              })}
-            </tr>
-            <tr>
-              <td className="p-3 font-medium">Elegibilidade Comercial Bolt</td>
-              {selectedVehicles.map((v) => {
-                const el = evaluateVehicleEligibility(v);
-                return <td key={v.id} className="p-3">{el.platformEligibility.bolt.categories.join(', ')}</td>;
-              })}
-            </tr>
+            {state.platforms
+              .filter((p) => p.status === 'Ativa')
+              .slice(0, 5)
+              .map((plat) => (
+                <tr key={plat.id}>
+                  <td className="p-3 font-medium">Elegibilidade Comercial {plat.name}</td>
+                  {selectedVehicles.map((v) => {
+                    const mkt = state.countries.find((c) => c.code === v.countryCode);
+                    const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
+                    const pEl = el.platformEligibility[plat.id];
+                    return (
+                      <td key={v.id} className="p-3">
+                        {pEl?.eligible ? pEl.categories.join(', ') : pEl?.reasons[0] ?? 'N/D'}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
           </tbody>
         </table>
       </Card>

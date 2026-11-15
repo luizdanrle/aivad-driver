@@ -1,6 +1,28 @@
 export type EcosystemMode = 'portal' | 'driver' | 'admin';
 export type ThemeMode = 'light' | 'dark';
-export type CurrencyCode = 'EUR' | 'GBP' | 'USD' | 'BRL';
+export type CurrencyCode =
+  | 'EUR'
+  | 'GBP'
+  | 'USD'
+  | 'BRL'
+  | 'CHF'
+  | 'AOA'
+  | 'CVE'
+  | 'MXN'
+  | 'CAD'
+  | 'AUD'
+  | string;
+
+export type UnitSystem = 'metric' | 'imperial';
+
+export type MarketStatus =
+  | 'Não configurado'
+  | 'Em estudo'
+  | 'Em preparação'
+  | 'Em validação'
+  | 'Disponível'
+  | 'Temporariamente indisponível'
+  | 'Descontinuado';
 
 export type AdminRole =
   | 'Superadministrador'
@@ -31,8 +53,15 @@ export type IntegrationAvailability =
 export interface PlatformRecord {
   id: PlatformId;
   name: string;
+  shortCode?: string;
+  brandColor?: string;
   countryScope: string[];
+  regionsScope?: string[];
+  citiesScope?: string[];
   categories: string[];
+  requirements?: string[];
+  docsRequired?: string[];
+  benefits?: string[];
   commissionPct: number;
   status: PlatformStatus;
   integrationStatus: IntegrationAvailability;
@@ -277,6 +306,11 @@ export interface TripRecord {
   commissionEur: number;
   operationalCostEur: number;
   netEur: number;
+  currency?: CurrencyCode;
+  originalGrossAmount?: number;
+  originalNetAmount?: number;
+  fxRateToBase?: number;
+  countryCode?: string;
   pickupDistanceKm: number;
   tripDistanceKm: number;
   durationMin: number;
@@ -326,6 +360,8 @@ export interface ExpenseRecord {
     | 'Outras despesas';
   description: string;
   amountEur: number;
+  currency?: CurrencyCode;
+  originalAmount?: number;
   vehicleId?: string;
   deductible: boolean;
   isDemo: boolean;
@@ -351,6 +387,116 @@ export interface ShiftRecord {
   isDemo: boolean;
 }
 
+// ============================================================
+// AIVAD TACÓGRAFO TVDE (Independent Audited Tachograph Engine)
+// ============================================================
+export type TachographState =
+  | 'Fora de serviço'
+  | 'Início de turno'
+  | 'Condução em serviço'
+  | 'Trabalho sem condução'
+  | 'Disponibilidade'
+  | 'Espera'
+  | 'Pausa'
+  | 'Refeição'
+  | 'Descanso'
+  | 'Fim de turno';
+
+export interface TachographRevision {
+  revisedAt: string;
+  revisedBy: string;
+  reason: string;
+  previousState: TachographState;
+  previousStartIso: string;
+  previousEndIso?: string;
+  previousOdometerKm: number;
+  previousNotes: string;
+}
+
+export interface TachographActivityRecord {
+  id: string;
+  shiftSessionId: string;
+  driverId: string;
+  vehicleId: string;
+  operatorName: string;
+  date: string;
+  state: TachographState;
+  startIso: string;
+  endIso?: string;
+  durationMinutes: number;
+  odometerStartKm: number;
+  odometerEndKm?: number;
+  platformId?: PlatformId;
+  movementKind?: 'Com passageiro' | 'Deslocação em vazio' | 'Estacionado / Sem movimento';
+  source: 'Manual' | 'Sincronizado Viagem' | 'Offline Queue';
+  notes: string;
+  status: 'Ativo' | 'Fechado' | 'Corrigido';
+  syncStatus: 'Sincronizado' | 'Pendente Offline' | 'Conflito Resolvido';
+  idempotencyKey: string;
+  revisions: TachographRevision[];
+  isDemo: boolean;
+}
+
+export interface TachographShiftSession {
+  id: string;
+  driverId: string;
+  vehicleId: string;
+  operatorName: string;
+  date: string;
+  startIso: string;
+  endIso?: string;
+  odometerStartKm: number;
+  odometerCurrentKm: number;
+  odometerEndKm?: number;
+  currentState: TachographState;
+  status: 'Em curso' | 'Encerrado';
+  countryCode: string;
+  city: string;
+  qrVerificationHash: string;
+  isDemo: boolean;
+}
+
+export interface TachographPlatformInterval {
+  id: string;
+  platformId: PlatformId;
+  date: string;
+  startIso: string;
+  endIso: string;
+  kind: 'Online' | 'Viagem Passageiro' | 'Recolha Vazio';
+}
+
+export interface TachographOfflineQueueItem {
+  id: string;
+  idempotencyKey: string;
+  createdAtIso: string;
+  actionType: 'START_SHIFT' | 'TRANSITION' | 'CLOSE_SHIFT' | 'TRIP_SYNC';
+  targetState?: TachographState;
+  odometerKm: number;
+  notes: string;
+  syncState: 'Na fila offline' | 'Sincronizado' | 'Duplicado ignorado' | 'Conflito resolvido';
+  conflictReason?: string;
+}
+
+export interface TachographDiscrepancy {
+  id: string;
+  timestamp: string;
+  severity: 'Aviso' | 'Erro' | 'Conflito';
+  message: string;
+  resolved: boolean;
+}
+
+export interface TachographStateStore {
+  sessions: TachographShiftSession[];
+  activities: TachographActivityRecord[];
+  platformIntervals: TachographPlatformInterval[];
+  offlineQueue: TachographOfflineQueueItem[];
+  discrepancies: TachographDiscrepancy[];
+  activeSessionId: string | null;
+}
+
+// ============================================================
+// COMPLIANCE & DOCUMENTS
+// ============================================================
 export interface ComplianceObligation {
   id: string;
   countryCode: string;
@@ -430,6 +576,7 @@ export interface MapZoneRecord {
   id: string;
   name: string;
   city: string;
+  countryCode?: string;
   x: number;
   y: number;
   radius: number;
@@ -469,6 +616,20 @@ export interface SubscriptionRecord {
   channel: 'Web' | 'Google Play' | 'Apple';
   renewsAt: string;
   priceEur: number;
+}
+
+export interface PaymentTransactionRecord {
+  id: string;
+  subscriptionId: string;
+  userId: string;
+  userName: string;
+  countryCode: string;
+  currency: CurrencyCode;
+  amount: number;
+  channel: 'Web Stripe (A Validar)' | 'Google Play Billing' | 'Apple App Store';
+  status: 'Liquidado (Demo)' | 'Pendente' | 'Reembolsado' | 'Falhado';
+  createdAt: string;
+  invoiceRef: string;
 }
 
 export interface UserAccount {
@@ -585,15 +746,61 @@ export interface CmsContentState {
   }>;
 }
 
+export interface CountryRegionConfig {
+  name: string;
+  cities: string[];
+  localRulesNote?: string;
+}
+
 export interface CountryMarketConfig {
   code: string;
   name: string;
+  nativeName: string;
   language: string;
+  languageCode: string;
   currency: CurrencyCode;
+  currencySymbol: string;
+  decimalSeparator: ',' | '.';
+  timezone: string;
+  unitSystem: UnitSystem;
   vatPct: number;
   activePlatforms: PlatformId[];
   tvdeRegulated: boolean;
   driverLicenseRequired: string;
+  vehicleMaxAgeYears: number;
+  taxCategories: string[];
+  regions: CountryRegionConfig[];
+  marketStatus: MarketStatus;
+  notes?: string;
+}
+
+export interface LocalizationProfile {
+  currentLocation: {
+    countryCode: string;
+    countryName: string;
+    region: string;
+    city: string;
+    approxAddress: string;
+    timezone: string;
+    latitude?: number;
+    longitude?: number;
+    detectedBy: 'Geolocation API' | 'Browser Locale Fallback' | 'Seleção Manual';
+    detectedAt: string;
+  };
+  residenceCountryCode: string;
+  primaryProfessionalMarketCode: string;
+  additionalProfessionalMarketCodes: string[];
+  selectedMarketCode: string;
+  languageCode: string;
+  unitSystem: UnitSystem;
+  permissionStatus: 'prompt' | 'granted' | 'denied' | 'unavailable';
+  firstOpenConfirmed: boolean;
+  pendingCountryChangePrompt?: {
+    newCountryCode: string;
+    newCity: string;
+    newRegion: string;
+    reason: string;
+  } | null;
 }
 
 export interface EcosystemEvent {
@@ -608,7 +815,11 @@ export interface EcosystemEvent {
     | 'PLATFORM_STATUS_CHANGED'
     | 'SUBSCRIPTION_CHANGED'
     | 'CMS_PUBLISHED'
-    | 'TICKET_UPDATED';
+    | 'TICKET_UPDATED'
+    | 'TACHOGRAPH_RECORDED'
+    | 'TACHOGRAPH_CORRECTED'
+    | 'MARKET_STATUS_CHANGED'
+    | 'LOCATION_UPDATED';
   source: string;
   target: string;
   userId: string;

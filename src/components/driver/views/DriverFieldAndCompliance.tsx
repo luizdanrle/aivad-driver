@@ -198,16 +198,22 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
   }
 
   if (activeTab === 'legislacao') {
+    const activeCountryCode = state.localization.selectedMarketCode;
+    const countryObligations = state.obligations.filter((ob) => ob.countryCode === activeCountryCode);
+    const displayedObligations =
+      countryObligations.length > 0 ? countryObligations : state.obligations;
+    const otherObligations = state.obligations.filter((ob) => ob.countryCode !== activeCountryCode);
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="AIVAD Compliance Intelligence — Portugal TVDE & Lei n.º 59/2026"
+          title={`AIVAD Compliance Intelligence — Mercado Ativo (${activeCountryCode})`}
           description="Cada obrigação indica fonte oficial, artigo, datas, estado regulamentar e selo de validação jurídica humana antes de comunicação definitiva."
         />
 
         <div className="space-y-4">
-          {state.obligations.map((ob) => (
-            <Card key={ob.id} className="p-5 space-y-3">
+          {displayedObligations.map((ob) => (
+            <Card key={ob.id} className="p-5 space-y-3 border-l-4 border-l-blue-700">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">
@@ -242,6 +248,25 @@ export const DriverFieldAndCompliance: React.FC<{ activeTab: string }> = ({ acti
             </Card>
           ))}
         </div>
+
+        {otherObligations.length > 0 && countryObligations.length > 0 && (
+          <div className="space-y-3 pt-2">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Outros Mercados Catalogados ({otherObligations.length})
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {otherObligations.map((ob) => (
+                <Card key={ob.id} className="p-4 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold">{ob.countryCode} · {ob.title}</span>
+                    <StatusLabel tone={ob.humanValidated ? 'success' : 'warning'} text={ob.status} />
+                  </div>
+                  <p className="text-slate-500">{ob.officialSource} · {ob.articleRef}</p>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

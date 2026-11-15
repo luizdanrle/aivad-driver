@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   Activity,
+  Banknote,
   Bell,
   Building2,
   Car,
@@ -48,26 +49,27 @@ export const ADMIN_MENU: Array<{
   { id: 'organizacoes', label: '3. Organizações', icon: Building2 },
   { id: 'planos', label: '4. Planos', icon: Tags },
   { id: 'assinaturas', label: '5. Assinaturas', icon: CreditCard },
-  { id: 'funcionalidades', label: '6. Funcionalidades', icon: Layers },
-  { id: 'plataformas', label: '7. Plataformas', icon: Plug },
-  { id: 'paises', label: '8. Países e mercados', icon: Globe },
-  { id: 'veiculos-eleg', label: '9. Veículos e elegibilidade', icon: Car },
-  { id: 'legislacao', label: '10. Legislação', icon: Scale },
-  { id: 'notificacoes', label: '11. Notificações', icon: Bell },
-  { id: 'comunicacao', label: '12. Comunicação', icon: Megaphone },
-  { id: 'tickets', label: '13. Tickets', icon: Inbox },
-  { id: 'publicacoes', label: '14. Publicações', icon: Newspaper },
-  { id: 'gestao-visual', label: '15. Gestão visual', icon: Palette },
-  { id: 'editor-paginas', label: '16. Editor de páginas', icon: FileText },
-  { id: 'versoes', label: '17. Versões', icon: PackageCheck },
-  { id: 'releases', label: '18. Releases', icon: Activity },
-  { id: 'config-remotas', label: '19. Config. remotas', icon: Sliders },
-  { id: 'integracoes', label: '20. Integrações', icon: Plug },
-  { id: 'monitorizacao', label: '21. Monitorização técnica', icon: Server },
-  { id: 'relatorios-admin', label: '22. Relatórios admin', icon: FileText },
-  { id: 'seguranca', label: '23. Segurança & RBAC', icon: Lock },
-  { id: 'auditoria', label: '24. Auditoria', icon: ShieldCheck },
-  { id: 'recuperacao', label: '25. Histórico e recuperação', icon: History },
+  { id: 'pagamentos', label: '6. Pagamentos', icon: Banknote },
+  { id: 'funcionalidades', label: '7. Funcionalidades', icon: Layers },
+  { id: 'plataformas', label: '8. Plataformas', icon: Plug },
+  { id: 'paises', label: '9. Países e mercados', icon: Globe },
+  { id: 'veiculos-eleg', label: '10. Veículos e elegibilidade', icon: Car },
+  { id: 'legislacao', label: '11. Legislação', icon: Scale },
+  { id: 'notificacoes', label: '12. Notificações', icon: Bell },
+  { id: 'comunicacao', label: '13. Comunicação', icon: Megaphone },
+  { id: 'tickets', label: '14. Tickets', icon: Inbox },
+  { id: 'publicacoes', label: '15. Publicações', icon: Newspaper },
+  { id: 'gestao-visual', label: '16. Gestão visual', icon: Palette },
+  { id: 'editor-paginas', label: '17. Editor de páginas', icon: FileText },
+  { id: 'versoes', label: '18. Versões', icon: PackageCheck },
+  { id: 'releases', label: '19. Releases', icon: Activity },
+  { id: 'config-remotas', label: '20. Config. remotas', icon: Sliders },
+  { id: 'integracoes', label: '21. Integrações', icon: Plug },
+  { id: 'monitorizacao', label: '22. Monitorização técnica', icon: Server },
+  { id: 'relatorios-admin', label: '23. Relatórios admin', icon: FileText },
+  { id: 'seguranca', label: '24. Segurança & RBAC', icon: Lock },
+  { id: 'auditoria', label: '25. Auditoria', icon: ShieldCheck },
+  { id: 'recuperacao', label: '26. Histórico e recuperação', icon: History },
 ];
 
 const ADMIN_ROLES: AdminRole[] = [
@@ -81,7 +83,8 @@ const ADMIN_ROLES: AdminRole[] = [
 ];
 
 export const AdminLayout: React.FC = () => {
-  const { state, setAdminNav, setAdminRole, setMode, toggleTheme } = useEcosystem();
+  const { state, availableMarketsForPortal, setAdminNav, setAdminRole, setMode, toggleTheme } =
+    useEcosystem();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const currentItem =
@@ -89,13 +92,36 @@ export const AdminLayout: React.FC = () => {
 
   const renderView = () => {
     const nav = state.activeAdminNav;
-    if (['overview', 'utilizadores', 'organizacoes', 'planos', 'assinaturas', 'funcionalidades'].includes(nav)) {
+    if (
+      [
+        'overview',
+        'utilizadores',
+        'organizacoes',
+        'planos',
+        'assinaturas',
+        'pagamentos',
+        'funcionalidades',
+      ].includes(nav)
+    ) {
       return <AdminCoreOps activeTab={nav} />;
     }
-    if (['plataformas', 'paises', 'veiculos-eleg', 'legislacao', 'notificacoes', 'comunicacao'].includes(nav)) {
+    if (
+      [
+        'plataformas',
+        'paises',
+        'veiculos-eleg',
+        'legislacao',
+        'notificacoes',
+        'comunicacao',
+      ].includes(nav)
+    ) {
       return <AdminCatalogAndCompliance activeTab={nav} />;
     }
-    if (['tickets', 'publicacoes', 'gestao-visual', 'editor-paginas', 'versoes', 'releases'].includes(nav)) {
+    if (
+      ['tickets', 'publicacoes', 'gestao-visual', 'editor-paginas', 'versoes', 'releases'].includes(
+        nav
+      )
+    ) {
       return <AdminContentAndSupport activeTab={nav} />;
     }
     return <AdminTechAndSecurity activeTab={nav} />;
@@ -114,6 +140,9 @@ export const AdminLayout: React.FC = () => {
             <PhoenixLogo size={26} />
             <span>AIVAD Admin</span>
           </button>
+          <span className="text-[11px] font-mono-tabular font-semibold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
+            {availableMarketsForPortal.length}/{state.countries.length} Merc.
+          </span>
         </div>
 
         <nav aria-label="Menu Administrativo" className="flex-1 overflow-y-auto p-2.5 space-y-0.5">
@@ -165,7 +194,12 @@ export const AdminLayout: React.FC = () => {
                 <PhoenixLogo size={22} />
                 AIVAD Admin
               </span>
-              <button type="button" aria-label="Fechar menu admin" onClick={() => setMobileMenuOpen(false)} className="p-1.5">
+              <button
+                type="button"
+                aria-label="Fechar menu admin"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-1.5"
+              >
                 <X className="w-4 h-4" />
               </button>
             </div>

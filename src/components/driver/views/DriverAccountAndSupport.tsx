@@ -1,6 +1,20 @@
 import React, { useState } from 'react';
-import { Bell, FileCheck2, HelpCircle, Lightbulb, MessageSquare, RotateCcw, Settings, Shield, ThumbsUp } from 'lucide-react';
+import {
+  Bell,
+  FileCheck2,
+  Globe2,
+  HelpCircle,
+  Lightbulb,
+  MapPin,
+  MessageSquare,
+  Navigation,
+  RotateCcw,
+  Settings,
+  Shield,
+  ThumbsUp,
+} from 'lucide-react';
 import { PLATFORM_ADAPTERS } from '../../../adapters/platformAdapters';
+import { formatMoney } from '../../../core/localization';
 import type { DriverDocument, TicketRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import {
@@ -15,6 +29,10 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     state,
     activeDriver,
     activeDriverPlan,
+    activeMarket,
+    requestBrowserGeolocation,
+    simulateOrSelectLocation,
+    setProfessionalMarkets,
     addDocument,
     markNotificationRead,
     createTicket,
@@ -48,6 +66,10 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     impact: 'Rentabilidade' as const,
     description: '',
   });
+
+  const [resCountry, setResCountry] = useState(state.localization.residenceCountryCode);
+  const [primMarket, setPrimMarket] = useState(state.localization.primaryProfessionalMarketCode);
+  const [profSavedNotice, setProfSavedNotice] = useState(false);
 
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
@@ -354,19 +376,156 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     );
   }
 
-  // PERFIL, CONFIGURAÇÕES, ADAPTADORES, PRIVACIDADE & GLOSSÁRIO
+  // PERFIL, INTERNACIONALIZAÇÃO, CONFIGURAÇÕES, ADAPTADORES, PRIVACIDADE & GLOSSÁRIO
+  const loc = state.localization;
   return (
     <div className="space-y-6">
+      {/* Separated International Profile & Location Card */}
+      <Card className="p-5 space-y-4 text-xs border-blue-200 dark:border-blue-900">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Globe2 className="w-5 h-5 text-blue-700 dark:text-blue-400" />
+            <div>
+              <h2 className="text-sm font-bold">
+                Perfil Internacional &amp; Separação Residência / Mercado / Localização Atual
+              </h2>
+              <p className="text-[11px] text-slate-500">
+                Viajar ou detetar novo país nunca destrói a sua residência fiscal nem converte receitas passadas.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => requestBrowserGeolocation()}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+          >
+            <Navigation className="w-3.5 h-3.5" />
+            <span>Atualizar Localização GPS</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+              Localização Atual
+            </span>
+            <p className="font-bold flex items-center gap-1">
+              <MapPin className="w-3.5 h-3.5 text-red-600" />
+              {loc.currentLocation.city}, {loc.currentLocation.countryCode}
+            </p>
+            <p className="text-[11px] text-slate-500">{loc.currentLocation.detectedBy}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+              País de Residência
+            </span>
+            <p className="font-bold">{loc.residenceCountryCode}</p>
+            <p className="text-[11px] text-slate-500">Intacto em deslocações</p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+              Mercado Profissional Principal
+            </span>
+            <p className="font-bold">{loc.primaryProfessionalMarketCode}</p>
+            <p className="text-[11px] text-slate-500">
+              Adicionais: {loc.additionalProfessionalMarketCodes.join(', ') || 'Nenhum'}
+            </p>
+          </div>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1">
+            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+              Adaptação Ativa na UI
+            </span>
+            <p className="font-bold font-mono-tabular">
+              {activeMarket.name} · {activeMarket.currency} ({activeMarket.currencySymbol})
+            </p>
+            <p className="text-[11px] text-slate-500">
+              {loc.languageCode} · {loc.unitSystem === 'imperial' ? 'Milhas (imperial)' : 'Quilómetros (métrico)'}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
+          <div className="space-y-2">
+            <p className="font-semibold">Simular / Mudar Localização Atual (Preserva Residência &amp; Histórico)</p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { code: 'PT', city: 'Lisboa', region: 'Área Metropolitana de Lisboa' },
+                { code: 'BR', city: 'São Paulo', region: 'São Paulo' },
+                { code: 'ES', city: 'Madrid', region: 'Comunidad de Madrid' },
+                { code: 'UK', city: 'Londres', region: 'Greater London' },
+              ].map((preset) => (
+                <button
+                  key={preset.code}
+                  type="button"
+                  onClick={() => simulateOrSelectLocation(preset.code, preset.city, preset.region)}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-medium"
+                >
+                  {preset.city}, {preset.code}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setProfessionalMarkets(resCountry, primMarket, loc.additionalProfessionalMarketCodes);
+              setProfSavedNotice(true);
+            }}
+            className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end"
+          >
+            <div>
+              <label htmlFor="prof-res" className="block mb-1 font-medium">Residência</label>
+              <select
+                id="prof-res"
+                value={resCountry}
+                onChange={(e) => {
+                  setResCountry(e.target.value);
+                  setProfSavedNotice(false);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {state.countries.map((c) => (
+                  <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="prof-mkt" className="block mb-1 font-medium">Mercado Principal</label>
+              <select
+                id="prof-mkt"
+                value={primMarket}
+                onChange={(e) => {
+                  setPrimMarket(e.target.value);
+                  setProfSavedNotice(false);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {state.countries.map((c) => (
+                  <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="submit"
+              className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+            >
+              {profSavedNotice ? 'Guardado ✓' : 'Guardar Perfil'}
+            </button>
+          </form>
+        </div>
+      </Card>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card className="p-5 space-y-4 text-xs">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <Settings className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Perfil, Plano &amp; Privacidade RGPD
+            Conta, Plano &amp; Privacidade RGPD
           </h3>
           <div className="space-y-1.5">
             <p><strong>Motorista:</strong> {activeDriver.name} ({activeDriver.email})</p>
-            <p><strong>Mercado:</strong> {activeDriver.city}, {activeDriver.countryCode}</p>
-            <p><strong>Assinatura Ativa:</strong> {activeDriverPlan.name} (€{activeDriverPlan.monthlyPriceEur.toFixed(2)}/mês)</p>
+            <p><strong>Mercado de Operação Selecionado:</strong> {activeMarket.name} ({activeMarket.code})</p>
+            <p><strong>Assinatura Ativa:</strong> {activeDriverPlan.name} ({formatMoney(activeDriverPlan.monthlyPriceEur, activeMarket.currency)}/mês)</p>
             <p><strong>AutoPilot Permitido no Plano:</strong> {activeDriverPlan.autoPilotAllowed ? 'Sim' : 'Não'}</p>
           </div>
 
@@ -430,16 +589,16 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
-            <p className="font-bold">€/km Comprometido</p>
+            <p className="font-bold">Valor/Distância Comprometida</p>
             <p className="text-slate-600 dark:text-slate-300">Valor total da proposta dividido pela soma da recolha com a distância até ao destino.</p>
           </div>
           <div>
             <p className="font-bold">Idempotência</p>
-            <p className="text-slate-600 dark:text-slate-300">Mecanismo que impede duplicação de viagens ou gorjetas quando o mesmo extrato/notificação é lido duas vezes.</p>
+            <p className="text-slate-600 dark:text-slate-300">Mecanismo que impede duplicação de viagens, gorjetas ou registos do tacógrafo quando sincronizados mais do que uma vez.</p>
           </div>
           <div>
-            <p className="font-bold">TVDE Legal vs Comercial</p>
-            <p className="text-slate-600 dark:text-slate-300">Um veículo pode cumprir a lei TVDE (7 anos) mas não cumprir o critério de bagageira para Uber Comfort.</p>
+            <p className="font-bold">Legal Local vs Comercial</p>
+            <p className="text-slate-600 dark:text-slate-300">Um veículo pode cumprir a lei local (ex. TVDE 7 anos em PT) mas não cumprir o critério de bagageira para categorias superiores.</p>
           </div>
         </div>
       </Card>
@@ -447,7 +606,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
       <ConfirmModal
         open={confirmResetOpen}
         title="Repor Dados Demonstrativos?"
-        message="Esta ação restaura todas as viagens, propostas, configurações e registos para os valores iniciais de demonstração."
+        message="Esta ação restaura todas as viagens, tacógrafo, propostas, localização e registos para os valores iniciais."
         confirmLabel="Repor Tudo"
         danger
         onConfirm={() => {

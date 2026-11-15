@@ -1,16 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   Bot,
   Calculator,
+  Car,
   CheckCircle2,
   Database,
+  Gauge,
+  Layers,
   Play,
   Radio,
   ShieldCheck,
   Smartphone,
+  Target,
 } from 'lucide-react';
-import { analyzeProposal } from '../../../core/intelligence';
+import { analyzeProposal, round2 } from '../../../core/intelligence';
+import { formatDistance, formatDistanceRate, formatMoney } from '../../../core/localization';
 import type {
   AnalysisMode,
   AutoPilotMode,
@@ -20,6 +26,12 @@ import type {
   SmartCaptureRecord,
 } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import {
+  GoalDonutChart,
+  HorizontalBreakdownBars,
+  PlatformBadge,
+  TACHO_STATE_COLOR,
+} from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ContextualHelpBanner,
@@ -32,7 +44,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   const {
     state,
     activeVehicle,
+    activeMarket,
     visibleDriverPlatforms,
+    tachographSummary,
     setDriverNav,
     createAndAnalyzeProposal,
     updateProposalLifecycle,
@@ -66,8 +80,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     const passKm = filteredTrips.reduce((s, t) => s + t.tripDistanceKm, 0);
     const emptyKm = filteredTrips.reduce((s, t) => s + t.pickupDistanceKm, 0);
     const prodMin = filteredTrips.reduce((s, t) => s + t.durationMin, 0);
-    const onlineMin = state.shifts.reduce((s, sh) => s + sh.onlineMinutes, 0) || prodMin + 45;
-    const waitMin = Math.max(0, onlineMin - prodMin);
+    const onlineMin = tachographSummary.consolidatedOnlineMinutes || prodMin + 45;
+    const waitMin = tachographSummary.waitMinutes || Math.max(0, onlineMin - prodMin);
     const hours = Math.max(0.1, prodMin / 60);
     return {
       gross,
@@ -82,7 +96,28 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
       avgPerHour: gross / hours,
       avgPerKm: totalKm > 0 ? gross / totalKm : 0,
     };
-  }, [filteredTrips, state.expenses, state.shifts]);
+  }, [filteredTrips, state.expenses, tachographSummary]);
+
+  const platformBars = useMemo(() => {
+    const map = new Map<string, { gross: number; trips: number }>();
+    for (const t of filteredTrips) {
+      const prev = map.get(t.platformId) ?? { gross: 0, trips: 0 };
+      prev.gross = round2(prev.gross + t.grossEur + t.tipEur + t.bonusEur);
+      prev.trips += 1;
+      map.set(t.platformId, prev);
+    }
+    return Array.from(map.entries()).map(([id, val]) => {
+      const plat = state.platforms.find((p) => p.id === id);
+      return {
+        id,
+        label: plat?.name ?? id.toUpperCase(),
+        sublabel: `${val.trips} viagens`,
+        value: val.gross,
+        formattedValue: formatMoney(val.gross, activeMarket.currency),
+        color: plat?.brandColor ?? '#1D4ED8',
+      };
+    });
+  }, [filteredTrips, state.platforms, activeMarket.currency]);
 
   // Offer Calculator State
   const [calcInput, setCalcInput] = useState<ProposalInput>({
@@ -96,7 +131,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     stops: 0,
     tollsEur: 0,
     bonusEur: 1.5,
-    region: 'Lisboa Centro',
+    region: `${state.localization.currentLocation.city} Centro`,
     notes: '',
     vehicleCostPerKmEur:
       (activeVehicle.consumptionPer100Km / 100) * activeVehicle.energyCostPerUnitEur +
@@ -135,21 +170,85 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     tone: 'success' | 'warning' | 'danger';
   } | null>(null);
 
-  // Selected trip for pending capture association
   const [pendingMatchTripId, setPendingMatchTripId] = useState<string>(state.trips[0]?.id ?? '');
 
   if (activeTab === 'dashboard') {
     const expiringDocs = state.documents.filter((d) => d.status !== 'Válido');
     const activeCampaigns = state.campaigns.filter((c) => c.status === 'Ativa');
+    const activeTacho = state.tachograph.sessions.find(
+      (s) => s.id === state.tachograph.activeSessionId && s.status === 'Em curso'
+    );
+    const totalKmRatio = Math.max(0.1, metrics.passKm + metrics.emptyKm);
+    const passKmPct = Math.round((metrics.passKm / totalKmRatio) * 100);
+    const weeklyNetGoal = 750;
+
     return (
       <div className="space-y-6">
-        <ContextualHelpBanner
-          title="Painel Operacional Integrado"
-          description="Clique no ícone (?) de qualquer cartão para ver o significado e a fórmula de cálculo. Clique em 'Abrir análise' para navegar diretamente ao módulo detalhado."
-          demoNotice="Modo Demonstração Coerente"
-        />
+        {/* Live Commercial Cockpit Strip */}
+        <Card className="p-5 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white border-blue-900">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-blue-600/30 border border-blue-400/40 font-semibold">
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{
+                      backgroundColor:
+                        TACHO_STATE_COLOR[activeTacho?.currentState ?? 'Fora de serviço'],
+                    }}
+                  />
+                  {activeTacho ? 'Turno & Tacógrafo Ativos' : 'Sem Turno Ativo'}
+                </span>
+                <span className="text-slate-300 font-mono-tabular">
+                  {state.localization.currentLocation.city},{' '}
+                  {state.localization.currentLocation.countryCode}
+                  {state.localization.currentLocation.countryCode !== activeMarket.code
+                    ? ` · Mercado ${activeMarket.code}`
+                    : ''}{' '}
+                  · {activeMarket.currency} ({activeMarket.unitSystem === 'imperial' ? 'mi' : 'km'})
+                </span>
+              </div>
+              <h2 className="text-xl font-extrabold tracking-tight">
+                {activeTacho?.currentState ?? 'Fora de serviço'} ·{' '}
+                {formatMoney(metrics.net, activeMarket.currency)} líquidos
+              </h2>
+              <p className="text-xs text-slate-300">
+                Condução tacógrafo: {tachographSummary.drivingMinutes} min · Trabalho s/ condução:{' '}
+                {tachographSummary.workWithoutDrivingMinutes} min · Pausas/Refeições:{' '}
+                {tachographSummary.breakMinutes + tachographSummary.mealMinutes} min
+              </p>
+            </div>
 
-        {/* Filters */}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setDriverNav('tacografo')}
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors"
+              >
+                <Gauge className="w-4 h-4" />
+                <span>Abrir Tacógrafo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDriverNav('calculadora')}
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold transition-colors"
+              >
+                <Calculator className="w-4 h-4" />
+                <span>Analisar Proposta</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDriverNav('consolidado-plataformas')}
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold transition-colors"
+              >
+                <Layers className="w-4 h-4" />
+                <span>Consolidado Multi-App</span>
+              </button>
+            </div>
+          </div>
+        </Card>
+
+        {/* Interactive Filters */}
         <Card className="p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <SegmentedFilter
@@ -168,7 +267,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 onChange={(e) => setPlatformFilter(e.target.value)}
                 className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium"
               >
-                <option value="ALL">Todas as plataformas ({visibleDriverPlatforms.length} ativas)</option>
+                <option value="ALL">Todas ({visibleDriverPlatforms.length} ativas)</option>
                 {visibleDriverPlatforms.map((p) => (
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
@@ -182,7 +281,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 onChange={(e) => setCategoryFilter(e.target.value)}
                 className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium"
               >
-                <option value="ALL">Todas as categorias</option>
+                <option value="ALL">Todas categorias</option>
                 {Array.from(new Set(state.trips.map((t) => t.category))).map((cat) => (
                   <option key={cat} value={cat}>{cat}</option>
                 ))}
@@ -190,21 +289,17 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setDriverNav('calculadora')}
-            className="px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
-          >
-            Analisar Nova Proposta
-          </button>
+          <span className="text-xs text-slate-500">
+            {filteredTrips.length} viagem(ns) · clique nos gráficos para abrir detalhes
+          </span>
         </Card>
 
         {/* Primary KPI Grid */}
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <MetricCard
             label="Ganhos Brutos (Período)"
-            value={`€${metrics.gross.toFixed(2)}`}
-            subtext={`${filteredTrips.length} viagens filtradas · inclui gorjetas e bónus`}
+            value={formatMoney(metrics.gross, activeMarket.currency)}
+            subtext={`${filteredTrips.length} viagens · inclui gorjetas e bónus`}
             explanation="Soma total das tarifas brutas, gorjetas reconciliadas e bónus das viagens concluídas."
             formula="Σ(tarifa bruta + gorjeta + bónus)"
             accent="blue"
@@ -213,27 +308,27 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           />
           <MetricCard
             label="Líquido Estimado"
-            value={`€${metrics.net.toFixed(2)}`}
-            subtext={`Após comissões e €${metrics.expensesTotal.toFixed(2)} custos/despesas`}
-            explanation="Estimativa real do resultado após comissões das plataformas, custo energético/manutenção e despesas lançadas."
+            value={formatMoney(metrics.net, activeMarket.currency)}
+            subtext={`Após comissões e ${formatMoney(metrics.expensesTotal, activeMarket.currency)} custos`}
+            explanation="Estimativa real após comissões das plataformas, custo energético/manutenção e despesas lançadas."
             formula="Bruto - Comissões - Custo/km - Despesas"
             onDrillDown={() => setDriverNav('financeiro')}
             drillDownLabel="Abrir módulo financeiro"
           />
           <MetricCard
-            label="Média por Hora / por Km"
-            value={`€${metrics.avgPerHour.toFixed(2)}/h`}
-            subtext={`€${metrics.avgPerKm.toFixed(2)}/km · ${metrics.totalKm.toFixed(1)} km totais`}
-            explanation="Eficiência média de faturação por hora produtiva e por quilómetro total comprometido."
-            formula="Receita Bruta ÷ Horas Produtivas | Receita ÷ Km Totais"
+            label={`Eficiência (${activeMarket.currencySymbol.trim()}/h e Distância)`}
+            value={`${formatMoney(metrics.avgPerHour, activeMarket.currency)}/h`}
+            subtext={`${formatDistanceRate(metrics.avgPerKm, activeMarket.currency, activeMarket.unitSystem)} · ${formatDistance(metrics.totalKm, activeMarket.unitSystem)}`}
+            explanation="Eficiência média de faturação por hora produtiva e por distância comprometida."
+            formula="Receita Bruta ÷ Horas Produtivas | Receita ÷ Distância"
             onDrillDown={() => setDriverNav('relatorios')}
             drillDownLabel="Explorar relatórios"
           />
           <MetricCard
             label="Alertas Documentais & Legais"
             value={`${expiringDocs.length} Pendentes`}
-            subtext={`${state.obligations.filter((o) => o.humanValidated).length} obrigações validadas`}
-            explanation="Documentos com validade próxima do vencimento ligados às obrigações TVDE."
+            subtext={`${state.obligations.filter((o) => o.humanValidated).length} obrigações validadas (${activeMarket.code})`}
+            explanation="Documentos próximos do vencimento ligados às obrigações locais do motorista."
             formula="Contagem de documentos em estado 'A expirar' ou 'Expirado'"
             accent={expiringDocs.length > 0 ? 'red' : 'neutral'}
             onDrillDown={() => setDriverNav('documentos')}
@@ -241,37 +336,77 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           />
         </div>
 
-        {/* Operational Breakdown Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card className="p-5 space-y-3">
+        {/* Visual Charts Row: Weekly Goal Donut + Multi-Platform Earnings Bar Chart */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <Card className="lg:col-span-5 p-5 flex flex-col justify-between gap-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold">Tempos &amp; Quilometragem</h2>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Target className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Progresso da Meta Semanal
+              </h2>
               <button
                 type="button"
-                onClick={() => setDriverNav('agenda-turnos')}
-                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
+                onClick={() => setDriverNav('planeador')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
               >
-                Abrir Turnos
+                Planeador <ArrowRight className="w-3 h-3" />
               </button>
             </div>
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-500">Horas Online / Produtivas / Espera</span>
-                <span className="font-mono-tabular font-semibold">
-                  {metrics.onlineHours.toFixed(1)}h / {metrics.prodHours.toFixed(1)}h / {metrics.waitHours.toFixed(1)}h
+
+            <GoalDonutChart
+              currentValue={Math.max(0, metrics.net)}
+              targetValue={weeklyNetGoal}
+              formattedCurrent={formatMoney(Math.max(0, metrics.net), activeMarket.currency)}
+              formattedTarget={formatMoney(weeklyNetGoal, activeMarket.currency)}
+              label="Resultado Líquido Acumulado"
+            />
+
+            {/* Passenger vs Empty Km Visual Split Bar */}
+            <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+              <div className="flex justify-between font-medium">
+                <span>Km Passageiro ({passKmPct}%) vs Vazio ({100 - passKmPct}%)</span>
+                <span className="font-mono-tabular">
+                  {formatDistance(metrics.passKm, activeMarket.unitSystem)} /{' '}
+                  {formatDistance(metrics.emptyKm, activeMarket.unitSystem)}
                 </span>
               </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-slate-500">Km com Passageiro</span>
-                <span className="font-mono-tabular font-semibold">{metrics.passKm.toFixed(1)} km</span>
+              <div className="h-3 rounded-full bg-red-200 dark:bg-red-950 overflow-hidden flex">
+                <div
+                  className="h-full bg-blue-700 transition-all duration-500"
+                  style={{ width: `${passKmPct}%` }}
+                />
               </div>
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500">Km em Recolha / Vazio</span>
-                <span className="font-mono-tabular font-semibold">{metrics.emptyKm.toFixed(1)} km</span>
+              <div className="flex justify-between text-[11px] text-slate-500">
+                <span>Online: {metrics.onlineHours.toFixed(1)}h · Produtivo: {metrics.prodHours.toFixed(1)}h</span>
+                <span>Espera: {metrics.waitHours.toFixed(1)}h</span>
               </div>
             </div>
           </Card>
 
+          <Card className="lg:col-span-7 p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Layers className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Resumo por Plataforma (Clique para comparar)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setDriverNav('consolidado-plataformas')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
+              >
+                Consolidado Multi-App <ArrowRight className="w-3 h-3" />
+              </button>
+            </div>
+            <HorizontalBreakdownBars
+              items={platformBars}
+              selectedId={platformFilter !== 'ALL' ? platformFilter : null}
+              onSelect={(id) => setPlatformFilter(platformFilter === id ? 'ALL' : id)}
+            />
+          </Card>
+        </div>
+
+        {/* Campaigns, Active Vehicle & Platforms Quick Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <Card className="p-5 space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold">Campanhas Ativas ({activeCampaigns.length})</h2>
@@ -280,7 +415,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 onClick={() => setDriverNav('campanhas')}
                 className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
               >
-                Ver Campanhas
+                Ver Todas
               </button>
             </div>
             <div className="space-y-3">
@@ -291,7 +426,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     <div className="flex justify-between font-medium">
                       <span className="truncate pr-2">{c.name}</span>
                       <span className="font-mono-tabular shrink-0">
-                        {c.completedTrips}/{c.targetTrips} (€{c.rewardEur})
+                        {c.completedTrips}/{c.targetTrips} ({formatMoney(c.rewardEur, activeMarket.currency)})
                       </span>
                     </div>
                     <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
@@ -305,32 +440,74 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
           <Card className="p-5 space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold">Veículo Ativo &amp; Obrigações</h2>
+              <h2 className="text-sm font-bold flex items-center gap-2">
+                <Car className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                Veículo Ativo
+              </h2>
               <button
                 type="button"
                 onClick={() => setDriverNav('veiculos')}
                 className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
               >
-                Gerir Veículo
+                Gerir
               </button>
             </div>
             <div className="text-xs space-y-1.5">
-              <p className="font-semibold text-sm">
+              <p className="font-bold text-sm">
                 {activeVehicle.brand} {activeVehicle.model} ({activeVehicle.year})
               </p>
               <p className="text-slate-500 dark:text-slate-400">
-                {activeVehicle.fuelType} · Autonomia {activeVehicle.rangeKm} km · {activeVehicle.city}
+                {activeVehicle.fuelType} · Autonomia {formatDistance(activeVehicle.rangeKm, activeMarket.unitSystem)} · {activeVehicle.city}
               </p>
               <div className="pt-2 flex items-center justify-between">
-                <StatusLabel tone="success" text="Elegível TVDE PT" />
+                <StatusLabel tone="success" text={`Elegível (${activeMarket.code})`} />
                 <button
                   type="button"
                   onClick={() => setDriverNav('legislacao')}
                   className="text-blue-700 dark:text-blue-400 font-medium hover:underline"
                 >
-                  Lei n.º 59/2026 →
+                  Conformidade →
                 </button>
               </div>
+            </div>
+          </Card>
+
+          <Card className="p-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold">Plataformas Ativas ({visibleDriverPlatforms.length})</h2>
+              <button
+                type="button"
+                onClick={() => setDriverNav('consolidado-plataformas')}
+                className="text-xs font-medium text-blue-700 dark:text-blue-400 hover:underline"
+              >
+                Detalhes
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {visibleDriverPlatforms.map((pl) => (
+                <button
+                  key={pl.id}
+                  type="button"
+                  onClick={() =>
+                    setDriverNav(
+                      pl.id === 'uber'
+                        ? 'desempenho-uber'
+                        : pl.id === 'bolt'
+                        ? 'desempenho-bolt'
+                        : 'consolidado-plataformas'
+                    )
+                  }
+                  className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-blue-600 text-xs font-medium"
+                >
+                  <PlatformBadge
+                    name={pl.name}
+                    shortCode={pl.shortCode}
+                    brandColor={pl.brandColor}
+                    size="sm"
+                  />
+                  <span>{pl.name}</span>
+                </button>
+              ))}
             </div>
           </Card>
         </div>
@@ -384,16 +561,15 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
       <div className="space-y-6">
         <ContextualHelpBanner
           title="AIVAD Real-Time Offer Analyzer & Cartão Flutuante Android"
-          description="Avalie rentabilidade em €/km, €/hora e €/minuto antes de aceitar. Ao concluir uma proposta registada, ela propaga automaticamente para Viagens, Financeiro, Campanhas e Relatórios."
+          description="Avalie rentabilidade em €/km, €/hora e €/minuto antes de aceitar. Ao concluir uma proposta registada, ela propaga automaticamente para Viagens, Tacógrafo, Financeiro e Campanhas."
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Input Form */}
           <Card className="lg:col-span-7 p-5 space-y-4">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-base font-bold flex items-center gap-2">
                 <Calculator className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                Dados da Proposta
+                Dados da Proposta ({activeMarket.currency})
               </h2>
               <SegmentedFilter
                 value={calcInput.mode}
@@ -441,7 +617,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="prop-val" className="block font-medium mb-1">Valor Bruto (€)</label>
+                <label htmlFor="prop-val" className="block font-medium mb-1">
+                  Valor Bruto ({activeMarket.currencySymbol})
+                </label>
                 <input
                   id="prop-val"
                   type="number"
@@ -496,7 +674,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="prop-bonus" className="block font-medium mb-1">Bónus (€)</label>
+                <label htmlFor="prop-bonus" className="block font-medium mb-1">
+                  Bónus ({activeMarket.currencySymbol})
+                </label>
                 <input
                   id="prop-bonus"
                   type="number"
@@ -507,7 +687,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="prop-tolls" className="block font-medium mb-1">Portagens (€)</label>
+                <label htmlFor="prop-tolls" className="block font-medium mb-1">
+                  Portagens ({activeMarket.currencySymbol})
+                </label>
                 <input
                   id="prop-tolls"
                   type="number"
@@ -570,14 +752,13 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     onClick={() => updateProposalLifecycle(lastCreatedPropId, 'Concluída')}
                     className="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
                   >
-                    Marcar Última como Concluída (Gerar Viagem)
+                    Marcar Última como Concluída (Gerar Viagem + Tacógrafo)
                   </button>
                 )}
               </div>
             </form>
           </Card>
 
-          {/* Live Output */}
           <Card className="lg:col-span-5 p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-bold">Resultado Analítico</h2>
@@ -586,23 +767,31 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
             <div className="grid grid-cols-3 gap-3">
               <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">€/km</span>
-                <p className="text-lg font-bold font-mono-tabular">€{liveAnalysis.eurPerKm.toFixed(2)}</p>
+                <span className="text-[11px] text-slate-500">Por distância</span>
+                <p className="text-base font-bold font-mono-tabular">
+                  {formatDistanceRate(liveAnalysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}
+                </p>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">€/hora</span>
-                <p className="text-lg font-bold font-mono-tabular">€{liveAnalysis.eurPerHour.toFixed(2)}</p>
+                <span className="text-[11px] text-slate-500">Por hora</span>
+                <p className="text-base font-bold font-mono-tabular">
+                  {formatMoney(liveAnalysis.eurPerHour, activeMarket.currency)}/h
+                </p>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/70">
-                <span className="text-[11px] text-slate-500">€/minuto</span>
-                <p className="text-lg font-bold font-mono-tabular">€{liveAnalysis.eurPerMin.toFixed(2)}</p>
+                <span className="text-[11px] text-slate-500">Por minuto</span>
+                <p className="text-base font-bold font-mono-tabular">
+                  {formatMoney(liveAnalysis.eurPerMin, activeMarket.currency)}/m
+                </p>
               </div>
             </div>
 
             <div className="space-y-2 text-xs">
               <div className="flex justify-between">
                 <span className="text-slate-500">Distância Total Comprometida</span>
-                <span className="font-mono-tabular font-semibold">{liveAnalysis.totalDistanceKm.toFixed(1)} km</span>
+                <span className="font-mono-tabular font-semibold">
+                  {formatDistance(liveAnalysis.totalDistanceKm, activeMarket.unitSystem)}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Tempo Total Comprometido</span>
@@ -610,12 +799,14 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Custo Operacional Estimado</span>
-                <span className="font-mono-tabular font-semibold">€{liveAnalysis.operatingCostEur.toFixed(2)}</span>
+                <span className="font-mono-tabular font-semibold">
+                  {formatMoney(liveAnalysis.operatingCostEur, activeMarket.currency)}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Rentabilidade Líquida Antes de Comissão</span>
                 <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
-                  €{liveAnalysis.estimatedNetEur.toFixed(2)}
+                  {formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -635,7 +826,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           </Card>
         </div>
 
-        {/* Android Floating Card Designer (Configuração de interface nativa) */}
+        {/* Android Floating Card Designer */}
         <Card className="p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
@@ -644,7 +835,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 Configurador do Cartão Flutuante Android
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                As cores personalizadas do cartão são independentes das cores semânticas de classificação (Verde/Amarelo/Vermelho). Renderização real reservada ao módulo nativo Android.
+                As cores personalizadas do cartão são independentes da classificação (Verde/Amarelo/Vermelho). Renderização real exclusiva do módulo nativo Android.
               </p>
             </div>
             <StatusLabel tone="warning" text="Overlay Nativo Android: INTEGRAÇÃO A VALIDAR" />
@@ -729,7 +920,6 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               </label>
             </div>
 
-            {/* Live Overlay Preview */}
             <div className="lg:col-span-5 flex flex-col items-center justify-center p-4 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
               <div
                 style={{
@@ -757,9 +947,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   </span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 font-mono-tabular font-bold">
-                  <div>€{liveAnalysis.eurPerKm.toFixed(2)}/km</div>
-                  <div>€{liveAnalysis.eurPerHour.toFixed(2)}/h</div>
-                  <div>€{liveAnalysis.estimatedNetEur.toFixed(2)} líq.</div>
+                  <div>{formatDistanceRate(liveAnalysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}</div>
+                  <div>{formatMoney(liveAnalysis.eurPerHour, activeMarket.currency)}/h</div>
+                  <div>{formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)} líq.</div>
                 </div>
               </div>
               {currentOverlay.showHistoryFloatingButton && (
@@ -803,7 +993,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               createAndAnalyzeProposal(
                 {
                   platformId: visibleDriverPlatforms[0]?.id ?? 'uber',
-                  category: 'Uber Comfort',
+                  category: visibleDriverPlatforms[0]?.categories[0] ?? 'Uber Comfort',
                   grossValueEur: 18.2,
                   pickupDistanceKm: 1.8,
                   pickupTimeMin: 5,
@@ -812,7 +1002,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   stops: 0,
                   tollsEur: 0,
                   bonusEur: 2.0,
-                  region: 'Saldanha → Aeroporto',
+                  region: `${state.localization.currentLocation.city} → Aeroporto`,
                   vehicleCostPerKmEur: 0.12,
                   calculationBasis: 'total_distance',
                   mode: 'Equilibrado',
@@ -837,14 +1027,14 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     <span className="text-xs font-normal text-slate-500">({prop.source})</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    {prop.input.region} · {prop.analysis.totalDistanceKm} km · {prop.analysis.totalTimeMin} min
+                    {prop.input.region} · {formatDistance(prop.analysis.totalDistanceKm, activeMarket.unitSystem)} · {prop.analysis.totalTimeMin} min
                   </p>
                 </div>
 
                 <div className="flex items-center gap-4 font-mono-tabular text-xs">
-                  <span>€{prop.analysis.effectiveRevenueEur.toFixed(2)}</span>
-                  <span>€{prop.analysis.eurPerKm.toFixed(2)}/km</span>
-                  <span>€{prop.analysis.eurPerHour.toFixed(2)}/h</span>
+                  <span>{formatMoney(prop.analysis.effectiveRevenueEur, activeMarket.currency)}</span>
+                  <span>{formatDistanceRate(prop.analysis.eurPerKm, activeMarket.currency, activeMarket.unitSystem)}</span>
+                  <span>{formatMoney(prop.analysis.eurPerHour, activeMarket.currency)}/h</span>
                   <StatusLabel
                     tone={
                       prop.analysis.classification === 'verde'
@@ -931,7 +1121,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
             <div>
-              <label htmlFor="ap-min-val" className="block font-medium mb-1">Valor Mínimo (€)</label>
+              <label htmlFor="ap-min-val" className="block font-medium mb-1">
+                Valor Mínimo ({activeMarket.currencySymbol})
+              </label>
               <input
                 id="ap-min-val"
                 type="number"
@@ -946,7 +1138,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               />
             </div>
             <div>
-              <label htmlFor="ap-min-km" className="block font-medium mb-1">€/km Mínimo</label>
+              <label htmlFor="ap-min-km" className="block font-medium mb-1">
+                Mínimo ({activeMarket.currencySymbol}/km)
+              </label>
               <input
                 id="ap-min-km"
                 type="number"
@@ -961,9 +1155,11 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               />
             </div>
             <div>
-              <label htmlFor="ap-min-h" className="block font-medium mb-1">€/hora Mínimo</label>
+              <label htmlFor="ap-min-hr" className="block font-medium mb-1">
+                Mínimo ({activeMarket.currencySymbol}/hora)
+              </label>
               <input
-                id="ap-min-h"
+                id="ap-min-hr"
                 type="number"
                 step="1"
                 value={ap.thresholds.minEurPerHour}
@@ -975,59 +1171,16 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
-            <div>
-              <label htmlFor="ap-max-pick" className="block font-medium mb-1">Recolha Máxima (km)</label>
-              <input
-                id="ap-max-pick"
-                type="number"
-                step="0.5"
-                value={ap.thresholds.maxPickupKm}
-                onChange={(e) =>
-                  updateAutoPilotConfig({
-                    thresholds: { ...ap.thresholds, maxPickupKm: Number(e.target.value) },
-                  })
-                }
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
-              />
-            </div>
-            <div>
-              <label htmlFor="ap-max-dist" className="block font-medium mb-1">Distância Máxima (km)</label>
-              <input
-                id="ap-max-dist"
-                type="number"
-                value={ap.thresholds.maxTotalDistanceKm}
-                onChange={(e) =>
-                  updateAutoPilotConfig({
-                    thresholds: { ...ap.thresholds, maxTotalDistanceKm: Number(e.target.value) },
-                  })
-                }
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
-              />
-            </div>
-            <div>
-              <label htmlFor="ap-sched" className="block font-medium mb-1">Horário Ativo</label>
-              <input
-                id="ap-sched"
-                type="text"
-                value={ap.thresholds.activeScheduleWindow}
-                onChange={(e) =>
-                  updateAutoPilotConfig({
-                    thresholds: { ...ap.thresholds, activeScheduleWindow: e.target.value },
-                  })
-                }
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-              />
-            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-6 text-xs pt-2">
+          <div className="flex flex-wrap gap-4 text-xs pt-2 border-t border-slate-100 dark:border-slate-800">
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
                 checked={ap.prioritizeCampaigns}
                 onChange={(e) => updateAutoPilotConfig({ prioritizeCampaigns: e.target.checked })}
               />
-              <span>Priorizar propostas que contribuam para campanhas ativas</span>
+              <span>Priorizar campanhas ativas na decisão</span>
             </label>
             <label className="flex items-center gap-2">
               <input
@@ -1035,33 +1188,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 checked={ap.includeBonusInThreshold}
                 onChange={(e) => updateAutoPilotConfig({ includeBonusInThreshold: e.target.checked })}
               />
-              <span>Incluir bónus no cálculo dos limiares</span>
+              <span>Incluir bónus na avaliação de limiar</span>
             </label>
-          </div>
-        </Card>
-
-        <Card className="p-5 space-y-3">
-          <h3 className="text-sm font-bold flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Registo Auditável de Decisões AutoPilot
-          </h3>
-          <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-            {state.proposals
-              .filter((p) => p.autoPilotDecision)
-              .map((p) => (
-                <div key={p.id} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <p className="font-semibold">
-                      {p.input.platformId.toUpperCase()} · €{p.analysis.effectiveRevenueEur.toFixed(2)} ({p.autoPilotDecision!.modeAtDecision})
-                    </p>
-                    <p className="text-slate-500">{p.autoPilotDecision!.reason}</p>
-                  </div>
-                  <StatusLabel
-                    tone={p.autoPilotDecision!.action.includes('Aceitar') ? 'success' : 'warning'}
-                    text={p.autoPilotDecision!.action}
-                  />
-                </div>
-              ))}
           </div>
         </Card>
       </div>
@@ -1069,44 +1197,43 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   }
 
   // SMART DATA CAPTURE
+  const pendingCaptures = state.captures.filter((c) => c.status === 'Pendente');
+
   return (
     <div className="space-y-6">
       <ContextualHelpBanner
-        title="AIVAD Smart Data Capture & Reconciliação Idempotente"
-        description="Recebe eventos de notificações Android autorizadas, extratos, OCR ou entrada manual. Gorjetas tardias atualizam a viagem original sem criar duplicados; eventos sem correspondência ficam pendentes."
+        title="AIVAD Smart Data Capture — Captura Idempotente & Reconciliação"
+        description="Associa gorjetas tardias à viagem original sem duplicar, regista campanhas e bloqueia repetições com base na chave idempotente."
       />
 
       <Card className="p-5 space-y-4">
         <h2 className="text-base font-bold flex items-center gap-2">
           <Database className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-          Simular / Importar Evento de Captura
+          Capturar / Reconciliar Evento Externo
         </h2>
-        {capFeedback && <StatusLabel tone={capFeedback.tone} text={capFeedback.message} />}
+
+        {capFeedback && (
+          <StatusLabel tone={capFeedback.tone} text={capFeedback.message} />
+        )}
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!capForm.externalTxId.trim() || capForm.amountEur <= 0) {
-              setCapFeedback({
-                tone: 'danger',
-                message: 'Preencha o ID de transação e um valor positivo.',
-              });
-              return;
-            }
             const res = captureExternalEvent(capForm);
             setCapFeedback({
-              tone: res.isDuplicate ? 'warning' : 'success',
               message: res.message,
+              tone: res.isDuplicate ? 'danger' : res.status === 'Pendente' ? 'warning' : 'success',
             });
           }}
           className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs"
         >
           <div>
-            <label htmlFor="cap-tx" className="block font-medium mb-1">ID Transação (Idempotência)</label>
+            <label htmlFor="cap-tx" className="block font-medium mb-1">ID Externo (Chave Dedup)</label>
             <input
               id="cap-tx"
               type="text"
               value={capForm.externalTxId}
-              onChange={(e) => setCapForm((p) => ({ ...p, externalTxId: e.target.value }))}
+              onChange={(e) => setCapForm((f) => ({ ...f, externalTxId: e.target.value }))}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
             />
           </div>
@@ -1116,29 +1243,19 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               id="cap-type"
               value={capForm.dataType}
               onChange={(e) =>
-                setCapForm((p) => ({ ...p, dataType: e.target.value as SmartCaptureRecord['dataType'] }))
+                setCapForm((f) => ({
+                  ...f,
+                  dataType: e.target.value as SmartCaptureRecord['dataType'],
+                }))
               }
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
-              <option value="Gorjeta">Gorjeta (Reconcilia viagem original)</option>
-              <option value="Campanha">Campanha (Alimenta central de campanhas)</option>
+              <option value="Gorjeta">Gorjeta</option>
+              <option value="Campanha">Campanha</option>
+              <option value="Viagem">Viagem</option>
               <option value="Ganho">Ganho</option>
-              <option value="Ajuste">Ajuste</option>
-            </select>
-          </div>
-          <div>
-            <label htmlFor="cap-src" className="block font-medium mb-1">Origem da Recolha</label>
-            <select
-              id="cap-src"
-              value={capForm.source}
-              onChange={(e) => setCapForm((p) => ({ ...p, source: e.target.value as CaptureSource }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-            >
-              <option value="Notificação Android Autorizada">Notificação Android Autorizada</option>
-              <option value="Extrato Importado">Extrato Importado</option>
-              <option value="OCR">OCR</option>
-              <option value="Captura Voluntária">Captura Voluntária</option>
-              <option value="Manual">Manual</option>
+              <option value="Bónus">Bónus</option>
+              <option value="Pagamento">Pagamento</option>
             </select>
           </div>
           <div>
@@ -1146,7 +1263,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             <select
               id="cap-plat"
               value={capForm.platformId}
-              onChange={(e) => setCapForm((p) => ({ ...p, platformId: e.target.value }))}
+              onChange={(e) => setCapForm((f) => ({ ...f, platformId: e.target.value }))}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
               {visibleDriverPlatforms.map((p) => (
@@ -1155,98 +1272,136 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             </select>
           </div>
           <div>
-            <label htmlFor="cap-amt" className="block font-medium mb-1">Valor (€)</label>
+            <label htmlFor="cap-amt" className="block font-medium mb-1">
+              Valor ({activeMarket.currencySymbol})
+            </label>
             <input
               id="cap-amt"
               type="number"
               step="0.1"
               value={capForm.amountEur}
-              onChange={(e) => setCapForm((p) => ({ ...p, amountEur: Number(e.target.value) }))}
+              onChange={(e) => setCapForm((f) => ({ ...f, amountEur: Number(e.target.value) }))}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
             />
           </div>
           <div>
-            <label htmlFor="cap-ref" className="block font-medium mb-1">Ref. Viagem Original (ex: UB-88439)</label>
+            <label htmlFor="cap-ref" className="block font-medium mb-1">Ref. Viagem Associada</label>
             <input
               id="cap-ref"
               type="text"
               value={capForm.relatedTripRef}
-              onChange={(e) => setCapForm((p) => ({ ...p, relatedTripRef: e.target.value }))}
+              onChange={(e) => setCapForm((f) => ({ ...f, relatedTripRef: e.target.value }))}
               className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
             />
           </div>
-          <div className="sm:col-span-3 flex items-center gap-3">
+          <div>
+            <label htmlFor="cap-src" className="block font-medium mb-1">Origem</label>
+            <select
+              id="cap-src"
+              value={capForm.source}
+              onChange={(e) => setCapForm((f) => ({ ...f, source: e.target.value as CaptureSource }))}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            >
+              <option value="Notificação Android Autorizada">Notificação Android Autorizada</option>
+              <option value="Extrato Importado">Extrato Importado</option>
+              <option value="Relatório CSV/PDF">Relatório CSV/PDF</option>
+              <option value="OCR">OCR</option>
+              <option value="Manual">Manual</option>
+            </select>
+          </div>
+          <div className="sm:col-span-3 flex flex-wrap gap-2">
             <button
               type="submit"
               className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
             >
-              Processar Captura com Deteção de Duplicação
+              Processar Evento no Smart Capture
             </button>
           </div>
         </form>
       </Card>
 
+      {pendingCaptures.length > 0 && (
+        <Card className="p-5 space-y-3 border-amber-300 dark:border-amber-800">
+          <h3 className="text-sm font-bold flex items-center gap-2 text-amber-800 dark:text-amber-300">
+            <Radio className="w-4 h-4" />
+            Registos Pendentes de Confirmação Manual ({pendingCaptures.length})
+          </h3>
+          {pendingCaptures.map((pc) => (
+            <div
+              key={pc.id}
+              className="p-3 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+            >
+              <div>
+                <p className="font-semibold">{pc.rawSummary}</p>
+                <p className="text-slate-500">
+                  ID {pc.externalTxId} · {formatMoney(pc.amountEur, activeMarket.currency)} · {pc.platformId.toUpperCase()}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  aria-label="Escolher viagem para associar"
+                  value={pendingMatchTripId}
+                  onChange={(e) => setPendingMatchTripId(e.target.value)}
+                  className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                >
+                  {state.trips.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.externalRef} ({formatMoney(t.grossEur, t.currency ?? 'EUR')})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => confirmPendingCapture(pc.id, pendingMatchTripId)}
+                  className="px-3 py-1.5 rounded bg-blue-700 text-white font-semibold whitespace-nowrap"
+                >
+                  Associar
+                </button>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
       <Card className="overflow-x-auto">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h3 className="text-sm font-bold">Registos Capturados ({state.captures.length})</h3>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-500">Associar pendentes à viagem:</span>
-            <select
-              value={pendingMatchTripId}
-              onChange={(e) => setPendingMatchTripId(e.target.value)}
-              className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-            >
-              {state.trips.map((t) => (
-                <option key={t.id} value={t.id}>{t.externalRef} (€{t.grossEur})</option>
-              ))}
-            </select>
-          </div>
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            Histórico de Capturas &amp; Deduplicação ({state.captures.length})
+          </h3>
         </div>
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
             <tr>
-              <th className="p-3">Tipo</th>
+              <th className="p-3">ID / Chave</th>
               <th className="p-3">Origem</th>
-              <th className="p-3">Plataforma</th>
+              <th className="p-3">Tipo</th>
               <th className="p-3">Valor</th>
               <th className="p-3">Resumo</th>
               <th className="p-3">Estado</th>
-              <th className="p-3">Ação</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {state.captures.map((cap) => (
               <tr key={cap.id}>
-                <td className="p-3 font-semibold">{cap.dataType}</td>
+                <td className="p-3 font-mono-tabular">{cap.externalTxId}</td>
                 <td className="p-3">{cap.source}</td>
-                <td className="p-3">{cap.platformId.toUpperCase()}</td>
-                <td className="p-3 font-mono-tabular">€{cap.amountEur.toFixed(2)}</td>
-                <td className="p-3 max-w-xs">{cap.rawSummary}</td>
+                <td className="p-3">{cap.dataType}</td>
+                <td className="p-3 font-mono-tabular">{formatMoney(cap.amountEur, activeMarket.currency)}</td>
+                <td className="p-3">{cap.rawSummary}</td>
                 <td className="p-3">
                   <StatusLabel
                     tone={
                       cap.status === 'Associado' || cap.status === 'Confirmado'
                         ? 'success'
+                        : cap.status === 'Pendente'
+                        ? 'warning'
                         : cap.status === 'Rejeitado'
                         ? 'danger'
-                        : 'warning'
+                        : 'info'
                     }
                     text={cap.status}
                   />
-                </td>
-                <td className="p-3">
-                  {cap.status === 'Pendente' ? (
-                    <button
-                      type="button"
-                      onClick={() => confirmPendingCapture(cap.id, pendingMatchTripId)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-700 text-white font-medium"
-                    >
-                      <CheckCircle2 className="w-3 h-3" />
-                      Associar
-                    </button>
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
                 </td>
               </tr>
             ))}

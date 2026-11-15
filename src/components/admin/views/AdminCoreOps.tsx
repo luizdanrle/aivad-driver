@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import { Lock, Search, ShieldCheck, Users } from 'lucide-react';
+import { Banknote, Lock, Plus, Search, ShieldCheck, Users } from 'lucide-react';
+import { formatMoney } from '../../../core/localization';
+import type { PaymentTransactionRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import { HorizontalBreakdownBars } from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ContextualHelpBanner,
@@ -11,14 +14,30 @@ import {
 export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
+    availableMarketsForPortal,
     updateUserStatus,
     changeUserSubscriptionPlan,
+    addPaymentTransaction,
     toggleRemoteFlag,
     setAdminNav,
   } = useEcosystem();
 
   const [userSearch, setUserSearch] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+
+  const [payForm, setPayForm] = useState<{
+    userId: string;
+    amount: number;
+    currency: string;
+    channel: PaymentTransactionRecord['channel'];
+    status: PaymentTransactionRecord['status'];
+  }>({
+    userId: state.users[0]?.id ?? 'usr-driver-1',
+    amount: 14.9,
+    currency: 'EUR',
+    channel: 'Web Stripe (A Validar)',
+    status: 'Liquidado (Demo)',
+  });
 
   if (activeTab === 'overview') {
     const activeUsers = state.users.filter((u) => u.status === 'Ativo').length;
@@ -29,11 +48,36 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
     );
     const openTickets = state.tickets.filter((t) => t.status !== 'Resolvido').length;
 
+    const osBars = (['Android', 'iOS', 'Web'] as const).map((os) => {
+      const count = state.users.filter((u) => u.osPlatform === os).length;
+      return {
+        id: os,
+        label: os,
+        sublabel: 'Dispositivos ativos',
+        value: count,
+        formattedValue: `${count} conta(s)`,
+        color: os === 'Android' ? '#1D4ED8' : os === 'iOS' ? '#0F172A' : '#059669',
+      };
+    });
+
+    const marketStatusCounts = state.countries.reduce<Record<string, number>>((acc, c) => {
+      acc[c.marketStatus] = (acc[c.marketStatus] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    const marketBars = Object.entries(marketStatusCounts).map(([status, count]) => ({
+      id: status,
+      label: status,
+      value: count,
+      formattedValue: `${count} país(es)`,
+      color: status === 'Disponível' ? '#059669' : status === 'Em validação' ? '#D97706' : '#1D4ED8',
+    }));
+
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="AIVAD Management — Visão Geral do Ecossistema"
-          description="Monitorização comercial, assinaturas, plataformas, países, versões e suporte num painel unificado com isolamento de privacidade dos motoristas."
+          title="AIVAD Management — Visão Executiva do Ecossistema"
+          description="Monitorização comercial, pagamentos SaaS, expansão internacional, plataformas, versões e suporte num painel unificado com isolamento de privacidade dos motoristas."
         />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -50,20 +94,20 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
           <MetricCard
             label="Receita Recorrente Mensal (MRR Demo)"
             value={`€${mrr.toFixed(2)}`}
-            subtext={`${activeSubs.length} assinaturas ativas · ${state.plans.length} planos`}
+            subtext={`${activeSubs.length} assinaturas ativas · ${state.payments.length} transações`}
             explanation="Receita mensal recorrente normalizada das assinaturas ativas."
             formula="Σ (Mensal + Anual÷12)"
-            onDrillDown={() => setAdminNav('assinaturas')}
-            drillDownLabel="Ver assinaturas"
+            onDrillDown={() => setAdminNav('pagamentos')}
+            drillDownLabel="Abrir módulo Pagamentos"
           />
           <MetricCard
-            label="Plataformas / Países Ativos"
-            value={`${state.platforms.filter((p) => p.status === 'Ativa').length} / ${state.countries.length}`}
-            subtext={`${state.versions.length} versões catalogadas`}
-            explanation="Plataformas de mobilidade visíveis nos menus e mercados configurados."
-            formula="Contagem de plataformas ativas e mercados"
-            onDrillDown={() => setAdminNav('plataformas')}
-            drillDownLabel="Gerir plataformas"
+            label="Mercados Disponíveis / Total"
+            value={`${availableMarketsForPortal.length} / ${state.countries.length}`}
+            subtext={`${state.platforms.filter((p) => p.status === 'Ativa').length} plataformas ativas`}
+            explanation="Apenas mercados com estado 'Disponível' aparecem no Portal Público."
+            formula="Países Disponíveis ÷ Catálogo Global"
+            onDrillDown={() => setAdminNav('paises')}
+            drillDownLabel="Gerir mercados globais"
           />
           <MetricCard
             label="Tickets em Aberto"
@@ -79,35 +123,30 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card className="p-5 space-y-3 text-xs">
-            <h2 className="text-sm font-bold">Distribuição por Sistema Operativo &amp; Versões</h2>
-            <div className="space-y-2">
-              {(['Android', 'iOS', 'Web'] as const).map((os) => {
-                const count = state.users.filter((u) => u.osPlatform === os).length;
-                return (
-                  <div key={os} className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
-                    <span className="font-medium">{os}</span>
-                    <span className="font-mono-tabular font-semibold">{count} utilizador(es)</span>
-                  </div>
-                );
-              })}
-            </div>
+            <h2 className="text-sm font-bold">Distribuição por Sistema Operativo</h2>
+            <HorizontalBreakdownBars items={osBars} />
           </Card>
 
           <Card className="p-5 space-y-3 text-xs">
-            <h2 className="text-sm font-bold">Últimas Ações de Auditoria</h2>
-            <div className="divide-y divide-slate-100 dark:divide-slate-800">
-              {state.auditLogs.slice(0, 4).map((a) => (
-                <div key={a.id} className="py-2 flex justify-between gap-2">
-                  <div>
-                    <p className="font-semibold">{a.action} · {a.entity}</p>
-                    <p className="text-slate-500">{a.details}</p>
-                  </div>
-                  <span className="text-slate-400 whitespace-nowrap">{a.actorRole}</span>
-                </div>
-              ))}
-            </div>
+            <h2 className="text-sm font-bold">Estado dos Mercados Internacionais</h2>
+            <HorizontalBreakdownBars items={marketBars} />
           </Card>
         </div>
+
+        <Card className="p-5 space-y-3 text-xs">
+          <h2 className="text-sm font-bold">Últimas Ações de Auditoria</h2>
+          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+            {state.auditLogs.slice(0, 5).map((a) => (
+              <div key={a.id} className="py-2 flex justify-between gap-2">
+                <div>
+                  <p className="font-semibold">{a.action} · {a.entity}</p>
+                  <p className="text-slate-500">{a.details}</p>
+                </div>
+                <span className="text-slate-400 whitespace-nowrap">{a.actorRole}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
     );
   }
@@ -330,6 +369,178 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
                   </tr>
                 );
               })}
+            </tbody>
+          </table>
+        </Card>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // PAGAMENTOS SAAS MULTI-MOEDA E CANAIS
+  // ==========================================================
+  if (activeTab === 'pagamentos') {
+    const settledTotal = state.payments
+      .filter((p) => p.status === 'Liquidado (Demo)')
+      .reduce((s, p) => s + p.amount, 0);
+
+    return (
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Pagamentos SaaS Multi-Moeda & Canais de Cobrança"
+          description="Controlo de faturas, pagamentos, reembolsos e canais de liquidação Web Stripe (A Validar), Google Play Billing e Apple App Store."
+          demoNotice="Gateway de cobrança real (Stripe/App Store/Play): INTEGRAÇÃO A VALIDAR em ambiente de produção."
+        />
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <MetricCard
+            label="Movimentos Registados"
+            value={`${state.payments.length}`}
+            subtext="Inclui faturas pagas, pendentes e reembolsos"
+            explanation="Total de transações registadas no livro SaaS."
+            formula="Contagem de movimentos"
+            accent="blue"
+          />
+          <MetricCard
+            label="Volume Liquidado (Demo)"
+            value={formatMoney(settledTotal, 'EUR')}
+            subtext="Base de faturação demonstrativa"
+            explanation="Soma dos lançamentos com estado Liquidado."
+            formula="Σ Montantes liquidados"
+          />
+          <MetricCard
+            label="Canais Integrados"
+            value="3 Canais"
+            subtext="Web Stripe (A Validar) · Google Play · Apple"
+            explanation="Infraestrutura preparada para cobrança multi-plataforma."
+            formula="Catálogo de adaptadores SaaS"
+          />
+        </div>
+
+        <Card className="p-5 space-y-3">
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <Plus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            Registar Cobrança / Reembolso (Auditoria Automática)
+          </h3>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const usr = state.users.find((u) => u.id === payForm.userId);
+              if (!usr) return;
+              addPaymentTransaction({
+                subscriptionId:
+                  state.subscriptions.find((s) => s.userId === usr.id)?.id ?? 'sub-manual',
+                userId: usr.id,
+                userName: usr.name,
+                countryCode: usr.countryCode,
+                currency: payForm.currency,
+                amount: payForm.amount,
+                channel: payForm.channel,
+                status: payForm.status,
+                invoiceRef: `INV-2026-${String(Date.now()).slice(-4)}`,
+              });
+            }}
+            className="grid grid-cols-1 sm:grid-cols-5 gap-3 text-xs items-end"
+          >
+            <div>
+              <label htmlFor="pay-user" className="block mb-1 font-medium">Cliente</label>
+              <select
+                id="pay-user"
+                value={payForm.userId}
+                onChange={(e) => setPayForm((f) => ({ ...f, userId: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {state.users.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.countryCode})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="pay-amt" className="block mb-1 font-medium">Valor</label>
+              <input
+                id="pay-amt"
+                type="number"
+                step="0.1"
+                value={payForm.amount}
+                onChange={(e) => setPayForm((f) => ({ ...f, amount: Number(e.target.value) }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="pay-curr" className="block mb-1 font-medium">Moeda</label>
+              <select
+                id="pay-curr"
+                value={payForm.currency}
+                onChange={(e) => setPayForm((f) => ({ ...f, currency: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              >
+                {Array.from(new Set(state.countries.map((c) => c.currency))).map((cur) => (
+                  <option key={cur} value={cur}>{cur}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="pay-status" className="block mb-1 font-medium">Estado</label>
+              <select
+                id="pay-status"
+                value={payForm.status}
+                onChange={(e) =>
+                  setPayForm((f) => ({ ...f, status: e.target.value as PaymentTransactionRecord['status'] }))
+                }
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="Liquidado (Demo)">Liquidado (Demo)</option>
+                <option value="Pendente">Pendente</option>
+                <option value="Reembolsado">Reembolsado</option>
+                <option value="Falhado">Falhado</option>
+              </select>
+            </div>
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold inline-flex items-center justify-center gap-1.5"
+            >
+              <Banknote className="w-3.5 h-3.5" />
+              <span>Lançar Fatura</span>
+            </button>
+          </form>
+        </Card>
+
+        <Card className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+              <tr>
+                <th className="p-3">Fatura</th>
+                <th className="p-3">Cliente</th>
+                <th className="p-3">País</th>
+                <th className="p-3">Montante</th>
+                <th className="p-3">Canal</th>
+                <th className="p-3">Estado</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {state.payments.map((pay) => (
+                <tr key={pay.id}>
+                  <td className="p-3 font-mono-tabular font-semibold">{pay.invoiceRef}</td>
+                  <td className="p-3">{pay.userName}</td>
+                  <td className="p-3 font-mono-tabular">{pay.countryCode}</td>
+                  <td className="p-3 font-mono-tabular font-bold">
+                    {formatMoney(pay.amount, pay.currency)}
+                  </td>
+                  <td className="p-3">{pay.channel}</td>
+                  <td className="p-3">
+                    <StatusLabel
+                      tone={
+                        pay.status === 'Liquidado (Demo)'
+                          ? 'success'
+                          : pay.status === 'Pendente'
+                          ? 'warning'
+                          : 'danger'
+                      }
+                      text={pay.status}
+                    />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </Card>

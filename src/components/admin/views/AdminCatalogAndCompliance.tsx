@@ -1,29 +1,76 @@
 import React, { useState } from 'react';
-import { Bell, Plus, Scale } from 'lucide-react';
+import { Bell, Globe2, MapPin, Plus, Scale } from 'lucide-react';
 import { evaluateVehicleEligibility } from '../../../core/intelligence';
-import type { ComplianceObligation, PlatformStatus } from '../../../models/types';
+import { CURRENCY_META } from '../../../core/localization';
+import type {
+  ComplianceObligation,
+  MarketStatus,
+  PlatformStatus,
+  UnitSystem,
+} from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
+import { PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
   Card,
   ContextualHelpBanner,
   StatusLabel,
 } from '../../ui/DesignSystem';
 
+const MARKET_STATUSES: MarketStatus[] = [
+  'Não configurado',
+  'Em estudo',
+  'Em preparação',
+  'Em validação',
+  'Disponível',
+  'Temporariamente indisponível',
+  'Descontinuado',
+];
+
 export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
     updatePlatformStatus,
     addPlatform,
+    addCountryMarket,
+    updateCountryMarketStatus,
+    addRegionOrCityToCountry,
     validateLegislation,
     addLegislation,
     broadcastNotification,
   } = useEcosystem();
 
-  const [newPlatName, setNewPlatName] = useState('');
-  const [newPlatComm, setNewPlatComm] = useState(18);
+  const [newPlatForm, setNewPlatForm] = useState({
+    name: '',
+    shortCode: '',
+    brandColor: '#1D4ED8',
+    commissionPct: 18,
+    countryScope: 'PT,ES',
+    citiesScope: 'Lisboa,Madrid',
+    categories: 'Standard,Comfort',
+  });
+
+  const [newCountryForm, setNewCountryForm] = useState({
+    code: '',
+    name: '',
+    nativeName: '',
+    language: 'Português',
+    languageCode: 'pt-PT',
+    currency: 'EUR',
+    timezone: 'Europe/Lisbon',
+    unitSystem: 'metric' as UnitSystem,
+    vatPct: 23,
+    driverLicenseRequired: 'Licença Local / TVDE',
+    vehicleMaxAgeYears: 7,
+    regionName: '',
+    cityName: '',
+    marketStatus: 'Em preparação' as MarketStatus,
+  });
+
+  const [regionInputs, setRegionInputs] = useState<Record<string, { region: string; city: string }>>({});
 
   const [newLawForm, setNewLawForm] = useState({
     title: '',
+    countryCode: 'PT',
     category: 'Lei TVDE' as ComplianceObligation['category'],
     officialSource: 'Diário da República / IMT',
     articleRef: 'Art. 1.º',
@@ -38,46 +85,77 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     category: 'Administração' as const,
   });
 
+  // ==========================================================
+  // PLATAFORMAS (Multi-app dinâmico sem hardcode)
+  // ==========================================================
   if (activeTab === 'plataformas') {
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="Catálogo Internacional de Plataformas"
-          description="Inativar ou ocultar uma plataforma remove-a imediatamente dos menus e seletores do Modo Motorista, preservando integralmente todo o histórico de viagens."
+          title="Catálogo Internacional de Plataformas (Multipaís / Multicidade)"
+          description="Crie, ative ou oculte plataformas livremente. Inativar remove dos menus do Modo Motorista preservando todo o histórico. Integrações externas exibem o estado de validação separado do estado operacional."
         />
 
         <Card className="p-5 space-y-3">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <Plus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Adicionar Nova Plataforma ao Catálogo
+            Adicionar Nova Plataforma ao Catálogo Global
           </h3>
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              if (!newPlatName.trim()) return;
+              if (!newPlatForm.name.trim()) return;
+              const cleanId = newPlatForm.name.toLowerCase().replace(/[^a-z0-9]/g, '');
               addPlatform({
-                id: newPlatName.toLowerCase().replace(/[^a-z0-9]/g, ''),
-                name: newPlatName.trim(),
-                countryScope: ['PT'],
-                categories: ['Standard'],
-                commissionPct: newPlatComm,
+                id: cleanId || `plat-${Date.now()}`,
+                name: newPlatForm.name.trim(),
+                shortCode: (newPlatForm.shortCode.trim() || newPlatForm.name.slice(0, 2)).toUpperCase(),
+                brandColor: newPlatForm.brandColor,
+                countryScope: newPlatForm.countryScope
+                  .split(',')
+                  .map((s) => s.trim().toUpperCase())
+                  .filter(Boolean),
+                citiesScope: newPlatForm.citiesScope
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+                categories: newPlatForm.categories
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+                requirements: ['Licença de motorista profissional ativa no mercado'],
+                docsRequired: ['Carta de condução', 'Seguro comercial / TVDE'],
+                benefits: ['Gestão consolidada multi-app AIVAD'],
+                commissionPct: newPlatForm.commissionPct,
                 status: 'Ativa',
                 integrationStatus: 'Em análise',
                 integrationLabel: 'INTEGRAÇÃO A VALIDAR',
               });
-              setNewPlatName('');
+              setNewPlatForm((f) => ({ ...f, name: '', shortCode: '' }));
             }}
-            className="flex flex-wrap items-end gap-3 text-xs"
+            className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3 items-end text-xs"
           >
             <div>
-              <label htmlFor="np-name" className="block mb-1 font-medium">Nome da Plataforma</label>
+              <label htmlFor="np-name" className="block mb-1 font-medium">Nome</label>
               <input
                 id="np-name"
                 type="text"
-                value={newPlatName}
-                onChange={(e) => setNewPlatName(e.target.value)}
-                placeholder="Ex: DiDi / 99"
-                className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                value={newPlatForm.name}
+                onChange={(e) => setNewPlatForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="Ex: 99 / DiDi"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="np-code" className="block mb-1 font-medium">Sigla</label>
+              <input
+                id="np-code"
+                type="text"
+                maxLength={3}
+                value={newPlatForm.shortCode}
+                onChange={(e) => setNewPlatForm((f) => ({ ...f, shortCode: e.target.value }))}
+                placeholder="99"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
             <div>
@@ -85,12 +163,32 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
               <input
                 id="np-comm"
                 type="number"
-                value={newPlatComm}
-                onChange={(e) => setNewPlatComm(Number(e.target.value))}
-                className="w-24 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                value={newPlatForm.commissionPct}
+                onChange={(e) => setNewPlatForm((f) => ({ ...f, commissionPct: Number(e.target.value) }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
-            <button type="submit" className="px-4 py-2 rounded-lg bg-blue-700 text-white font-semibold">
+            <div>
+              <label htmlFor="np-countries" className="block mb-1 font-medium">Países (CSV)</label>
+              <input
+                id="np-countries"
+                type="text"
+                value={newPlatForm.countryScope}
+                onChange={(e) => setNewPlatForm((f) => ({ ...f, countryScope: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="np-cities" className="block mb-1 font-medium">Cidades (CSV)</label>
+              <input
+                id="np-cities"
+                type="text"
+                value={newPlatForm.citiesScope}
+                onChange={(e) => setNewPlatForm((f) => ({ ...f, citiesScope: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold">
               Adicionar Plataforma
             </button>
           </form>
@@ -101,18 +199,42 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
             <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
               <tr>
                 <th className="p-3">Plataforma</th>
-                <th className="p-3">Mercados</th>
-                <th className="p-3">Comissão</th>
+                <th className="p-3">Países &amp; Cidades</th>
+                <th className="p-3">Comissão &amp; Categorias</th>
+                <th className="p-3">Requisitos / Documentos</th>
                 <th className="p-3">Estado Operacional (Cascata Motorista)</th>
-                <th className="p-3">Estado da Integração Externa</th>
+                <th className="p-3">Integração Externa</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {state.platforms.map((pl) => (
                 <tr key={pl.id}>
-                  <td className="p-3 font-bold">{pl.name}</td>
-                  <td className="p-3">{pl.countryScope.join(', ')}</td>
-                  <td className="p-3 font-mono-tabular">{pl.commissionPct}%</td>
+                  <td className="p-3">
+                    <div className="flex items-center gap-2.5">
+                      <PlatformBadge
+                        name={pl.name}
+                        shortCode={pl.shortCode}
+                        brandColor={pl.brandColor}
+                        size="sm"
+                      />
+                      <span className="font-bold">{pl.name}</span>
+                    </div>
+                  </td>
+                  <td className="p-3">
+                    <p className="font-mono-tabular font-semibold">{pl.countryScope.join(', ')}</p>
+                    <p className="text-[11px] text-slate-500">
+                      {pl.citiesScope?.join(', ') || 'Âmbito nacional'}
+                    </p>
+                  </td>
+                  <td className="p-3">
+                    <p className="font-mono-tabular font-bold">{pl.commissionPct}%</p>
+                    <p className="text-[11px] text-slate-500">{pl.categories.join(' · ')}</p>
+                  </td>
+                  <td className="p-3 max-w-xs">
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                      {pl.requirements?.[0] ?? 'Configuração base'}
+                    </p>
+                  </td>
                   <td className="p-3">
                     <select
                       aria-label={`Estado operacional de ${pl.name}`}
@@ -138,59 +260,255 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     );
   }
 
+  // ==========================================================
+  // PAÍSES E MERCADOS INTERNACIONAIS (Ilimitado + Estados Dinâmicos)
+  // ==========================================================
   if (activeTab === 'paises') {
     return (
-      <Card className="overflow-x-auto">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-sm font-bold">Países, Moedas, Fiscalidade &amp; Licenças</h2>
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Gestão Internacional Dinâmica (Países, Regiões, Cidades & Estados de Mercado)"
+          description="Adicione mercados ilimitados no mundo inteiro, configure moedas, fusos horários, unidades (km/mi) e gerencie o estado de cada mercado. Apenas mercados marcados como 'Disponível' aparecem como prontos no Portal Oficial."
+        />
+
+        <Card className="p-5 space-y-4">
+          <h3 className="text-sm font-bold flex items-center gap-2">
+            <Globe2 className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+            Adicionar Novo País / Mercado ao Ecossistema
+          </h3>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const cleanCode = newCountryForm.code.trim().toUpperCase();
+              if (!cleanCode || !newCountryForm.name.trim()) return;
+              if (state.countries.some((c) => c.code === cleanCode)) return;
+              const currMeta = CURRENCY_META[newCountryForm.currency] ?? {
+                symbol: `${newCountryForm.currency} `,
+                decimals: 2,
+                locale: newCountryForm.languageCode,
+              };
+              addCountryMarket({
+                code: cleanCode,
+                name: newCountryForm.name.trim(),
+                nativeName: newCountryForm.nativeName.trim() || newCountryForm.name.trim(),
+                language: newCountryForm.language,
+                languageCode: newCountryForm.languageCode,
+                currency: newCountryForm.currency,
+                currencySymbol: currMeta.symbol.trim(),
+                decimalSeparator: newCountryForm.currency === 'USD' || newCountryForm.currency === 'GBP' ? '.' : ',',
+                timezone: newCountryForm.timezone,
+                unitSystem: newCountryForm.unitSystem,
+                vatPct: newCountryForm.vatPct,
+                activePlatforms: ['uber', 'bolt'],
+                tvdeRegulated: true,
+                driverLicenseRequired: newCountryForm.driverLicenseRequired,
+                vehicleMaxAgeYears: newCountryForm.vehicleMaxAgeYears,
+                taxCategories: ['Imposto local sobre faturação', 'Segurança social'],
+                regions: [
+                  {
+                    name: newCountryForm.regionName.trim() || 'Região Metropolitana Principal',
+                    cities: [newCountryForm.cityName.trim() || 'Capital'],
+                  },
+                ],
+                marketStatus: newCountryForm.marketStatus,
+              });
+              setNewCountryForm((f) => ({ ...f, code: '', name: '', nativeName: '', regionName: '', cityName: '' }));
+            }}
+            className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs items-end"
+          >
+            <div>
+              <label htmlFor="nc-code" className="block mb-1 font-medium">Código ISO</label>
+              <input
+                id="nc-code"
+                type="text"
+                maxLength={4}
+                placeholder="Ex: IT, MX, AO"
+                value={newCountryForm.code}
+                onChange={(e) => setNewCountryForm((f) => ({ ...f, code: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular uppercase"
+              />
+            </div>
+            <div>
+              <label htmlFor="nc-name" className="block mb-1 font-medium">Nome do País</label>
+              <input
+                id="nc-name"
+                type="text"
+                placeholder="Ex: Itália"
+                value={newCountryForm.name}
+                onChange={(e) => setNewCountryForm((f) => ({ ...f, name: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="nc-curr" className="block mb-1 font-medium">Moeda</label>
+              <select
+                id="nc-curr"
+                value={newCountryForm.currency}
+                onChange={(e) => setNewCountryForm((f) => ({ ...f, currency: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              >
+                {Object.keys(CURRENCY_META).map((cur) => (
+                  <option key={cur} value={cur}>{cur}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="nc-unit" className="block mb-1 font-medium">Unidades</label>
+              <select
+                id="nc-unit"
+                value={newCountryForm.unitSystem}
+                onChange={(e) => setNewCountryForm((f) => ({ ...f, unitSystem: e.target.value as UnitSystem }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="metric">Métrico (km)</option>
+                <option value="imperial">Imperial (mi)</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="nc-city" className="block mb-1 font-medium">Cidade Inicial</label>
+              <input
+                id="nc-city"
+                type="text"
+                placeholder="Ex: Milão"
+                value={newCountryForm.cityName}
+                onChange={(e) => setNewCountryForm((f) => ({ ...f, cityName: e.target.value }))}
+                className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold">
+              Adicionar País
+            </button>
+          </form>
+        </Card>
+
+        <div className="space-y-4">
+          {state.countries.map((c) => {
+            const rDraft = regionInputs[c.code] ?? { region: c.regions[0]?.name ?? 'Região Centro', city: '' };
+            return (
+              <Card key={c.code} className="p-5 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded bg-slate-900 dark:bg-slate-800 text-white font-mono-tabular font-bold">
+                        {c.code}
+                      </span>
+                      <h3 className="text-base font-bold">{c.name} ({c.nativeName})</h3>
+                    </div>
+                    <p className="text-slate-500 mt-0.5">
+                      {c.language} ({c.languageCode}) · Moeda: <strong className="font-mono-tabular">{c.currency}</strong> · Fuso:{' '}
+                      <span className="font-mono-tabular">{c.timezone}</span> · IVA {c.vatPct}% · Idade máx. {c.vehicleMaxAgeYears} anos ({c.unitSystem})
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label htmlFor={`mkt-status-${c.code}`} className="text-[11px] font-semibold text-slate-500">
+                      Estado do Mercado:
+                    </label>
+                    <select
+                      id={`mkt-status-${c.code}`}
+                      value={c.marketStatus}
+                      onChange={(e) => updateCountryMarketStatus(c.code, e.target.value as MarketStatus)}
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-semibold"
+                    >
+                      {MARKET_STATUSES.map((st) => (
+                        <option key={st} value={st}>{st}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <div className="lg:col-span-7 space-y-1.5">
+                    <p className="font-semibold flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
+                      Regiões e Cidades Configuradas:
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {c.regions.map((r) => (
+                        <div
+                          key={r.name}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700"
+                        >
+                          <span className="font-semibold">{r.name}:</span>{' '}
+                          <span className="text-slate-600 dark:text-slate-300">{r.cities.join(', ')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!rDraft.city.trim()) return;
+                      addRegionOrCityToCountry(c.code, rDraft.region.trim() || 'Região Principal', rDraft.city.trim());
+                      setRegionInputs((prev) => ({ ...prev, [c.code]: { ...rDraft, city: '' } }));
+                    }}
+                    className="lg:col-span-5 flex flex-wrap sm:flex-nowrap items-end gap-2"
+                  >
+                    <input
+                      type="text"
+                      aria-label={`Região em ${c.name}`}
+                      placeholder="Região"
+                      value={rDraft.region}
+                      onChange={(e) =>
+                        setRegionInputs((prev) => ({
+                          ...prev,
+                          [c.code]: { ...rDraft, region: e.target.value },
+                        }))
+                      }
+                      className="flex-1 min-w-[100px] px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                    <input
+                      type="text"
+                      aria-label={`Nova cidade em ${c.name}`}
+                      placeholder="Nova cidade..."
+                      value={rDraft.city}
+                      onChange={(e) =>
+                        setRegionInputs((prev) => ({
+                          ...prev,
+                          [c.code]: { ...rDraft, city: e.target.value },
+                        }))
+                      }
+                      className="flex-1 min-w-[100px] px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold whitespace-nowrap"
+                    >
+                      + Cidade
+                    </button>
+                  </form>
+                </div>
+              </Card>
+            );
+          })}
         </div>
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
-            <tr>
-              <th className="p-3">País</th>
-              <th className="p-3">Idioma</th>
-              <th className="p-3">Moeda</th>
-              <th className="p-3">IVA</th>
-              <th className="p-3">Regime TVDE</th>
-              <th className="p-3">Plataformas Permitidas</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {state.countries.map((c) => (
-              <tr key={c.code}>
-                <td className="p-3 font-semibold">{c.name} ({c.code})</td>
-                <td className="p-3">{c.language}</td>
-                <td className="p-3 font-mono-tabular">{c.currency}</td>
-                <td className="p-3 font-mono-tabular">{c.vatPct}%</td>
-                <td className="p-3">{c.tvdeRegulated ? c.driverLicenseRequired : 'Regime local'}</td>
-                <td className="p-3">{c.activePlatforms.join(', ').toUpperCase()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+      </div>
     );
   }
 
   if (activeTab === 'veiculos-eleg') {
+    const activePlats = state.platforms.filter((p) => p.status === 'Ativa').slice(0, 4);
     return (
       <Card className="overflow-x-auto">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-sm font-bold">Catálogo Central de Veículos &amp; Regras de Elegibilidade</h2>
+          <h2 className="text-sm font-bold">Catálogo Central de Veículos &amp; Regras Dinâmicas Multi-Plataforma</h2>
         </div>
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
             <tr>
               <th className="p-3">Veículo</th>
               <th className="p-3">Ano / Mercado</th>
-              <th className="p-3">Elegibilidade Legal TVDE</th>
-              <th className="p-3">Uber Comercial</th>
-              <th className="p-3">Bolt Comercial</th>
+              <th className="p-3">Elegibilidade Legal</th>
+              {activePlats.map((pl) => (
+                <th key={pl.id} className="p-3">{pl.name} Comercial</th>
+              ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {state.vehicles.map((v) => {
-              const el = evaluateVehicleEligibility(v);
+              const mkt = state.countries.find((c) => c.code === v.countryCode);
+              const el = evaluateVehicleEligibility(v, 2026, state.platforms, mkt?.vehicleMaxAgeYears);
               return (
                 <tr key={v.id}>
                   <td className="p-3 font-semibold">{v.brand} {v.model} ({v.fuelType})</td>
@@ -201,8 +519,14 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                       text={el.tvdeLegalEligible ? 'Elegível' : 'Inelegível'}
                     />
                   </td>
-                  <td className="p-3">{el.platformEligibility.uber.categories.join(', ')}</td>
-                  <td className="p-3">{el.platformEligibility.bolt.categories.join(', ')}</td>
+                  {activePlats.map((pl) => {
+                    const res = el.platformEligibility[pl.id];
+                    return (
+                      <td key={pl.id} className="p-3">
+                        {res?.eligible ? res.categories.join(', ') : res?.reasons[0] ?? 'N/D'}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })}
@@ -216,8 +540,8 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="AIVAD Compliance Admin — Fluxo de Validação Jurídica Humana"
-          description="Rascunhos detetados por monitorização exigem validação humana antes de serem comunicados como obrigações definitivas aos motoristas."
+          title="AIVAD Compliance Admin — Fluxo de Validação Jurídica Humana Multi-País"
+          description="Rascunhos detetados por monitorização exigem validação humana antes de serem comunicados como obrigações definitivas aos motoristas de cada mercado."
         />
 
         <Card className="p-5 space-y-3">
@@ -230,7 +554,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
               e.preventDefault();
               if (!newLawForm.title.trim()) return;
               addLegislation({
-                countryCode: 'PT',
+                countryCode: newLawForm.countryCode,
                 title: newLawForm.title,
                 category: newLawForm.category,
                 officialSource: newLawForm.officialSource,
@@ -245,8 +569,18 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
               });
               setNewLawForm((f) => ({ ...f, title: '', summary: '' }));
             }}
-            className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs"
+            className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs"
           >
+            <select
+              aria-label="País da norma"
+              value={newLawForm.countryCode}
+              onChange={(e) => setNewLawForm((f) => ({ ...f, countryCode: e.target.value }))}
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            >
+              {state.countries.map((c) => (
+                <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+              ))}
+            </select>
             <input
               type="text"
               placeholder="Título da obrigação ou diploma"
@@ -271,7 +605,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
           {state.obligations.map((ob) => (
             <Card key={ob.id} className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
               <div className="space-y-1">
-                <p className="font-bold text-sm">{ob.title}</p>
+                <p className="font-bold text-sm">{ob.countryCode} · {ob.title}</p>
                 <p className="text-slate-500">{ob.officialSource} · {ob.articleRef}</p>
                 <p className="text-slate-600 dark:text-slate-300">{ob.summary}</p>
               </div>
