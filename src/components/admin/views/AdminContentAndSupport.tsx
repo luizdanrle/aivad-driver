@@ -61,7 +61,13 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
     updateCmsAndPublish,
     rollbackCms,
     addVersionRelease,
+    addReferralCoupon,
+    toggleReferralCouponActive,
   } = useEcosystem();
+
+  const [couponCode, setCouponCode] = useState('');
+  const [couponReferrer, setCouponReferrer] = useState('Parceiro TVDE');
+  const [couponDiscount, setCouponDiscount] = useState(20);
 
   const [selectedTicketId, setSelectedTicketId] = useState(state.tickets[0]?.id ?? '');
   const [adminReply, setAdminReply] = useState('');
@@ -87,9 +93,17 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
     visibleSections: initialMerged.visibleSections ?? DEFAULT_VISIBILITY,
     benefits: initialMerged.benefits ?? [],
     faqs: initialMerged.faqs ?? [],
+    navigationMenus: initialMerged.navigationMenus ?? [],
+    pagesContent: initialMerged.pagesContent ?? {},
+    mediaAssets: initialMerged.mediaAssets ?? [],
+    supportedLanguages: initialMerged.supportedLanguages ?? ['pt-PT', 'en-GB', 'es-ES'],
+    localizedContent: initialMerged.localizedContent ?? {},
   });
+  const [localUnsavedDirty, setLocalUnsavedDirty] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [cmsNotice, setCmsNotice] = useState<string | null>(null);
+  const [editingPageSlug, setEditingPageSlug] = useState<string>('mercados');
+  const [editingLangCode, setEditingLangCode] = useState<string>('en-GB');
 
   const [newBenefit, setNewBenefit] = useState({ title: '', description: '' });
   const [newFaq, setNewFaq] = useState({ question: '', answer: '' });
@@ -246,8 +260,39 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
           description="Edite identidade visual, ordem e visibilidade de secções, textos, benefícios, FAQs e comunicados com Rascunho, Pré-visualização, Publicação imediata e Rollback."
         />
 
-        <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-200">
-          <strong>Âmbito Real do CMS:</strong> Todas as alterações publicadas aplicam-se de imediato ao <strong>Portal Institucional Integrado nesta aplicação AIVAD</strong> (e persistem na sessão/servidor). Não gere alojamento DNS nem sites externos fora desta instância.
+        <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-200 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <strong>Fluxo CMS em 4 Estados Separados (v{state.cms.versionNumber ?? 1}):</strong>{' '}
+              Alterações locais e rascunhos guardados em <code className="font-mono-tabular">/api/cms/draft</code> não afetam os visitantes públicos até clicar em <strong>Publicar no Site Oficial</strong> (<code className="font-mono-tabular">/api/cms/publish</code>).
+            </div>
+            <StatusLabel
+              tone={state.session.isDemoSession ? 'warning' : 'success'}
+              text={
+                state.session.isDemoSession
+                  ? 'Isolado em Sandbox Demo'
+                  : `Servidor: ${state.cmsPersistenceInfo.lastServerScope}`
+              }
+            />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px]">
+            <div className="p-2 rounded bg-white/80 dark:bg-slate-900/70 border border-blue-200/70 dark:border-blue-800">
+              <span className="font-bold block">1. Edição Local</span>
+              <span>{localUnsavedDirty ? 'Com alterações por guardar' : 'Sincronizada com formulário'}</span>
+            </div>
+            <div className="p-2 rounded bg-white/80 dark:bg-slate-900/70 border border-blue-200/70 dark:border-blue-800">
+              <span className="font-bold block">2. Rascunho Servidor</span>
+              <span>{state.cms.draftSnapshot ? 'Rascunho guardado ativo' : 'Sem rascunho pendente'}</span>
+            </div>
+            <div className="p-2 rounded bg-white/80 dark:bg-slate-900/70 border border-blue-200/70 dark:border-blue-800">
+              <span className="font-bold block">3. Pré-visualização</span>
+              <span>{showPreview ? 'Painel isolado aberto' : 'Oculta'}</span>
+            </div>
+            <div className="p-2 rounded bg-white/80 dark:bg-slate-900/70 border border-blue-200/70 dark:border-blue-800">
+              <span className="font-bold block">4. Portal Público</span>
+              <span className="font-mono-tabular">Publicado v{state.cms.versionNumber ?? 1}</span>
+            </div>
+          </div>
         </div>
 
         {cmsNotice && (
@@ -502,7 +547,8 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
               type="button"
               onClick={() => {
                 saveCmsDraft(cmsDraft);
-                setCmsNotice('Rascunho guardado localmente sem alterar o Portal público.');
+                setLocalUnsavedDirty(false);
+                setCmsNotice('Rascunho guardado no servidor (/api/cms/draft) sem alterar o Portal público.');
               }}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-semibold hover:border-blue-600"
             >
@@ -514,6 +560,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                 type="button"
                 onClick={() => {
                   discardCmsDraft();
+                  setLocalUnsavedDirty(false);
                   setCmsDraft((prev) => ({
                     ...prev,
                     brandTitle: state.cms.brandTitle ?? 'AIVAD',
@@ -534,6 +581,11 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                     visibleSections: state.cms.visibleSections ?? DEFAULT_VISIBILITY,
                     benefits: state.cms.benefits ?? [],
                     faqs: state.cms.faqs ?? [],
+                    navigationMenus: state.cms.navigationMenus ?? [],
+                    pagesContent: state.cms.pagesContent ?? {},
+                    mediaAssets: state.cms.mediaAssets ?? [],
+                    supportedLanguages: state.cms.supportedLanguages ?? ['pt-PT', 'en-GB', 'es-ES'],
+                    localizedContent: state.cms.localizedContent ?? {},
                   }));
                   setCmsNotice('Rascunho descartado; repostos os valores publicados.');
                 }}
@@ -546,6 +598,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
               type="button"
               onClick={() => {
                 updateCmsAndPublish(cmsDraft, `Publicação CMS (${cmsDraft.brandTitle})`);
+                setLocalUnsavedDirty(false);
                 setCmsNotice('Alterações publicadas ao vivo no Site Oficial AIVAD.');
               }}
               className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
@@ -554,6 +607,218 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
             </button>
           </div>
         </Card>
+
+        {/* Menus, Páginas, Imagens/Media e Idiomas (PARTE VIII) */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
+          <Card className="p-5 space-y-3">
+            <h3 className="text-sm font-bold">Menus de Navegação &amp; Imagens do Portal</h3>
+            <div className="space-y-2">
+              {cmsDraft.navigationMenus.map((mn, idx) => (
+                <div key={mn.id} className="flex items-center justify-between gap-2 p-2 rounded border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-2 flex-1">
+                    <input
+                      type="checkbox"
+                      checked={mn.visible}
+                      aria-label={`Mostrar menu ${mn.label}`}
+                      onChange={(e) => {
+                        setLocalUnsavedDirty(true);
+                        setCmsDraft((d) => ({
+                          ...d,
+                          navigationMenus: d.navigationMenus.map((x, i) =>
+                            i === idx ? { ...x, visible: e.target.checked } : x
+                          ),
+                        }));
+                      }}
+                    />
+                    <input
+                      type="text"
+                      aria-label={`Etiqueta do menu ${mn.pageId}`}
+                      value={mn.label}
+                      onChange={(e) => {
+                        setLocalUnsavedDirty(true);
+                        setCmsDraft((d) => ({
+                          ...d,
+                          navigationMenus: d.navigationMenus.map((x, i) =>
+                            i === idx ? { ...x, label: e.target.value } : x
+                          ),
+                        }));
+                      }}
+                      className="flex-1 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                  </div>
+                  <span className="font-mono-tabular text-[11px] text-slate-400">/{mn.pageId}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <p className="font-bold">Imagem Hero &amp; Texto Alternativo (Media Assets)</p>
+              {cmsDraft.mediaAssets.map((asset, idx) => (
+                <div key={asset.id} className="space-y-1.5 p-2.5 rounded border border-slate-200 dark:border-slate-800">
+                  <span className="text-[11px] font-mono-tabular text-slate-500">Slot: {asset.slot} · {asset.label}</span>
+                  <input
+                    type="text"
+                    aria-label={`URL de imagem ${asset.slot}`}
+                    value={asset.url}
+                    onChange={(e) => {
+                      setLocalUnsavedDirty(true);
+                      setCmsDraft((d) => ({
+                        ...d,
+                        mediaAssets: d.mediaAssets.map((m, i) =>
+                          i === idx ? { ...m, url: e.target.value } : m
+                        ),
+                      }));
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular text-[11px]"
+                  />
+                  <input
+                    type="text"
+                    aria-label={`Texto alternativo ${asset.slot}`}
+                    value={asset.alt}
+                    onChange={(e) => {
+                      setLocalUnsavedDirty(true);
+                      setCmsDraft((d) => ({
+                        ...d,
+                        mediaAssets: d.mediaAssets.map((m, i) =>
+                          i === idx ? { ...m, alt: e.target.value } : m
+                        ),
+                      }));
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-5 space-y-3">
+            <h3 className="text-sm font-bold">Editor de Páginas Internas &amp; Idiomas ({cmsDraft.supportedLanguages.join(', ')})</h3>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="cms-page-slug" className="font-semibold">Página Interna:</label>
+                <select
+                  id="cms-page-slug"
+                  value={editingPageSlug}
+                  onChange={(e) => setEditingPageSlug(e.target.value)}
+                  className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                >
+                  <option value="mercados">Mercados</option>
+                  <option value="plataformas">Plataformas</option>
+                  <option value="funcionalidades">Funcionalidades</option>
+                  <option value="seguranca">Segurança &amp; RGPD</option>
+                </select>
+              </div>
+              <input
+                type="text"
+                aria-label="Título da página interna"
+                placeholder="Título personalizado da página..."
+                value={cmsDraft.pagesContent[editingPageSlug]?.title ?? ''}
+                onChange={(e) => {
+                  setLocalUnsavedDirty(true);
+                  const cur = cmsDraft.pagesContent[editingPageSlug] ?? {
+                    title: '',
+                    subtitle: '',
+                    body: '',
+                    updatedAt: getTodayIso(),
+                  };
+                  setCmsDraft((d) => ({
+                    ...d,
+                    pagesContent: {
+                      ...d.pagesContent,
+                      [editingPageSlug]: { ...cur, title: e.target.value, updatedAt: getTodayIso() },
+                    },
+                  }));
+                }}
+                className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <textarea
+                rows={2}
+                aria-label="Corpo editorial da página interna"
+                placeholder="Texto introdutório da página..."
+                value={cmsDraft.pagesContent[editingPageSlug]?.body ?? ''}
+                onChange={(e) => {
+                  setLocalUnsavedDirty(true);
+                  const cur = cmsDraft.pagesContent[editingPageSlug] ?? {
+                    title: '',
+                    subtitle: '',
+                    body: '',
+                    updatedAt: getTodayIso(),
+                  };
+                  setCmsDraft((d) => ({
+                    ...d,
+                    pagesContent: {
+                      ...d.pagesContent,
+                      [editingPageSlug]: { ...cur, body: e.target.value, updatedAt: getTodayIso() },
+                    },
+                  }));
+                }}
+                className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="cms-lang-sel" className="font-semibold">Tradução do Portal:</label>
+                <select
+                  id="cms-lang-sel"
+                  value={editingLangCode}
+                  onChange={(e) => setEditingLangCode(e.target.value)}
+                  className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                >
+                  {cmsDraft.supportedLanguages.map((lng) => (
+                    <option key={lng} value={lng}>{lng}</option>
+                  ))}
+                </select>
+              </div>
+              <input
+                type="text"
+                aria-label={`Título Hero em ${editingLangCode}`}
+                placeholder={`Título Hero (${editingLangCode})`}
+                value={cmsDraft.localizedContent[editingLangCode]?.heroTitle ?? ''}
+                onChange={(e) => {
+                  setLocalUnsavedDirty(true);
+                  const cur = cmsDraft.localizedContent[editingLangCode] ?? {
+                    heroTitle: '',
+                    heroSubtitle: '',
+                    brandTagline: '',
+                    announcementBanner: '',
+                  };
+                  setCmsDraft((d) => ({
+                    ...d,
+                    localizedContent: {
+                      ...d.localizedContent,
+                      [editingLangCode]: { ...cur, heroTitle: e.target.value },
+                    },
+                  }));
+                }}
+                className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+              <textarea
+                rows={2}
+                aria-label={`Subtítulo Hero em ${editingLangCode}`}
+                placeholder={`Subtítulo Hero (${editingLangCode})`}
+                value={cmsDraft.localizedContent[editingLangCode]?.heroSubtitle ?? ''}
+                onChange={(e) => {
+                  setLocalUnsavedDirty(true);
+                  const cur = cmsDraft.localizedContent[editingLangCode] ?? {
+                    heroTitle: '',
+                    heroSubtitle: '',
+                    brandTagline: '',
+                    announcementBanner: '',
+                  };
+                  setCmsDraft((d) => ({
+                    ...d,
+                    localizedContent: {
+                      ...d.localizedContent,
+                      [editingLangCode]: { ...cur, heroSubtitle: e.target.value },
+                    },
+                  }));
+                }}
+                className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+          </Card>
+        </div>
 
         {/* Benefits & FAQs CMS Blocks */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
@@ -759,6 +1024,101 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
             )}
           </Card>
         </div>
+
+        {/* Referral Coupons & 30-Day Trial Ecosystem (Comando 6 §16) */}
+        <Card className="p-5 space-y-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Cupões de Indicação &amp; Período Experimental de 30 Dias (Sem Cobrança Real Ativa)
+              </h3>
+              <p className="text-slate-500">
+                Todos os planos incluem {state.plans[0]?.trialDays ?? 30} dias de teste gratuito. A estrutura comercial e de descontos está pronta sem processar cobranças financeiras reais nesta fase.
+              </p>
+            </div>
+            <StatusLabel tone="info" text="Cobrança Real Desativada (Estrutura Pronta)" />
+          </div>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!couponCode.trim()) return;
+              addReferralCoupon({
+                code: couponCode.trim().toUpperCase(),
+                referrerName: couponReferrer.trim() || 'Embaixador AIVAD',
+                countryScope: ['ALL'],
+                trialDaysGranted: 30,
+                discountPctAfterTrial: couponDiscount,
+                maxRedemptions: 100,
+                validUntil: '2027-12-31',
+                active: true,
+              });
+              setCouponCode('');
+            }}
+            className="grid grid-cols-1 sm:grid-cols-4 gap-2.5"
+          >
+            <input
+              type="text"
+              placeholder="Código (ex: AIVAD-PORTO30)"
+              value={couponCode}
+              onChange={(e) => setCouponCode(e.target.value)}
+              aria-label="Código do cupão de indicação"
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular uppercase"
+            />
+            <input
+              type="text"
+              placeholder="Promotor / Parceiro"
+              value={couponReferrer}
+              onChange={(e) => setCouponReferrer(e.target.value)}
+              aria-label="Nome do promotor"
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+            <input
+              type="number"
+              min={5}
+              max={50}
+              value={couponDiscount}
+              onChange={(e) => setCouponDiscount(Number(e.target.value))}
+              aria-label="Desconto percentual após 30 dias"
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+            >
+              Criar Cupão 30 Dias
+            </button>
+          </form>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {state.referralCoupons.map((cp) => (
+              <div
+                key={cp.id}
+                className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 bg-slate-50/60 dark:bg-slate-950/60"
+              >
+                <div>
+                  <span className="font-mono-tabular font-bold text-slate-900 dark:text-white">
+                    {cp.code}
+                  </span>
+                  <span className="text-[11px] text-slate-500 block">
+                    {cp.referrerName} · {cp.trialDaysGranted} dias grátis + {cp.discountPctAfterTrial}% desc. · Usos {cp.currentRedemptions}/{cp.maxRedemptions}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => toggleReferralCouponActive(cp.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
+                    cp.active
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                      : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                  }`}
+                >
+                  {cp.active ? 'Ativo' : 'Pausado'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
     );
   }

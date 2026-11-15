@@ -2,9 +2,15 @@ import React, { useState } from 'react';
 import { Bell, Globe2, MapPin, Plus, Scale } from 'lucide-react';
 import { evaluateVehicleEligibility } from '../../../core/intelligence';
 import { CURRENCY_META, getTodayIso } from '../../../core/localization';
+import {
+  deriveCountryCatalogTier,
+  getPlatformOperationInLocation,
+  getValidatedPlatformsForLocation,
+} from '../../../core/marketCatalog';
 import type {
   ComplianceObligation,
   MarketStatus,
+  PlatformCountryOperationalStatus,
   PlatformStatus,
   UnitSystem,
 } from '../../../models/types';
@@ -26,11 +32,21 @@ const MARKET_STATUSES: MarketStatus[] = [
   'Descontinuado',
 ];
 
+const COUNTRY_OP_STATUSES: PlatformCountryOperationalStatus[] = [
+  'Operação efetiva validada',
+  'Licenciada sem operação confirmada',
+  'Disponibilidade regional limitada',
+  'Suspensa',
+  'Encerrada no país',
+  'Em validação',
+];
+
 export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
     updatePlatformStatus,
     addPlatform,
+    updatePlatformCountryOperation,
     addCountryMarket,
     updateCountryMarketStatus,
     addRegionOrCityToCountry,
@@ -39,6 +55,9 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     addLegislation,
     broadcastNotification,
   } = useEcosystem();
+
+  const [selectedMatrixCountry, setSelectedMatrixCountry] = useState<string>('PT');
+  const [matrixSourceDraft, setMatrixSourceDraft] = useState<string>('Validação Administrativa AIVAD / IMT');
 
   const [newPlatForm, setNewPlatForm] = useState({
     name: '',
@@ -257,6 +276,100 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
             </tbody>
           </table>
         </Card>
+
+        {/* Matriz de Operação Efetiva vs Licenciamento por País (PARTE II) */}
+        <Card className="p-5 space-y-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold">
+                Matriz de Operação Real por País, Região e Cidade (Sem Alterar Código)
+              </h3>
+              <p className="text-slate-500">
+                Distingue licenciamento administrativo de operação efetiva validada. Encerrar uma plataforma num país (ex.: FREE NOW ou Cabify em PT) preserva-a nos restantes mercados ativos.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="matrix-country-sel" className="font-semibold">País:</label>
+              <select
+                id="matrix-country-sel"
+                value={selectedMatrixCountry}
+                onChange={(e) => setSelectedMatrixCountry(e.target.value)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-semibold"
+              >
+                {state.countries.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.name} ({c.code})
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                aria-label="Fonte de validação administrativa"
+                value={matrixSourceDraft}
+                onChange={(e) => setMatrixSourceDraft(e.target.value)}
+                placeholder="Fonte oficial..."
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+                <tr>
+                  <th className="p-2.5">Plataforma</th>
+                  <th className="p-2.5">Estado Operacional em {selectedMatrixCountry}</th>
+                  <th className="p-2.5">Pré-seleção Motorista</th>
+                  <th className="p-2.5">Fonte &amp; Data de Validação</th>
+                  <th className="p-2.5">Último Registo Histórico</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {state.platforms.map((pl) => {
+                  const op = getPlatformOperationInLocation(pl, selectedMatrixCountry);
+                  const currentOpStatus = op?.operationalStatus ?? 'Em validação';
+                  const preselected =
+                    op?.operationalStatus === 'Operação efetiva validada' && Boolean(op.preselectForDrivers);
+                  const latestHist = op?.history?.[0];
+                  return (
+                    <tr key={`${pl.id}-${selectedMatrixCountry}`}>
+                      <td className="p-2.5 font-bold">{pl.name}</td>
+                      <td className="p-2.5">
+                        <select
+                          aria-label={`Estado de ${pl.name} em ${selectedMatrixCountry}`}
+                          value={currentOpStatus}
+                          onChange={(e) =>
+                            updatePlatformCountryOperation(pl.id, selectedMatrixCountry, {
+                              operationalStatus: e.target.value as PlatformCountryOperationalStatus,
+                              validationSource: matrixSourceDraft.trim() || 'Administração AIVAD',
+                            })
+                          }
+                          className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
+                        >
+                          {COUNTRY_OP_STATUSES.map((st) => (
+                            <option key={st} value={st}>{st}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-2.5">
+                        <StatusLabel
+                          tone={preselected ? 'success' : 'neutral'}
+                          text={preselected ? 'Pré-selecionada' : 'Não pré-selecionada'}
+                        />
+                      </td>
+                      <td className="p-2.5 font-mono-tabular text-[11px]">
+                        {op ? `${op.validationSource} · ${op.verifiedAt}` : 'Sem registo explícito'}
+                      </td>
+                      <td className="p-2.5 text-[11px] text-slate-500 max-w-xs">
+                        {latestHist ? `${latestHist.date}: ${latestHist.note}` : op?.licensingNote ?? '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       </div>
     );
   }
@@ -385,19 +498,32 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
         <div className="space-y-4">
           {state.countries.map((c) => {
             const rDraft = regionInputs[c.code] ?? { region: c.regions[0]?.name ?? 'Região Centro', city: '' };
+            const catalogTier = deriveCountryCatalogTier(c);
+            const validatedPlats = getValidatedPlatformsForLocation(state.platforms, c.code);
             return (
               <Card key={c.code} className="p-5 space-y-3 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="px-2 py-0.5 rounded bg-slate-900 dark:bg-slate-800 text-white font-mono-tabular font-bold">
                         {c.code}
                       </span>
                       <h3 className="text-base font-bold">{c.name} ({c.nativeName})</h3>
+                      <StatusLabel
+                        tone={
+                          catalogTier === 'Mercado Oficialmente Ativo'
+                            ? 'success'
+                            : catalogTier === 'País Configurado'
+                              ? 'info'
+                              : 'neutral'
+                        }
+                        text={catalogTier}
+                      />
                     </div>
                     <p className="text-slate-500 mt-0.5">
                       {c.language} ({c.languageCode}) · Moeda: <strong className="font-mono-tabular">{c.currency}</strong> · Fuso:{' '}
                       <span className="font-mono-tabular">{c.timezone}</span> · IVA {c.vatPct}% · Idade máx. {c.vehicleMaxAgeYears} anos ({c.unitSystem})
+                      {' · '}Pré-seleção validada: <strong className="font-mono-tabular">{validatedPlats.join(', ').toUpperCase() || 'Nenhuma'}</strong>
                     </p>
                   </div>
 

@@ -255,6 +255,7 @@ export function startTachographShift(
     notes?: string;
     source?: TachographActivityRecord['source'];
     idempotencyKey?: string;
+    isDemo?: boolean;
   }
 ): TachographTransitionResult {
   const activeSession = store.sessions.find((s) => s.id === store.activeSessionId && s.status === 'Em curso');
@@ -286,6 +287,7 @@ export function startTachographShift(
 
   const sessionId = `tsh-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
   const hash = computeIntegrityDigest(`${sessionId}:${params.driverId}:${params.odometerStartKm}:${nowIso}`);
+  const isDemoFlag = Boolean(params.isDemo);
 
   const session: TachographShiftSession = {
     id: sessionId,
@@ -301,7 +303,7 @@ export function startTachographShift(
     countryCode: params.countryCode,
     city: params.city,
     qrVerificationHash: hash,
-    isDemo: true,
+    isDemo: isDemoFlag,
   };
 
   const activity: TachographActivityRecord = {
@@ -322,7 +324,7 @@ export function startTachographShift(
     syncStatus: 'Sincronizado',
     idempotencyKey: idKey,
     revisions: [],
-    isDemo: true,
+    isDemo: isDemoFlag,
   };
 
   return {
@@ -419,7 +421,7 @@ export function transitionTachographState(
     syncStatus: 'Sincronizado',
     idempotencyKey: idKey,
     revisions: [],
-    isDemo: true,
+    isDemo: activeSession.isDemo,
   };
 
   const nextHash = computeIntegrityDigest(
@@ -804,3 +806,42 @@ export function buildTachographQrPayload(
     payloadObject: basePayload,
   };
 }
+
+export interface TachographPeriodReport {
+  periodKind: 'diario' | 'semanal' | 'mensal';
+  startDate: string;
+  endDate: string;
+  sessionsCount: number;
+  activitiesCount: number;
+  revisionsCount: number;
+  summary: ConsolidatedTachographSummary;
+  legalDisclaimer: string;
+}
+
+export function buildTachographPeriodReport(
+  store: TachographStateStore,
+  periodKind: 'diario' | 'semanal' | 'mensal',
+  referenceDateIso = new Date().toISOString().slice(0, 10)
+): TachographPeriodReport {
+  const endDate = referenceDateIso.slice(0, 10);
+  const [y, m, d] = endDate.split('-').map(Number);
+  const deltaDays = periodKind === 'diario' ? 0 : periodKind === 'semanal' ? 6 : 29;
+  const startDate = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) - deltaDays)).toISOString().slice(0, 10);
+
+  const activities = store.activities.filter((a) => a.date >= startDate && a.date <= endDate);
+  const sessions = store.sessions.filter((s) => s.date >= startDate && s.date <= endDate);
+  const intervals = store.platformIntervals.filter((p) => p.date >= startDate && p.date <= endDate);
+  const revisionsCount = activities.reduce((sum, a) => sum + a.revisions.length, 0);
+
+  return {
+    periodKind,
+    startDate,
+    endDate,
+    sessionsCount: sessions.length,
+    activitiesCount: activities.length,
+    revisionsCount,
+    summary: consolidateMultiPlatformJornada(activities, intervals, sessions),
+    legalDisclaimer: TACHOGRAPH_LEGAL_DISCLAIMER,
+  };
+}
+

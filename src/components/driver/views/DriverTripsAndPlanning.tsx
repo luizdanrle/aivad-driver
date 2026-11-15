@@ -37,6 +37,7 @@ import type {
   TripRecord,
   TripStatus,
 } from '../../../models/types';
+import { computeZoneDemandIntelligence } from '../../../core/zones';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { HorizontalBreakdownBars, PlatformBadge } from '../../ui/ChartsAndVisuals';
 import {
@@ -89,6 +90,8 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     updateRoutinePreferences,
     toggleZonePreference,
     addZoneObservation,
+    logZoneRelocation,
+    completeZoneRelocationOutcome,
     getPlatformLifecycleState,
     setDriverNav,
   } = useEcosystem();
@@ -155,6 +158,17 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     privacyConsent: false,
   });
   const [zoneObsFeedback, setZoneObsFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [relocDestinationNotes, setRelocDestinationNotes] = useState('');
+
+  const zoneDemandTrends = useMemo(
+    () =>
+      computeZoneDemandIntelligence({
+        zones: state.zones,
+        trips: activeDriverTrips,
+        isDemoScope: Boolean(state.session.isDemoSession),
+      }),
+    [state.zones, activeDriverTrips, state.session.isDemoSession]
+  );
 
   useEffect(() => {
     if (activeTab === 'mapas-zonas') setPlacesSubTab('zones');
@@ -354,30 +368,54 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
               options={[
                 { id: 'Manual', label: '1. Manual' },
                 { id: 'Semiautomático', label: '2. Semiautomático' },
-                { id: 'Automático', label: '3. Automático (Requer API)' },
+                { id: 'Automático', label: '3. Automático' },
               ]}
             />
           </div>
 
-          {activeStratMode === 'Automático' && !ap.officialAutomationAuthorized && (
-            <div className="p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2.5 text-xs">
-              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          {/* Authorized Execution Channel vs Assisted Action */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="font-bold text-amber-900 dark:text-amber-200">
-                  INTEGRAÇÃO A VALIDAR — Bloqueio de Aceitação Automática Externa
-                </p>
-                <p className="text-amber-800 dark:text-amber-300 mt-0.5">
-                  AIVAD não simula cliques nem contorna apps externas. Os critérios configurados neste modo ficam preparados e guardados em separado até existir integração oficial autorizada.
+                <span className="font-bold block text-slate-800 dark:text-slate-100">
+                  Via de Execução do Modo Automático
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Quando existe canal oficial ou bridge expressamente autorizado, o Modo Automático executa a decisão; sem via autorizada, calcula a decisão pronta e disponibiliza ação assistida sem fingir automação externa.
+                </span>
+              </div>
+              <select
+                aria-label="Canal autorizado de execução automática"
+                value={ap.authorizedExecutionChannel ?? (ap.officialAutomationAuthorized ? 'API Oficial Autorizada' : 'Nenhum')}
+                onChange={(e) => {
+                  const ch = e.target.value as NonNullable<typeof ap.authorizedExecutionChannel>;
+                  updateAutoPilotConfig({
+                    authorizedExecutionChannel: ch,
+                    officialAutomationAuthorized: ch !== 'Nenhum',
+                  });
+                }}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-semibold"
+              >
+                <option value="Nenhum">Nenhum canal externo autorizado (Ação Assistida)</option>
+                <option value="API Oficial Autorizada">Simular Canal API Oficial Autorizada (Teste Nível 2/3)</option>
+                <option value="Bridge Nativo Autorizado">Simular Bridge Nativo Autorizado (Android Windsurf)</option>
+              </select>
+            </div>
+            {activeStratMode === 'Automático' && !ap.officialAutomationAuthorized && (
+              <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p className="text-amber-800 dark:text-amber-300">
+                  <strong>Sem via externa autorizada ativa:</strong> O AIVAD avalia todas as regras e apresenta <em>Decisão pronta (Ação assistida)</em> para confirmação rápida do motorista, sem simular toques ilegais.
                 </p>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* Thresholds for Active Strategy Mode */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
+          {/* Primary & Extended Configurable Rules (§2) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
             <div>
               <label htmlFor="st-min-val" className="block font-medium mb-1">
-                Valor Mínimo ({symbol})
+                Valor Mín. ({symbol})
               </label>
               <input
                 id="st-min-val"
@@ -385,7 +423,25 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 step="0.5"
                 value={currentThresholds.minValueEur}
                 onChange={(e) => updateModeThresholds({ minValueEur: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-max-val" className="block font-medium mb-1">
+                Valor Máx. ({symbol})
+              </label>
+              <input
+                id="st-max-val"
+                type="number"
+                step="1"
+                placeholder="Sem teto"
+                value={currentThresholds.maxValueEur ?? ''}
+                onChange={(e) =>
+                  updateModeThresholds({
+                    maxValueEur: e.target.value ? Number(e.target.value) : undefined,
+                  })
+                }
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
             <div>
@@ -398,7 +454,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 step="0.05"
                 value={currentThresholds.minEurPerKm}
                 onChange={(e) => updateModeThresholds({ minEurPerKm: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
             <div>
@@ -411,7 +467,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 step="1"
                 value={currentThresholds.minEurPerHour}
                 onChange={(e) => updateModeThresholds({ minEurPerHour: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
             <div>
@@ -424,28 +480,162 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 step="0.5"
                 value={currentThresholds.maxPickupKm}
                 onChange={(e) => updateModeThresholds({ maxPickupKm: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-max-pick-min" className="block font-medium mb-1">
+                Máx. Recolha (min)
+              </label>
+              <input
+                id="st-max-pick-min"
+                type="number"
+                step="1"
+                value={currentThresholds.maxPickupTimeMin ?? 12}
+                onChange={(e) => updateModeThresholds({ maxPickupTimeMin: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-max-tot-km" className="block font-medium mb-1">
+                Dist. Total Máx (km)
+              </label>
+              <input
+                id="st-max-tot-km"
+                type="number"
+                step="2"
+                value={currentThresholds.maxTotalDistanceKm}
+                onChange={(e) => updateModeThresholds({ maxTotalDistanceKm: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-max-tot-min" className="block font-medium mb-1">
+                Tempo Total Máx (min)
+              </label>
+              <input
+                id="st-max-tot-min"
+                type="number"
+                step="5"
+                value={currentThresholds.maxTotalTimeMin}
+                onChange={(e) => updateModeThresholds({ maxTotalTimeMin: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-sched" className="block font-medium mb-1">
+                Janela Horária
+              </label>
+              <input
+                id="st-sched"
+                type="text"
+                value={currentThresholds.activeScheduleWindow}
+                onChange={(e) => updateModeThresholds({ activeScheduleWindow: e.target.value })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-goal-d" className="block font-medium mb-1">
+                Meta Diária ({symbol})
+              </label>
+              <input
+                id="st-goal-d"
+                type="number"
+                step="5"
+                value={currentThresholds.dailyGoalEur ?? state.routinePreferences.dailyNetTargetEur}
+                onChange={(e) => updateModeThresholds({ dailyGoalEur: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-goal-m" className="block font-medium mb-1">
+                Meta Mensal ({symbol})
+              </label>
+              <input
+                id="st-goal-m"
+                type="number"
+                step="50"
+                value={currentThresholds.monthlyGoalEur ?? Math.round(state.routinePreferences.dailyNetTargetEur * 22)}
+                onChange={(e) => updateModeThresholds({ monthlyGoalEur: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="st-cont-drv" className="block font-medium mb-1">
+                Limite Contínuo (min)
+              </label>
+              <input
+                id="st-cont-drv"
+                type="number"
+                step="15"
+                value={currentThresholds.maxContinuousDrivingMin ?? 270}
+                onChange={(e) => updateModeThresholds({ maxContinuousDrivingMin: Number(e.target.value) })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-4 text-xs pt-2 border-t border-slate-100 dark:border-slate-800">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={ap.prioritizeCampaigns}
-                onChange={(e) => updateAutoPilotConfig({ prioritizeCampaigns: e.target.checked })}
-              />
-              <span>Priorizar campanhas ativas na decisão</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={ap.includeBonusInThreshold}
-                onChange={(e) => updateAutoPilotConfig({ includeBonusInThreshold: e.target.checked })}
-              />
-              <span>Incluir bónus na avaliação de limiar</span>
-            </label>
+          {/* Days of Week + Return / Bonus Preferences */}
+          <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-slate-600 dark:text-slate-300">Dias de Trabalho Ativos:</span>
+              {[
+                { d: 1, l: 'Seg' },
+                { d: 2, l: 'Ter' },
+                { d: 3, l: 'Qua' },
+                { d: 4, l: 'Qui' },
+                { d: 5, l: 'Sex' },
+                { d: 6, l: 'Sáb' },
+                { d: 0, l: 'Dom' },
+              ].map(({ d, l }) => {
+                const days = currentThresholds.allowedDaysOfWeek ?? [0, 1, 2, 3, 4, 5, 6];
+                const active = days.includes(d);
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => {
+                      const next = active ? days.filter((x) => x !== d) : [...days, d];
+                      updateModeThresholds({ allowedDaysOfWeek: next });
+                    }}
+                    className={`px-2.5 py-1 rounded-lg border font-medium ${
+                      active
+                        ? 'bg-blue-700 text-white border-blue-700'
+                        : 'border-slate-300 dark:border-slate-700 text-slate-500'
+                    }`}
+                  >
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ap.prioritizeCampaigns}
+                  onChange={(e) => updateAutoPilotConfig({ prioritizeCampaigns: e.target.checked })}
+                />
+                <span>Priorizar campanhas e incentivos ativos</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={ap.includeBonusInThreshold}
+                  onChange={(e) => updateAutoPilotConfig({ includeBonusInThreshold: e.target.checked })}
+                />
+                <span>Incluir bónus na avaliação de limiar</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(currentThresholds.avoidEmptyReturnRisk)}
+                  onChange={(e) => updateModeThresholds({ avoidEmptyReturnRisk: e.target.checked })}
+                />
+                <span>Penalizar deslocações com alto risco de retorno sem passageiro</span>
+              </label>
+            </div>
           </div>
         </Card>
 
@@ -1728,6 +1918,169 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                       </p>
                     </div>
                   ))}
+                </div>
+              </Card>
+            </div>
+
+            {/* Comando 6 §7: Radar de Tendências Históricas Horárias & Registo de Reposicionamento Real */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 text-xs">
+              <Card className="lg:col-span-7 p-5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold flex items-center gap-2">
+                      <Compass className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                      Tendências Históricas por Zona, Horário &amp; Dia da Semana
+                    </h3>
+                    <p className="text-slate-500">
+                      Calculado sobre viagens registadas. Nunca simula procura externa em tempo real quando não há feed oficial ativo.
+                    </p>
+                  </div>
+                  <StatusLabel
+                    tone={state.session.isDemoSession ? 'warning' : 'info'}
+                    text={state.session.isDemoSession ? 'Dados de demonstração' : 'Histórico do motorista'}
+                  />
+                </div>
+
+                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+                  {zoneDemandTrends.map((zt) => (
+                    <div
+                      key={zt.zoneId}
+                      className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">
+                          {zt.zoneName} ({zt.city})
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <StatusLabel
+                            tone={
+                              zt.epistemicTag === 'Informação histórica'
+                                ? 'success'
+                                : zt.epistemicTag === 'Dados de demonstração'
+                                ? 'warning'
+                                : 'info'
+                            }
+                            text={zt.epistemicTag}
+                          />
+                          <span className="px-2 py-0.5 rounded bg-blue-700 text-white font-mono-tabular font-bold">
+                            Score {zt.positioningScore}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                        Viagens: <strong className="font-mono-tabular">{zt.completedTripsCount}</strong> · Média/h:{' '}
+                        <strong className="font-mono-tabular">{formatMoney(zt.avgEurPerHour, currency)}/h</strong> · Janela pico:{' '}
+                        <strong>{zt.peakHourWindow}</strong> · Dia pico: <strong>{zt.peakDayOfWeekLabel}</strong>
+                      </p>
+                      <p className="text-[11px] text-slate-500">{zt.positioningRecommendation}</p>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <a
+                          href={buildGoogleMapsHref(`${zt.zoneName}, ${zt.city}`)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-medium"
+                        >
+                          <Navigation className="w-3 h-3" /> Google Maps
+                        </a>
+                        <a
+                          href={buildWazeHref(`${zt.zoneName}, ${zt.city}`)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-medium"
+                        >
+                          <ExternalLink className="w-3 h-3" /> Waze
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            logZoneRelocation({
+                              zoneId: zt.zoneId,
+                              fromZone: state.localization.currentLocation.city || 'Posição Atual',
+                              targetZone: zt.zoneName,
+                              suggestedReason: zt.positioningRecommendation,
+                              destinationNotes: relocDestinationNotes || undefined,
+                            })
+                          }
+                          className="px-2.5 py-1 rounded bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+                        >
+                          Registar Deslocação para Zona
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              <Card className="lg:col-span-5 p-5 space-y-3">
+                <h3 className="text-sm font-bold flex items-center gap-2">
+                  <History className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                  Deslocações &amp; Resultados Obtidos ({state.zoneRelocationLogs.length})
+                </h3>
+                <div>
+                  <label htmlFor="reloc-notes" className="block font-medium mb-1">
+                    Nota operacional de destino (aplicada ao próximo reposicionamento)
+                  </label>
+                  <input
+                    id="reloc-notes"
+                    type="text"
+                    placeholder="Ex: Posicionar junto à saída Metro Oriente"
+                    value={relocDestinationNotes}
+                    onChange={(e) => setRelocDestinationNotes(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  />
+                </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {state.zoneRelocationLogs.length === 0 ? (
+                    <p className="text-slate-500 py-3">Nenhuma deslocação estratégica registada ainda.</p>
+                  ) : (
+                    state.zoneRelocationLogs.map((rl) => (
+                      <div
+                        key={rl.id}
+                        className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold">
+                            {rl.fromZone} → {rl.targetZone}
+                          </span>
+                          <StatusLabel
+                            tone={
+                              rl.outcome === 'Corrida obtida na zona'
+                                ? 'success'
+                                : rl.outcome === 'Em deslocação'
+                                ? 'info'
+                                : 'warning'
+                            }
+                            text={rl.outcome}
+                          />
+                        </div>
+                        {rl.destinationNotes && (
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">Nota: {rl.destinationNotes}</p>
+                        )}
+                        <p className="text-[10px] text-slate-500">
+                          Base: {rl.epistemicBasis}
+                          {rl.waitMinutesUntilRide !== undefined ? ` · Espera até corrida: ${rl.waitMinutesUntilRide} min` : ''}
+                        </p>
+                        {rl.outcome === 'Em deslocação' && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => completeZoneRelocationOutcome(rl.id, 'Corrida obtida na zona', 8)}
+                              className="px-2 py-1 rounded bg-emerald-700 text-white font-semibold text-[11px]"
+                            >
+                              Corrida Obtida (~8 min)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => completeZoneRelocationOutcome(rl.id, 'Sem corrida (reposicionado)')}
+                              className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 text-[11px]"
+                            >
+                              Sem Corrida
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </Card>
             </div>

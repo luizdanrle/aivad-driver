@@ -24,6 +24,11 @@ import {
   X,
 } from 'lucide-react';
 import { canAccessMode, isAdminRole } from '../../core/rbac';
+import {
+  getPlatformOperationInLocation,
+  getValidatedPlatformsForLocation,
+  groupCountriesByCatalogTier,
+} from '../../core/marketCatalog';
 import { useEcosystem } from '../../services/EcosystemContext';
 import { PLATFORM_ADAPTERS } from '../../adapters/platformAdapters';
 import { PlatformLogo } from '../ui/ChartsAndVisuals';
@@ -82,8 +87,8 @@ const FEATURED_CAPABILITIES = [
   {
     id: 'plataformas',
     icon: Layers,
-    title: 'Independência Multi-App',
-    desc: 'Uber, Bolt, Cabify, FREE NOW, POP e VLOZ com gestão individual sem perder histórico ao desativar.',
+    title: 'Independência Multi-App & Validação por País',
+    desc: 'Pré-seleciona apenas plataformas com operação efetiva validada por país/cidade (ex.: Uber e Bolt em PT), separando licenciamento de operação real.',
   },
 ];
 
@@ -92,6 +97,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
 }) => {
   const {
     state,
+    activeMarket,
     availableMarketsForPortal,
     setMode,
     loginWithServerCredentials,
@@ -126,6 +132,10 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
     'updates',
   ];
 
+  const [portalLang, setPortalLang] = useState<string>('pt-PT');
+  const [platformCountryFilter, setPlatformCountryFilter] = useState<string>(
+    state.localization.selectedMarketCode || 'PT'
+  );
   const [authModalOpen, setAuthModalOpen] = useState<'driver' | 'admin' | null>(null);
   const [authTab, setAuthTab] = useState<'real' | 'demo'>('real');
   const [realMode, setRealMode] = useState<'login' | 'register'>('login');
@@ -174,14 +184,32 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
   };
 
   const pipelineMarkets = state.countries.filter((c) => c.marketStatus !== 'Disponível');
+  const tieredMarkets = groupCountriesByCatalogTier(state.countries);
   const benefitsList = cms.benefits ?? [];
   const faqList = cms.faqs ?? [];
+  const localized = cms.localizedContent?.[portalLang];
+  const effectiveHeroTitle = localized?.heroTitle || cms.heroTitle;
+  const effectiveHeroSubtitle = localized?.heroSubtitle || cms.heroSubtitle;
+  const effectiveBrandTagline = localized?.brandTagline || cms.brandTagline || 'O Cérebro Inteligente do Motorista';
+  const effectiveAnnouncement = localized?.announcementBanner || cms.announcementBanner;
+  const heroMediaAsset = cms.mediaAssets?.find((m) => m.slot === 'hero');
+  const activeNavMenus =
+    cms.navigationMenus && cms.navigationMenus.length > 0
+      ? [...cms.navigationMenus].filter((m) => m.visible).sort((a, b) => a.order - b.order)
+      : [
+          { id: 'mn-func', label: 'Funcionalidades', pageId: 'funcionalidades', visible: true, order: 1 },
+          { id: 'mn-merc', label: 'Mercados', pageId: 'mercados', visible: true, order: 2 },
+          { id: 'mn-plat', label: 'Plataformas', pageId: 'plataformas', visible: true, order: 3 },
+          { id: 'mn-plan', label: 'Planos', pageId: 'planos', visible: true, order: 4 },
+          { id: 'mn-cont', label: 'Contacto', pageId: 'contacto', visible: true, order: 5 },
+        ];
+  const customPageBlock = cms.pagesContent?.[page];
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col">
       {/* Top Bar */}
       <header className="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
           <button
             type="button"
             onClick={() => setPortalPage('inicio')}
@@ -193,25 +221,18 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
 
           <nav
             aria-label="Navegação principal do portal"
-            className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-600 dark:text-slate-300"
+            className="hidden lg:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300"
           >
-            {[
-              ['funcionalidades', 'Funcionalidades'],
-              ['mercados', 'Mercados'],
-              ['plataformas', 'Plataformas'],
-              ['planos', 'Planos'],
-              ['downloads', 'Web/Mobile'],
-              ['contacto', 'Contacto'],
-            ].map(([id, label]) => (
+            {activeNavMenus.slice(0, 5).map((item) => (
               <button
-                key={id}
+                key={item.id}
                 type="button"
-                onClick={() => setPortalPage(id)}
+                onClick={() => setPortalPage(item.pageId)}
                 className={`hover:text-blue-700 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 ${
-                  page === id ? 'text-blue-700 dark:text-blue-400 font-bold underline underline-offset-4' : ''
+                  page === item.pageId ? 'text-blue-700 dark:text-blue-400 font-bold underline underline-offset-4' : ''
                 }`}
               >
-                {label}
+                {item.label}
               </button>
             ))}
           </nav>
@@ -293,6 +314,18 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <select
+              aria-label="Idioma do portal público"
+              value={portalLang}
+              onChange={(e) => setPortalLang(e.target.value)}
+              className="px-2 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono-tabular"
+            >
+              {(cms.supportedLanguages ?? ['pt-PT', 'en-GB', 'es-ES']).map((lng) => (
+                <option key={lng} value={lng}>
+                  {lng.toUpperCase()}
+                </option>
+              ))}
+            </select>
             <PWAInstallButton />
           </div>
         </div>
@@ -333,7 +366,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
       {/* Live CMS Announcement Banner */}
       {cms.showAnnouncement && (
         <div style={{ backgroundColor: primaryColor }} className="text-white text-xs py-2 px-4 text-center">
-          <span className="font-medium">{cms.announcementBanner}</span>
+          <span className="font-medium">{effectiveAnnouncement}</span>
           <span className="mx-2 opacity-50">·</span>
           <button
             type="button"
@@ -365,6 +398,18 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           ))}
         </div>
 
+        {customPageBlock && page !== 'inicio' && (
+          <Card className="p-5 space-y-1.5 border-blue-200/70 dark:border-blue-900/50">
+            <h1 className="text-lg font-display font-bold">{customPageBlock.title}</h1>
+            <p className="text-xs font-medium text-slate-500">{customPageBlock.subtitle}</p>
+            {customPageBlock.body && (
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed pt-1">
+                {customPageBlock.body}
+              </p>
+            )}
+          </Card>
+        )}
+
         {/* PAGE: INÍCIO (100% Controlled by CMS sectionOrder & visibleSections) */}
         {page === 'inicio' && (
           <div className="space-y-12">
@@ -375,21 +420,21 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 return (
                   <section key="hero" className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
                     <div className="lg:col-span-6 flex flex-col justify-center space-y-5">
-                      <p style={{ color: accentColor }} className="text-xs font-bold tracking-wide uppercase">
-                        {cms.brandTagline || 'O Cérebro Inteligente do Motorista'}
+                      <p style={{ color: accentColor }} className="text-xs font-bold tracking-wide">
+                        {effectiveBrandTagline}
                       </p>
                       <h1 className="text-3xl sm:text-4xl lg:text-5xl font-display font-extrabold tracking-tight text-slate-900 dark:text-white leading-tight [text-wrap:balance]">
-                        {cms.heroTitle}
+                        {effectiveHeroTitle}
                       </h1>
                       <p className="text-base text-slate-600 dark:text-slate-300 leading-relaxed max-w-2xl">
-                        {cms.heroSubtitle}
+                        {effectiveHeroSubtitle}
                       </p>
                       <div className="flex flex-wrap items-center gap-3 pt-2">
                         <button
                           type="button"
                           onClick={handleEnterDriver}
                           style={{ backgroundColor: primaryColor }}
-                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl text-white text-sm font-semibold transition-opacity hover:opacity-95 shadow-sm"
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl text-white text-sm font-semibold transition-opacity hover:opacity-95 shadow-sm whitespace-nowrap shrink-0"
                         >
                           <span>{cms.heroCtaDriverLabel || 'Entrar como Motorista'}</span>
                           <ArrowRight className="w-4 h-4" />
@@ -397,7 +442,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                         <button
                           type="button"
                           onClick={() => setPortalPage('planos')}
-                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                          className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
                         >
                           <span>{cms.heroCtaPlansLabel || 'Explorar Planos'}</span>
                         </button>
@@ -409,8 +454,8 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
 
                     <div className="lg:col-span-6 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-900 min-h-[300px]">
                       <img
-                        src="/src/assets/images/aivad_portal_hero_1794711880878.jpg"
-                        alt="Viatura elétrica executiva em operação urbana AIVAD"
+                        src={heroMediaAsset?.url || '/src/assets/images/aivad_portal_hero_1794711880878.jpg'}
+                        alt={heroMediaAsset?.alt || 'Viatura elétrica executiva em operação urbana AIVAD'}
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                       />
@@ -471,25 +516,67 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 return (
                   <section key="platforms" className="space-y-4">
                     <div className="flex items-center justify-between gap-2">
-                      <h2 className="text-xl font-display font-bold">
-                        Plataformas Catalogadas ({state.platforms.length})
-                      </h2>
+                      <div>
+                        <h2 className="text-xl font-display font-bold">
+                          Catálogo Internacional de Plataformas ({state.platforms.length})
+                        </h2>
+                        <p className="text-xs text-slate-500">
+                          Estado operacional em {activeMarket.name} ({activeMarket.code}) separado de presença global.
+                        </p>
+                      </div>
                       <button
                         type="button"
                         onClick={() => setPortalPage('plataformas')}
                         className="text-xs font-semibold text-blue-700 dark:text-blue-400 hover:underline"
                       >
-                        Estado das integrações →
+                        Estado por país &amp; integrações →
                       </button>
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-                      {state.platforms.map((pl) => (
-                        <Card key={pl.id} className="p-3.5 flex flex-col items-center text-center gap-2">
-                          <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
-                          <span className="text-xs font-bold">{pl.name}</span>
-                          <span className="text-[10px] text-slate-500">Comissão {pl.commissionPct}%</span>
-                        </Card>
-                      ))}
+                      {state.platforms.map((pl) => {
+                        const op = getPlatformOperationInLocation(pl, activeMarket.code);
+                        const isValidated = Boolean(
+                          op &&
+                            op.operationalStatus === 'Operação efetiva validada' &&
+                            op.preselectForDrivers
+                        );
+                        const shortStatus = !op
+                          ? `Sem op. em ${activeMarket.code}`
+                          : op.operationalStatus === 'Operação efetiva validada'
+                          ? `Ativa em ${activeMarket.code}`
+                          : op.operationalStatus === 'Encerrada no país'
+                          ? `Encerrada em ${activeMarket.code}`
+                          : op.operationalStatus === 'Suspensa'
+                          ? `Suspensa em ${activeMarket.code}`
+                          : op.operationalStatus === 'Licenciada sem operação confirmada'
+                          ? 'Licenciada s/ op.'
+                          : op.operationalStatus === 'Disponibilidade regional limitada'
+                          ? 'Regional'
+                          : `Sem op. em ${activeMarket.code}`;
+                        return (
+                          <Card
+                            key={pl.id}
+                            className={`p-3.5 flex flex-col items-center text-center gap-1.5 ${
+                              isValidated ? '' : 'opacity-75'
+                            }`}
+                          >
+                            <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
+                            <span className="text-xs font-bold">{pl.name}</span>
+                            <span
+                              className={`text-[10px] font-semibold ${
+                                isValidated
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : op?.operationalStatus === 'Licenciada sem operação confirmada'
+                                  ? 'text-amber-700 dark:text-amber-400'
+                                  : 'text-slate-500 dark:text-slate-400'
+                              }`}
+                            >
+                              {shortStatus}
+                            </span>
+                            <span className="text-[10px] text-slate-500">Ref. {pl.commissionPct}%</span>
+                          </Card>
+                        );
+                      })}
                     </div>
                   </section>
                 );
@@ -643,16 +730,48 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           </div>
         )}
 
-        {/* PAGE: MERCADOS */}
+        {/* PAGE: MERCADOS — 3 ESCALÕES DO CATÁLOGO INTERNACIONAL (PARTE II) */}
         {page === 'mercados' && (
           <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Card className="p-4 space-y-1">
+                <span className="text-xs text-slate-500">1. Mercados Oficialmente Ativos</span>
+                <p className="text-2xl font-bold font-mono-tabular text-emerald-700 dark:text-emerald-400">
+                  {tieredMarkets.officiallyActive.length}
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Operação validada, regras fiscais/TVDE e plataformas pré-selecionadas verificadas.
+                </p>
+              </Card>
+              <Card className="p-4 space-y-1">
+                <span className="text-xs text-slate-500">2. Países Configurados</span>
+                <p className="text-2xl font-bold font-mono-tabular text-blue-700 dark:text-blue-400">
+                  {tieredMarkets.configured.length}
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Moeda, fuso horário, regiões e cidades parametrizados em validação operacional.
+                </p>
+              </Card>
+              <Card className="p-4 space-y-1">
+                <span className="text-xs text-slate-500">3. Países Suportados</span>
+                <p className="text-2xl font-bold font-mono-tabular text-slate-700 dark:text-slate-200">
+                  {tieredMarkets.supported.length} (Extensível)
+                </p>
+                <p className="text-xs text-slate-600 dark:text-slate-300">
+                  Arquitetura aberta a qualquer país ISO adicionado pela Administração sem alterar código.
+                </p>
+              </Card>
+            </div>
+
             <Card className="overflow-x-auto">
               <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
                 <Globe className="w-5 h-5 text-blue-700 dark:text-blue-400" />
                 <div>
-                  <h2 className="text-lg font-bold">Mercados Disponíveis ({availableMarketsForPortal.length})</h2>
+                  <h2 className="text-lg font-bold">
+                    Mercados Oficialmente Ativos ({tieredMarkets.officiallyActive.length})
+                  </h2>
                   <p className="text-xs text-slate-500">
-                    Lista sincronizada em tempo real com a Administração Central.
+                    Apenas plataformas com operação efetiva validada são pré-selecionadas ao escolher cada localização.
                   </p>
                 </div>
               </div>
@@ -660,63 +779,154 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                 <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
                   <tr>
                     <th className="p-3">País</th>
-                    <th className="p-3">Cidades</th>
+                    <th className="p-3">Regiões &amp; Cidades</th>
                     <th className="p-3">Idioma</th>
                     <th className="p-3">Moeda &amp; Unidades</th>
                     <th className="p-3">Licença Local</th>
-                    <th className="p-3">Plataformas</th>
+                    <th className="p-3">Plataformas com Operação Validada</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {availableMarketsForPortal.map((c) => (
-                    <tr key={c.code}>
-                      <td className="p-3 font-semibold">{c.name} ({c.code})</td>
-                      <td className="p-3">{c.regions.flatMap((r) => r.cities).join(', ')}</td>
-                      <td className="p-3">{c.language}</td>
-                      <td className="p-3 font-mono-tabular">
-                        {c.currency} ({c.currencySymbol}) · {c.unitSystem === 'imperial' ? 'mi' : 'km'}
-                      </td>
-                      <td className="p-3">{c.driverLicenseRequired}</td>
-                      <td className="p-3">{c.activePlatforms.join(', ').toUpperCase()}</td>
-                    </tr>
-                  ))}
+                  {tieredMarkets.officiallyActive.map((c) => {
+                    const validatedIds = getValidatedPlatformsForLocation(state.platforms, c.code);
+                    return (
+                      <tr key={c.code}>
+                        <td className="p-3 font-semibold">{c.name} ({c.code})</td>
+                        <td className="p-3">{c.regions.flatMap((r) => r.cities).join(', ')}</td>
+                        <td className="p-3">{c.language}</td>
+                        <td className="p-3 font-mono-tabular">
+                          {c.currency} ({c.currencySymbol}) · {c.unitSystem === 'imperial' ? 'mi' : 'km'}
+                        </td>
+                        <td className="p-3">{c.driverLicenseRequired}</td>
+                        <td className="p-3 font-mono-tabular font-semibold">
+                          {validatedIds.length > 0 ? validatedIds.join(', ').toUpperCase() : c.activePlatforms.join(', ').toUpperCase()}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </Card>
+
+            {(tieredMarkets.configured.length > 0 || tieredMarkets.supported.length > 0) && (
+              <Card className="overflow-x-auto">
+                <div className="p-5 border-b border-slate-200 dark:border-slate-800">
+                  <h3 className="text-base font-bold">
+                    Países Configurados &amp; Suportados no Catálogo Internacional ({tieredMarkets.configured.length + tieredMarkets.supported.length})
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Mercados já parametrizados ou em estudo técnico, separados dos mercados oficialmente ativos.
+                  </p>
+                </div>
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+                    <tr>
+                      <th className="p-3">País</th>
+                      <th className="p-3">Escalão do Catálogo</th>
+                      <th className="p-3">Estado Administrativo</th>
+                      <th className="p-3">Moeda &amp; Unidades</th>
+                      <th className="p-3">Cidades Configuradas</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                    {[...tieredMarkets.configured, ...tieredMarkets.supported].map((c) => {
+                      const isConfigured = tieredMarkets.configured.some((x) => x.code === c.code);
+                      return (
+                        <tr key={c.code}>
+                          <td className="p-3 font-semibold">{c.name} ({c.code})</td>
+                          <td className="p-3">
+                            {isConfigured ? 'País Configurado' : 'País Suportado'}
+                          </td>
+                          <td className="p-3">{c.marketStatus}</td>
+                          <td className="p-3 font-mono-tabular">
+                            {c.currency} ({c.currencySymbol}) · {c.unitSystem === 'imperial' ? 'mi' : 'km'}
+                          </td>
+                          <td className="p-3">{c.regions.flatMap((r) => r.cities).join(', ')}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </Card>
+            )}
           </div>
         )}
 
-        {/* PAGE: PLATAFORMAS */}
+        {/* PAGE: PLATAFORMAS — OPERAÇÃO EFETIVA VS LICENCIAMENTO POR PAÍS (PARTE II) */}
         {page === 'plataformas' && (
           <div className="space-y-4">
-            <div>
-              <h2 className="text-2xl font-display font-bold">
-                Plataformas de Mobilidade ({state.platforms.length})
-              </h2>
-              <p className="text-xs text-slate-500">
-                Catálogo multi-app transparente. O AIVAD não armazena senhas de terceiros nem automatiza cliques sem API oficial.
-              </p>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-display font-bold">
+                  Catálogo Internacional de Plataformas ({state.platforms.length})
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Separa rigorosamente licenciamento administrativo de operação efetiva validada por país/cidade, sem eliminar marcas globalmente quando encerram num mercado.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <label htmlFor="portal-plat-country" className="font-semibold text-slate-600 dark:text-slate-300">
+                  Filtrar operação no país:
+                </label>
+                <select
+                  id="portal-plat-country"
+                  value={platformCountryFilter}
+                  onChange={(e) => setPlatformCountryFilter(e.target.value)}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-semibold"
+                >
+                  {state.countries.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.name} ({c.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {state.platforms.map((pl) => (
-                <Card key={pl.id} className="p-5 space-y-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
-                      <div>
-                        <h3 className="text-base font-bold">{pl.name}</h3>
-                        <p className="text-[11px] text-slate-500">
-                          {pl.countryScope.join(', ')} · Comissão {pl.commissionPct}%
+              {state.platforms.map((pl) => {
+                const op = getPlatformOperationInLocation(pl, platformCountryFilter);
+                const statusText = op?.operationalStatus ?? 'Sem operação registada neste país';
+                const statusTone =
+                  op?.operationalStatus === 'Operação efetiva validada'
+                    ? 'success'
+                    : op?.operationalStatus === 'Encerrada no país' || op?.operationalStatus === 'Suspensa'
+                      ? 'danger'
+                      : 'warning';
+                return (
+                  <Card key={pl.id} className="p-5 space-y-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <PlatformLogo platformId={pl.id} name={pl.name} size={36} />
+                        <div>
+                          <h3 className="text-base font-bold">{pl.name}</h3>
+                          <p className="text-[11px] text-slate-500">
+                            Presença global: {pl.countryScope.join(', ')} · Comissão ref. {pl.commissionPct}%
+                          </p>
+                        </div>
+                      </div>
+                      <StatusLabel tone={statusTone} text={statusText} />
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      Categorias: {pl.categories.join(' · ')}
+                    </p>
+                    {op && (
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 space-y-1">
+                        <p>
+                          <strong>Pré-seleção motorista ({platformCountryFilter}):</strong>{' '}
+                          {op.operationalStatus === 'Operação efetiva validada' && op.preselectForDrivers
+                            ? 'Ativa por omissão'
+                            : 'Não pré-selecionada'}
+                        </p>
+                        {op.licensingNote && <p>{op.licensingNote}</p>}
+                        <p className="font-mono-tabular">
+                          Fonte: {op.validationSource} · Validado: {op.verifiedAt}
                         </p>
                       </div>
-                    </div>
-                    <StatusLabel tone="warning" text={pl.integrationLabel} />
-                  </div>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">
-                    Categorias: {pl.categories.join(' · ')}
-                  </p>
-                </Card>
-              ))}
+                    )}
+                  </Card>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1075,10 +1285,10 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                     id="auth-real-pw"
                     type="password"
                     required
-                    minLength={6}
+                    minLength={realMode === 'register' ? 8 : 6}
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="Mínimo 6 caracteres"
+                    placeholder={realMode === 'register' ? 'Mínimo 8 caracteres' : 'Introduza a palavra-passe'}
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
                   />
                 </div>

@@ -50,6 +50,56 @@ export const Card: React.FC<{
   </div>
 );
 
+export const Badge: React.FC<{
+  tone?: 'emerald' | 'amber' | 'blue' | 'red' | 'slate';
+  children: React.ReactNode;
+  className?: string;
+}> = ({ tone = 'slate', children, className = '' }) => {
+  const toneClasses: Record<NonNullable<typeof tone>, string> = {
+    emerald:
+      'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800',
+    amber:
+      'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800',
+    blue:
+      'bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800',
+    red:
+      'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/50 dark:text-red-300 dark:border-red-800',
+    slate:
+      'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md border text-[11px] font-semibold whitespace-nowrap ${toneClasses[tone]} ${className}`}
+    >
+      {children}
+    </span>
+  );
+};
+
+export const SectionHeader: React.FC<{
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  action?: React.ReactNode;
+}> = ({ eyebrow, title, description, action }) => (
+  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+    <div className="space-y-1">
+      {eyebrow && (
+        <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-400">
+          {eyebrow}
+        </p>
+      )}
+      <h2 className="text-lg font-extrabold tracking-tight text-slate-900 dark:text-white">
+        {title}
+      </h2>
+      {description && (
+        <p className="text-xs text-slate-600 dark:text-slate-400 max-w-3xl">{description}</p>
+      )}
+    </div>
+    {action && <div className="shrink-0">{action}</div>}
+  </div>
+);
+
 export const StatusLabel: React.FC<{
   tone: 'success' | 'warning' | 'danger' | 'info' | 'neutral';
   text: string;
@@ -212,10 +262,10 @@ export const SegmentedFilter: React.FC<{
         key={opt.id}
         type="button"
         onClick={() => onChange(opt.id)}
-        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+        className={`px-3 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap shrink-0 ${
           value === opt.id
-            ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-400 shadow-sm'
-            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            ? 'bg-white dark:bg-slate-900 text-blue-700 dark:text-blue-400 font-bold ring-1 ring-blue-200 dark:ring-blue-800 shadow-sm'
+            : 'font-medium text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
         }`}
       >
         {opt.label}

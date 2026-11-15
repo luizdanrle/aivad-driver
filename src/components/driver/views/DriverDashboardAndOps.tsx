@@ -35,6 +35,7 @@ import type {
   AutoPilotMode,
   CancellationBy,
   CaptureSource,
+  FloatingCardProfileId,
   FloatingMetricKey,
   ProposalInput,
   ProposalLifecycleState,
@@ -44,6 +45,7 @@ import { SEED_OVERLAY_CONFIG } from '../../../data/seedData';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import {
   DynamicFloatingProposalCard,
+  FLOATING_CAPTURE_PROFILE_PRESETS,
   FLOATING_METRIC_LABELS,
   GoalDonutChart,
   HorizontalBreakdownBars,
@@ -100,7 +102,20 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     updateOverlayConfig,
     captureExternalEvent,
     confirmPendingCapture,
+    parseAndImportSmartCaptures,
+    correctSmartCaptureRecord,
+    overrideProposalAutoPilotDecision,
+    setFloatingCardQuickHidden,
   } = useEcosystem();
+
+  const [batchRawInput, setBatchRawInput] = useState(
+    'Uber Green • €14,60 (+€1,40 bónus) • Recolha 1,5 km (4 min) • Viagem 9,2 km (16 min) • Destino Aeroporto'
+  );
+  const [batchFormat, setBatchFormat] = useState<'ocr_or_notification' | 'csv' | 'json'>('ocr_or_notification');
+  const [batchPlatformId, setBatchPlatformId] = useState<string>('uber');
+  const [editingCaptureId, setEditingCaptureId] = useState<string | null>(null);
+  const [correctionAmount, setCorrectionAmount] = useState<number>(0);
+  const [correctionReason, setCorrectionReason] = useState<string>('Ajuste após conferência com recibo oficial');
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [arrivalMethod, setArrivalMethod] = useState<ArrivalDetectionMethod>('Botão manual no AIVAD');
@@ -1134,6 +1149,58 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               </button>
             </div>
 
+            {/* Capture Profiles & Compact/Expanded Mode (Comando 6 §5) */}
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-bold text-slate-800 dark:text-slate-200">
+                  Perfis Rápidos de Condução & Captura
+                </span>
+                <SegmentedFilter
+                  value={overlayDraft.layoutMode ?? 'expandido'}
+                  onChange={(mode) =>
+                    setOverlayDraft((d) => ({ ...d, layoutMode: mode as 'compacto' | 'expandido' }))
+                  }
+                  options={[
+                    { id: 'compacto', label: 'Modo Compacto' },
+                    { id: 'expandido', label: 'Modo Expandido' },
+                  ]}
+                />
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(Object.keys(FLOATING_CAPTURE_PROFILE_PRESETS) as FloatingCardProfileId[]).map((profId) => {
+                  const preset = FLOATING_CAPTURE_PROFILE_PRESETS[profId];
+                  const isActive = overlayDraft.captureProfile === profId;
+                  return (
+                    <button
+                      key={profId}
+                      type="button"
+                      onClick={() =>
+                        setOverlayDraft((d) => ({
+                          ...d,
+                          captureProfile: profId,
+                          bgColor: preset.bgColor,
+                          textColor: preset.textColor,
+                          opacityPercent: preset.opacityPercent,
+                          layoutMode: preset.layoutMode,
+                          highContrastAccessibility: preset.highContrastAccessibility,
+                        }))
+                      }
+                      className={`p-2 rounded-lg border text-left transition-colors ${
+                        isActive
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700 hover:border-blue-500'
+                      }`}
+                    >
+                      <span className="font-bold block text-[11px]">{preset.label}</span>
+                      <span className={`text-[10px] line-clamp-2 ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                        {preset.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               <div>
                 <label htmlFor="fl-pos" className="block font-medium mb-1">Posição no Ecrã</label>
@@ -1287,6 +1354,26 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   }
                 />
                 <span>Atalho rápido de histórico</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(overlayDraft.highContrastAccessibility)}
+                  onChange={(e) =>
+                    setOverlayDraft((d) => ({ ...d, highContrastAccessibility: e.target.checked }))
+                  }
+                />
+                <span>Acessibilidade: Alto Contraste Máximo</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(overlayDraft.largeTouchTargets)}
+                  onChange={(e) =>
+                    setOverlayDraft((d) => ({ ...d, largeTouchTargets: e.target.checked }))
+                  }
+                />
+                <span>Acessibilidade: Botões Grandes p/ Condução</span>
               </label>
             </div>
 
@@ -1813,6 +1900,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 confidencePct={displayedPackage.confidencePct}
                 confidenceStatus={displayedPackage.confidenceStatus}
                 zoneAlerts={calcZoneAlerts}
+                quickHidden={state.floatingCardQuickHidden}
+                onToggleQuickHidden={setFloatingCardQuickHidden}
                 onAccept={() => {
                   const created = createAndAnalyzeProposal(calcInput, 'Manual');
                   setLastCreatedPropId(created.record.id);
@@ -1936,10 +2025,48 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               </div>
 
               {prop.autoPilotDecision && (
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  <strong>AutoPilot ({prop.autoPilotDecision.modeAtDecision}):</strong>{' '}
-                  {prop.autoPilotDecision.action} — {prop.autoPilotDecision.reason}
-                </p>
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 text-xs flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <strong>AutoPilot ({prop.autoPilotDecision.modeAtDecision}):</strong>{' '}
+                    <span className="font-semibold text-blue-700 dark:text-blue-300">
+                      {prop.autoPilotDecision.action}
+                    </span>{' '}
+                    — {prop.autoPilotDecision.reason}
+                    {prop.autoPilotDecision.driverOverride && prop.autoPilotDecision.driverOverride !== 'Mantido' && (
+                      <span className="block text-[11px] text-amber-700 dark:text-amber-300 font-semibold mt-0.5">
+                        Override Manual do Motorista: {prop.autoPilotDecision.driverOverride} ({prop.autoPilotDecision.overrideReason})
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        overrideProposalAutoPilotDecision(
+                          prop.id,
+                          'Aceite manualmente',
+                          'Decisão soberana do motorista no terreno'
+                        )
+                      }
+                      className="px-2 py-1 rounded border border-emerald-300 dark:border-emerald-800 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+                    >
+                      Override: Aceitar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        overrideProposalAutoPilotDecision(
+                          prop.id,
+                          'Recusado manualmente',
+                          'Recusa manual prioritária do motorista'
+                        )
+                      }
+                      className="px-2 py-1 rounded border border-red-300 dark:border-red-800 text-[11px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40"
+                    >
+                      Override: Recusar
+                    </button>
+                  </div>
+                </div>
               )}
 
               <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
@@ -1965,9 +2092,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     type="button"
                     onClick={() => {
                       const mappedRec =
-                        prop.autoPilotDecision?.action === 'Aceitar sugerido'
+                        prop.autoPilotDecision?.action.includes('Aceitar')
                           ? 'Aceitar'
-                          : prop.autoPilotDecision?.action === 'Recusar sugerido'
+                          : prop.autoPilotDecision?.action.includes('Recusar')
                           ? 'Recusar'
                           : 'Aguardar';
                       const res = acceptProposalForTrip(prop, mappedRec);
@@ -1989,11 +2116,12 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
   if (resolvedTab === 'autopilot') {
     const ap = state.autoPilot;
+    const normalizedMode = ap.mode === 'Assistido' ? 'Semiautomático' : ap.mode;
     return (
       <div className="space-y-6">
         <ContextualHelpBanner
-          title="AIVAD AutoPilot — Motor de Decisão Responsável"
-          description="Suporta modos Manual, Assistido e Automático. Não implementa simulação de cliques, manipulação de GPS ou contorno de proteções."
+          title="AIVAD AutoPilot — Arquitetura Unificada (Manual, Semiautomático, Automático)"
+          description="Suporta execução automática imediata quando existe canal oficial ou bridge autorizado ativo, e decisão assistida transparente quando não existe."
         />
 
         <Card className="p-5 space-y-5">
@@ -2003,25 +2131,25 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               Modo de Operação AutoPilot
             </h2>
             <SegmentedFilter
-              value={ap.mode}
-              onChange={(m) => updateAutoPilotConfig({ mode: m as AutoPilotMode })}
+              value={normalizedMode}
+              onChange={(m) => updateAutoPilotConfig({ mode: m as AutoPilotMode, strategyMode: m as 'Manual' | 'Semiautomático' | 'Automático' })}
               options={[
                 { id: 'Manual', label: '1. Manual' },
-                { id: 'Assistido', label: '2. Assistido' },
-                { id: 'Automático', label: '3. Automático (Requer API Oficial)' },
+                { id: 'Semiautomático', label: '2. Semiautomático' },
+                { id: 'Automático', label: '3. Automático' },
               ]}
             />
           </div>
 
-          {ap.mode === 'Automático' && !ap.officialAutomationAuthorized && (
+          {normalizedMode === 'Automático' && !ap.officialAutomationAuthorized && (
             <div className="p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-start gap-2.5 text-xs">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <div>
                 <p className="font-bold text-amber-900 dark:text-amber-200">
-                  INTEGRAÇÃO A VALIDAR — Bloqueio de Segurança Ativo
+                  Canal de Execução Externa Desativado — Modo de Decisão Assistida Ativo
                 </p>
                 <p className="text-amber-800 dark:text-amber-300 mt-0.5">
-                  Nenhuma plataforma possui autorização oficial de aceitação automática ativa neste ambiente.
+                  Sem canal oficial/bridge autorizado ativo, o modo Automático calcula a decisão final e prepara a ação assistida sem simular cliques ocultos.
                 </p>
               </div>
             </div>
@@ -2270,11 +2398,122 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
         </Card>
       )}
 
+      {/* Parser Inteligente OCR / Notificação / CSV / JSON (Comando 6 §3) */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              Importação &amp; Normalização Inteligente (Texto OCR / Notificação, CSV ou JSON)
+            </h3>
+            <p className="text-xs text-slate-500">
+              Extrai plataforma, valor, distâncias, zonas, bónus e atribui nível de confiança (0–100%) com deduplicação idempotente.
+            </p>
+          </div>
+          <SegmentedFilter
+            value={batchFormat}
+            onChange={(v) => {
+              const fmt = v as 'ocr_or_notification' | 'csv' | 'json';
+              setBatchFormat(fmt);
+              if (fmt === 'csv') {
+                setBatchRawInput(
+                  'externalTxId,platform,type,amountEur,tripKm,durationMin,destinationZone\nCSV-UB-901,uber,Viagem,16.40,11.2,21,Parque das Nações'
+                );
+              } else if (fmt === 'json') {
+                setBatchRawInput(
+                  JSON.stringify(
+                    [
+                      {
+                        id: 'JSON-BLT-402',
+                        platformId: 'bolt',
+                        dataType: 'Viagem',
+                        grossEur: 12.8,
+                        tripDistanceKm: 8.4,
+                        durationMin: 17,
+                        destinationZone: 'Baixa / Chiado',
+                      },
+                    ],
+                    null,
+                    2
+                  )
+                );
+              } else {
+                setBatchRawInput(
+                  'Uber Green • €14,60 (+€1,40 bónus) • Recolha 1,5 km (4 min) • Viagem 9,2 km (16 min) • Destino Aeroporto'
+                );
+              }
+            }}
+            options={[
+              { id: 'ocr_or_notification', label: 'OCR / Notificação' },
+              { id: 'csv', label: 'Extrato CSV' },
+              { id: 'json', label: 'JSON Oficial' },
+            ]}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+          <div className="sm:col-span-3">
+            <label htmlFor="batch-raw-input" className="block font-medium mb-1">
+              Conteúdo a interpretar e normalizar
+            </label>
+            <textarea
+              id="batch-raw-input"
+              rows={3}
+              value={batchRawInput}
+              onChange={(e) => setBatchRawInput(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular text-xs"
+            />
+          </div>
+          <div className="space-y-2 flex flex-col justify-between">
+            <div>
+              <label htmlFor="batch-plat" className="block font-medium mb-1">
+                Plataforma predefinida
+              </label>
+              <select
+                id="batch-plat"
+                value={batchPlatformId}
+                onChange={(e) => setBatchPlatformId(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {visibleDriverPlatforms.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const res = parseAndImportSmartCaptures({
+                  rawInput: batchRawInput,
+                  format: batchFormat,
+                  defaultPlatformId: batchPlatformId,
+                  source:
+                    batchFormat === 'ocr_or_notification'
+                      ? 'OCR'
+                      : batchFormat === 'csv'
+                      ? 'Relatório CSV/PDF'
+                      : 'Extrato Importado',
+                });
+                setCapFeedback({
+                  message: res.message,
+                  tone: res.importedCount > 0 ? 'success' : 'warning',
+                });
+              }}
+              className="w-full py-2 px-3 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold"
+            >
+              Normalizar e Importar
+            </button>
+          </div>
+        </div>
+      </Card>
+
       <Card className="overflow-x-auto">
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <h3 className="text-sm font-bold flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Histórico de Capturas &amp; Deduplicação ({state.captures.length})
+            Histórico de Capturas, Confiança &amp; Correções Auditáveis ({state.captures.length})
           </h3>
         </div>
         <table className="w-full text-left text-xs">
@@ -2284,22 +2523,94 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <th className="p-3">Origem</th>
               <th className="p-3">Tipo</th>
               <th className="p-3">Valor</th>
-              <th className="p-3">Resumo</th>
-              <th className="p-3">Estado</th>
+              <th className="p-3">Confiança</th>
+              <th className="p-3">Resumo / Correções</th>
+              <th className="p-3">Estado &amp; Ação</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {state.captures.map((cap) => (
               <tr key={cap.id}>
                 <td className="p-3 font-mono-tabular">{cap.externalTxId}</td>
-                <td className="p-3">{cap.source}</td>
-                <td className="p-3">{cap.dataType}</td>
-                <td className="p-3 font-mono-tabular">{formatMoney(cap.amountEur, activeMarket.currency)}</td>
-                <td className="p-3">{cap.rawSummary}</td>
                 <td className="p-3">
+                  <span className="block">{cap.source}</span>
+                  <span className="text-[10px] text-slate-400">
+                    {cap.isDemo ? 'Dados simulados' : 'Dados importados/reais'}
+                  </span>
+                </td>
+                <td className="p-3">{cap.dataType}</td>
+                <td className="p-3 font-mono-tabular font-bold">
+                  {formatMoney(cap.amountEur, activeMarket.currency)}
+                </td>
+                <td className="p-3 font-mono-tabular">
+                  {cap.confidencePct !== undefined ? `${cap.confidencePct}%` : '95%'}
+                </td>
+                <td className="p-3 max-w-xs">
+                  <p>{cap.rawSummary}</p>
+                  {cap.corrections && cap.corrections.length > 0 && (
+                    <p className="text-[10px] text-blue-700 dark:text-blue-300 font-semibold mt-0.5">
+                      Corrigido manualmente ({cap.corrections.length}x): último motivo &ldquo;
+                      {cap.corrections[cap.corrections.length - 1].reason}&rdquo;
+                    </p>
+                  )}
+                  {editingCaptureId === cap.id && (
+                    <div className="mt-2 p-2 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 space-y-1.5">
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={correctionAmount}
+                          onChange={(e) => setCorrectionAmount(Number(e.target.value))}
+                          aria-label="Novo valor corrigido"
+                          className="w-24 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                        <input
+                          type="text"
+                          value={correctionReason}
+                          onChange={(e) => setCorrectionReason(e.target.value)}
+                          aria-label="Motivo da correção manual"
+                          placeholder="Motivo da correção"
+                          className="flex-1 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                        />
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const r = correctSmartCaptureRecord(
+                              cap.id,
+                              { amountEur: correctionAmount },
+                              correctionReason
+                            );
+                            if (r.ok) {
+                              setEditingCaptureId(null);
+                              setCapFeedback({
+                                message: `Registo ${cap.externalTxId} corrigido com histórico auditável.`,
+                                tone: 'success',
+                              });
+                            } else {
+                              setCapFeedback({ message: r.error ?? 'Erro na correção.', tone: 'danger' });
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded bg-blue-700 text-white font-semibold text-[11px]"
+                        >
+                          Guardar Correção
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingCaptureId(null)}
+                          className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 text-[11px]"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </td>
+                <td className="p-3 space-y-1">
                   <StatusLabel
                     tone={
-                      cap.status === 'Associado' || cap.status === 'Confirmado'
+                      cap.status === 'Associado' || cap.status === 'Confirmado' || cap.status === 'Corrigido'
                         ? 'success'
                         : cap.status === 'Pendente'
                         ? 'warning'
@@ -2309,6 +2620,18 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                     }
                     text={cap.status}
                   />
+                  {editingCaptureId !== cap.id && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCaptureId(cap.id);
+                        setCorrectionAmount(cap.amountEur);
+                      }}
+                      className="block text-[11px] text-blue-700 dark:text-blue-400 hover:underline font-medium"
+                    >
+                      Corrigir valor
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

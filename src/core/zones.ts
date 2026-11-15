@@ -173,3 +173,148 @@ export function createDriverZoneObservation(params: {
     },
   };
 }
+
+export interface ZoneDemandTrendSummary {
+  zoneId: string;
+  zoneName: string;
+  city: string;
+  completedTripsCount: number;
+  avgNetEur: number;
+  avgEurPerHour: number;
+  peakHourWindow: string;
+  peakDayOfWeekLabel: string;
+  positioningScore: number;
+  positioningRecommendation: string;
+  epistemicTag: import('../models/types').EpistemicTag;
+  hasSufficientHistory: boolean;
+}
+
+const DOW_LABELS = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+
+/**
+ * Calcula inteligência de procura por zona, horário e dia da semana a partir das viagens registadas.
+ * Regra obrigatória (§7): separa rigorosamente histórico/demonstração de tempo real, nunca afirmando
+ * procura em tempo real quando não existe feed externo ativo.
+ */
+export function computeZoneDemandIntelligence(params: {
+  zones: MapZoneRecord[];
+  trips: import('../models/types').TripRecord[];
+  isDemoScope: boolean;
+}): ZoneDemandTrendSummary[] {
+  const completed = params.trips.filter((t) => t.status === 'Concluída' || t.status === 'Ajustada');
+
+  return params.zones
+    .map((zone) => {
+      const zoneKeyword = zone.name.split('/')[0].trim().toLowerCase();
+      const matchingTrips = completed.filter(
+        (t) =>
+          t.pickupZone.toLowerCase().includes(zoneKeyword) ||
+          zone.name.toLowerCase().includes(t.pickupZone.toLowerCase())
+      );
+
+      const count = matchingTrips.length;
+      const totalNet = matchingTrips.reduce((s, t) => s + t.netEur, 0);
+      const totalRev = matchingTrips.reduce((s, t) => s + t.grossEur + t.tipEur + t.bonusEur, 0);
+      const totalHours = matchingTrips.reduce((s, t) => s + t.durationMin, 0) / 60;
+      const avgNetEur = count > 0 ? Math.round((totalNet / count) * 100) / 100 : 0;
+      const avgEurPerHour = totalHours > 0 ? Math.round((totalRev / totalHours) * 100) / 100 : 0;
+
+      const hourBuckets = new Map<number, number>();
+      const dowBuckets = new Map<number, number>();
+      for (const t of matchingTrips) {
+        const hh = Number(t.time.split(':')[0] ?? 12);
+        if (Number.isFinite(hh)) hourBuckets.set(hh, (hourBuckets.get(hh) ?? 0) + 1);
+        const dt = new Date(`${t.date}T12:00:00Z`);
+        if (Number.isFinite(dt.getTime())) {
+          const dow = dt.getUTCDay();
+          dowBuckets.set(dow, (dowBuckets.get(dow) ?? 0) + 1);
+        }
+      }
+
+      let bestHour = -1;
+      let bestHourCount = 0;
+      for (const [hh, c] of hourBuckets.entries()) {
+        if (c > bestHourCount) {
+          bestHour = hh;
+          bestHourCount = c;
+        }
+      }
+
+      let bestDow = -1;
+      let bestDowCount = 0;
+      for (const [d, c] of dowBuckets.entries()) {
+        if (c > bestDowCount) {
+          bestDow = d;
+          bestDowCount = c;
+        }
+      }
+
+      const peakHourWindow =
+        bestHour >= 0
+          ? `${String(bestHour).padStart(2, '0')}:00–${String((bestHour + 2) % 24).padStart(2, '0')}:00`
+          : 'Amostra insuficiente';
+      const peakDayOfWeekLabel = bestDow >= 0 ? DOW_LABELS[bestDow] : 'Sem padrão confirmado';
+
+      const baseDemandBonus =
+        zone.historicalDemand === 'Alta' ? 28 : zone.historicalDemand === 'Média' ? 16 : 6;
+      const prefMod = zone.preference === 'Favorita' ? 12 : zone.preference === 'Evitar' ? -30 : 0;
+      const positioningScore = Math.max(
+        5,
+        Math.min(98, Math.round(baseDemandBonus + Math.min(45, avgEurPerHour * 1.6) + Math.min(18, count * 4) + prefMod))
+      );
+
+      const epistemicTag: import('../models/types').EpistemicTag = params.isDemoScope
+        ? 'Dados de demonstração'
+        : count >= 2
+          ? 'Informação histórica'
+          : 'Estimativa';
+
+      const positioningRecommendation =
+        zone.preference === 'Evitar'
+          ? 'Evitar posicionamento preventivo (zona marcada a evitar ou com restrições recorrentes).'
+          : count >= 2
+            ? `Padrão histórico registado (${count} viagens · €${avgEurPerHour.toFixed(2)}/h · pico ${peakHourWindow}). Sem feed de procura em tempo real.`
+            : `Referência estrutural (${zone.historicalDemand.toLowerCase()}) — registe mais viagens para calibrar tendência horária real.`;
+
+      return {
+        zoneId: zone.id,
+        zoneName: zone.name,
+        city: zone.city,
+        completedTripsCount: count,
+        avgNetEur,
+        avgEurPerHour,
+        peakHourWindow,
+        peakDayOfWeekLabel,
+        positioningScore,
+        positioningRecommendation,
+        epistemicTag,
+        hasSufficientHistory: count >= 2,
+      };
+    })
+    .sort((a, b) => b.positioningScore - a.positioningScore);
+}
+
+export function createZoneRelocationLog(params: {
+  zoneId?: string;
+  fromZone: string;
+  targetZone: string;
+  suggestedReason: string;
+  epistemicBasis: import('../models/types').EpistemicTag;
+  destinationNotes?: string;
+  isDemo: boolean;
+  nowIso?: string;
+}): import('../models/types').ZoneRelocationLog {
+  return {
+    id: `reloc-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+    zoneId: params.zoneId,
+    fromZone: params.fromZone,
+    targetZone: params.targetZone,
+    suggestedReason: params.suggestedReason,
+    epistemicBasis: params.epistemicBasis,
+    startedAtIso: params.nowIso ?? new Date().toISOString(),
+    outcome: 'Em deslocação',
+    destinationNotes: params.destinationNotes?.trim() || undefined,
+    isDemo: params.isDemo,
+  };
+}
+

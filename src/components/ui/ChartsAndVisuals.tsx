@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import QRCode from 'qrcode';
 import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  Eye,
+  EyeOff,
+  Loader2,
   MapPin,
   Maximize2,
   Minimize2,
@@ -16,6 +20,7 @@ import {
 import type {
   AndroidOverlayConfig,
   ConfidenceStatus,
+  FloatingCardProfileId,
   FloatingMetricKey,
   PlatformId,
   ProposalAnalysis,
@@ -121,15 +126,69 @@ export const FLOATING_METRIC_LABELS: Record<FloatingMetricKey, string> = {
   score: 'Score IA',
 };
 
+export const FLOATING_CAPTURE_PROFILE_PRESETS: Record<
+  FloatingCardProfileId,
+  {
+    label: string;
+    description: string;
+    bgColor: string;
+    textColor: string;
+    opacityPercent: number;
+    layoutMode: 'compacto' | 'expandido';
+    highContrastAccessibility: boolean;
+  }
+> = {
+  Urbano: {
+    label: 'Urbano Rápido',
+    description: 'Leitura imediata em tráfego citadino com foco em €/km, €/h e recolha curta.',
+    bgColor: '#0F172A',
+    textColor: '#F8FAFC',
+    opacityPercent: 95,
+    layoutMode: 'compacto',
+    highContrastAccessibility: false,
+  },
+  Aeroporto: {
+    label: 'Aeroporto / Longa Distância',
+    description: 'Vista expandida destacando probabilidade de retorno com passageiro, portagens e líquido.',
+    bgColor: '#0B192C',
+    textColor: '#F8FAFC',
+    opacityPercent: 96,
+    layoutMode: 'expandido',
+    highContrastAccessibility: false,
+  },
+  Noturno: {
+    label: 'Condução Noturna',
+    description: 'Brilho reduzido anti-encandeamento e contraste suave para turnos noturnos.',
+    bgColor: '#090D16',
+    textColor: '#E2E8F0',
+    opacityPercent: 90,
+    layoutMode: 'compacto',
+    highContrastAccessibility: false,
+  },
+  'Alto Contraste': {
+    label: 'Alto Contraste Solar',
+    description: 'Máxima legibilidade sob luz solar direta e alvos de toque alargados.',
+    bgColor: '#000000',
+    textColor: '#FFFFFF',
+    opacityPercent: 100,
+    layoutMode: 'expandido',
+    highContrastAccessibility: true,
+  },
+};
+
 export const DynamicFloatingProposalCard: React.FC<{
   overlayConfig: AndroidOverlayConfig;
-  proposalInput: ProposalInput;
-  analysis: ProposalAnalysis;
+  proposalInput?: ProposalInput | null;
+  analysis?: ProposalAnalysis | null;
   recommendedAction?: string;
   confidencePct?: number | null;
   confidenceStatus?: ConfidenceStatus;
   zoneAlerts?: ZoneOperationalAlert[];
   isPreviewSurface?: boolean;
+  cardStatus?: 'ready' | 'loading' | 'error' | 'empty';
+  errorMessage?: string;
+  quickHidden?: boolean;
+  onToggleQuickHidden?: (hidden: boolean) => void;
   onAccept?: () => void;
   onReject?: () => void;
   onClose?: () => void;
@@ -142,31 +201,104 @@ export const DynamicFloatingProposalCard: React.FC<{
   confidenceStatus,
   zoneAlerts = [],
   isPreviewSurface = false,
+  cardStatus = 'ready',
+  errorMessage,
+  quickHidden = false,
+  onToggleQuickHidden,
   onAccept,
   onReject,
   onClose,
 }) => {
-  const [minimized, setMinimized] = useState(false);
+  const prefersReducedMotion = useReducedMotion();
+  const [minimized, setMinimized] = useState(overlayConfig.layoutMode === 'compacto');
+
+  useEffect(() => {
+    setMinimized(overlayConfig.layoutMode === 'compacto');
+  }, [overlayConfig.layoutMode]);
+
+  if (quickHidden) {
+    return (
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => onToggleQuickHidden?.(false)}
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900 text-white border border-blue-500 shadow-lg text-xs font-bold hover:bg-slate-800"
+        >
+          <Eye className="w-3.5 h-3.5 text-blue-400" />
+          <span>Reabrir Cartão Flutuante AIVAD</span>
+        </button>
+      </div>
+    );
+  }
+
+  if (cardStatus === 'loading') {
+    return (
+      <div
+        data-testid="floating-proposal-card-loading"
+        className="rounded-2xl border-2 border-blue-500/60 bg-slate-900 text-white p-4 shadow-xl flex items-center gap-3 text-xs"
+      >
+        <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
+        <span>A interpretar proposta e a calcular rentabilidade líquida em tempo real...</span>
+      </div>
+    );
+  }
+
+  if (cardStatus === 'error') {
+    return (
+      <div
+        data-testid="floating-proposal-card-error"
+        className="rounded-2xl border-2 border-red-500 bg-slate-950 text-red-100 p-4 shadow-xl flex items-start gap-3 text-xs"
+      >
+        <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+        <div>
+          <p className="font-bold">Falha de leitura na captura da proposta</p>
+          <p className="opacity-85 mt-0.5">
+            {errorMessage ?? 'Dados insuficientes para calcular €/km com segurança. Confirme os valores na app oficial.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (cardStatus === 'empty' || !proposalInput || !analysis) {
+    return (
+      <div
+        data-testid="floating-proposal-card-empty"
+        className="rounded-2xl border border-dashed border-slate-600 bg-slate-900/90 text-slate-200 p-4 text-xs flex items-center justify-between gap-2"
+      >
+        <span>Sem proposta ativa em análise neste momento. A aguardar leitura autorizada ou entrada manual.</span>
+        {onToggleQuickHidden && (
+          <button
+            type="button"
+            onClick={() => onToggleQuickHidden(true)}
+            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-semibold shrink-0"
+          >
+            Ocultar
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const verdict =
     analysis.classification === 'verde'
       ? {
           label: 'VERDE · FAVORÁVEL',
           accentHex: '#10B981',
-          badgeBg: 'rgba(16, 185, 129, 0.20)',
+          badgeBg: 'rgba(16, 185, 129, 0.22)',
           badgeText: '#34D399',
         }
       : analysis.classification === 'amarelo'
       ? {
           label: 'AMARELO · ATENÇÃO',
           accentHex: '#F59E0B',
-          badgeBg: 'rgba(245, 158, 11, 0.20)',
+          badgeBg: 'rgba(245, 158, 11, 0.22)',
           badgeText: '#FBBF24',
         }
       : {
           label: 'VERMELHO · REJEITAR',
           accentHex: '#EF4444',
-          badgeBg: 'rgba(239, 68, 68, 0.24)',
+          badgeBg: 'rgba(239, 68, 68, 0.26)',
           badgeText: '#FCA5A5',
         };
 
@@ -199,21 +331,30 @@ export const DynamicFloatingProposalCard: React.FC<{
   const confidenceLabel =
     confidencePct !== null && confidencePct !== undefined
       ? `${confidencePct}% conf.`
-      : confidenceStatus ?? 'Confiança não calculável';
+      : confidenceStatus ?? 'Confiança calibrada';
+
+  const effectiveFontSize = overlayConfig.highContrastAccessibility
+    ? Math.max(15, overlayConfig.fontSizePx + 1)
+    : overlayConfig.fontSizePx;
+  const touchTargetBtnClass = overlayConfig.largeTouchTargets ? 'min-h-[46px] py-2.5 px-4 text-sm' : 'py-2 px-3 text-xs';
 
   return (
-    <div
+    <motion.div
+      layout={!prefersReducedMotion}
+      initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.98 }}
+      animate={{ opacity: overlayConfig.opacityPercent / 100, scale: 1 }}
+      transition={{ duration: 0.16, ease: 'easeOut' }}
       data-testid="floating-proposal-card"
       data-classification={analysis.classification}
+      data-layout-mode={minimized ? 'compacto' : 'expandido'}
       style={{
         width: isPreviewSurface ? `${overlayConfig.widthPercent}%` : '100%',
-        opacity: overlayConfig.opacityPercent / 100,
-        backgroundColor: overlayConfig.bgColor,
-        color: overlayConfig.textColor,
+        backgroundColor: overlayConfig.highContrastAccessibility ? '#000000' : overlayConfig.bgColor,
+        color: overlayConfig.highContrastAccessibility ? '#FFFFFF' : overlayConfig.textColor,
         borderColor: verdict.accentHex,
-        fontSize: `${overlayConfig.fontSizePx}px`,
+        fontSize: `${effectiveFontSize}px`,
       }}
-      className={`rounded-2xl border-2 p-4 shadow-xl transition-all duration-300 space-y-3 mx-auto ${fontClass}`}
+      className={`rounded-2xl ${overlayConfig.highContrastAccessibility ? 'border-[3px]' : 'border-2'} p-4 shadow-xl space-y-3 mx-auto ${fontClass}`}
     >
       {/* Top Status & Gross Strip */}
       <div className="flex items-start justify-between gap-2">
@@ -226,19 +367,24 @@ export const DynamicFloatingProposalCard: React.FC<{
               </span>
               <span
                 style={{ backgroundColor: verdict.badgeBg, color: verdict.badgeText }}
-                className="text-[10px] font-bold px-2 py-0.5 rounded-full font-mono-tabular whitespace-nowrap"
+                className="text-[10px] font-bold px-2 py-0.5 rounded-md font-mono-tabular whitespace-nowrap"
               >
                 {verdict.label}
               </span>
+              {overlayConfig.captureProfile && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 font-semibold">
+                  Perfil: {overlayConfig.captureProfile}
+                </span>
+              )}
             </div>
-            <p className="text-[11px] opacity-80 truncate">
-              {proposalInput.region} · Deslocação: {proposalInput.pickupDistanceKm} km ({proposalInput.pickupTimeMin} min) · Viagem: {proposalInput.tripDistanceKm} km ({proposalInput.tripTimeMin} min)
+            <p className="text-[11px] opacity-85 truncate">
+              {proposalInput.region} · €{analysis.eurPerKm.toFixed(2)}/km · €{analysis.eurPerHour.toFixed(0)}/h · Recolha {proposalInput.pickupDistanceKm} km ({proposalInput.pickupTimeMin}m)
             </p>
           </div>
         </div>
 
-        <div className="flex items-start gap-1.5 shrink-0">
-          <div className="text-right">
+        <div className="flex items-start gap-1 shrink-0">
+          <div className="text-right mr-1">
             <span className="text-[10px] uppercase tracking-wider opacity-70 block leading-none">
               Valor bruto
             </span>
@@ -246,17 +392,29 @@ export const DynamicFloatingProposalCard: React.FC<{
               €{proposalInput.grossValueEur.toFixed(2)}
             </span>
             <span className="text-[11px] font-mono-tabular opacity-85 block">
-              Líquido est.: €{analysis.estimatedNetEur.toFixed(2)}
+              Líq.: €{analysis.estimatedNetEur.toFixed(2)}
             </span>
           </div>
           {(overlayConfig.allowMinimize ?? true) && (
             <button
               type="button"
               onClick={() => setMinimized((m) => !m)}
-              aria-label={minimized ? 'Expandir cartão flutuante' : 'Minimizar cartão flutuante'}
-              className="p-1 rounded-md hover:bg-white/10"
+              aria-label={minimized ? 'Expandir cartão flutuante' : 'Compactar cartão flutuante'}
+              title={minimized ? 'Modo Expandido' : 'Modo Compacto'}
+              className="p-1.5 rounded-md hover:bg-white/15"
             >
               {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {onToggleQuickHidden && (
+            <button
+              type="button"
+              onClick={() => onToggleQuickHidden(true)}
+              aria-label="Ocultar rapidamente cartão flutuante"
+              title="Ocultar rapidamente"
+              className="p-1.5 rounded-md hover:bg-white/15"
+            >
+              <EyeOff className="w-3.5 h-3.5" />
             </button>
           )}
           {(overlayConfig.allowManualClose ?? true) && onClose && (
@@ -264,7 +422,7 @@ export const DynamicFloatingProposalCard: React.FC<{
               type="button"
               onClick={onClose}
               aria-label="Fechar cartão flutuante"
-              className="p-1 rounded-md hover:bg-white/10"
+              className="p-1.5 rounded-md hover:bg-white/15"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -272,129 +430,148 @@ export const DynamicFloatingProposalCard: React.FC<{
         </div>
       </div>
 
-      {!minimized && (
-        <>
-          {/* Pickup & Destination Addresses */}
-          <div className="rounded-xl bg-white/10 border border-white/10 p-2.5 space-y-1.5 text-[11px]">
-            <div className="flex items-start gap-2">
-              <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-400" />
-              <div className="min-w-0 flex-1">
-                <span className="opacity-70 uppercase text-[10px] font-bold">Recolha: </span>
-                <span className="font-semibold break-words">
-                  {proposalInput.pickupAddress || proposalInput.region}
+      <AnimatePresence initial={false}>
+        {!minimized && (
+          <motion.div
+            key="expanded-body"
+            initial={prefersReducedMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+            transition={{ duration: 0.14 }}
+            className="space-y-3"
+          >
+            {/* Pickup & Destination Addresses */}
+            <div className="rounded-xl bg-white/10 border border-white/10 p-2.5 space-y-1.5 text-[11px]">
+              <div className="flex items-start gap-2">
+                <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-400" />
+                <div className="min-w-0 flex-1">
+                  <span className="opacity-70 uppercase text-[10px] font-bold">Recolha: </span>
+                  <span className="font-semibold break-words">
+                    {proposalInput.pickupAddress || proposalInput.region}
+                  </span>
+                </div>
+                <span className="font-mono-tabular opacity-85 shrink-0">
+                  {proposalInput.pickupDistanceKm} km · {proposalInput.pickupTimeMin}m
                 </span>
               </div>
-              <span className="font-mono-tabular opacity-85 shrink-0">
-                {proposalInput.pickupDistanceKm} km · {proposalInput.pickupTimeMin}m
-              </span>
-            </div>
-            <div className="flex items-start gap-2">
-              <Navigation className="w-3.5 h-3.5 shrink-0 mt-0.5 text-blue-400" />
-              <div className="min-w-0 flex-1">
-                <span className="opacity-70 uppercase text-[10px] font-bold">Destino: </span>
-                <span className="font-semibold break-words">
-                  {proposalInput.destinationAddress || 'Destino não indicado pela plataforma'}
+              <div className="flex items-start gap-2">
+                <Navigation className="w-3.5 h-3.5 shrink-0 mt-0.5 text-blue-400" />
+                <div className="min-w-0 flex-1">
+                  <span className="opacity-70 uppercase text-[10px] font-bold">Destino: </span>
+                  <span className="font-semibold break-words">
+                    {proposalInput.destinationAddress || 'Destino não indicado pela plataforma'}
+                  </span>
+                </div>
+                <span className="font-mono-tabular opacity-85 shrink-0">
+                  {proposalInput.tripDistanceKm} km · {proposalInput.tripTimeMin}m
                 </span>
               </div>
-              <span className="font-mono-tabular opacity-85 shrink-0">
-                {proposalInput.tripDistanceKm} km · {proposalInput.tripTimeMin}m
-              </span>
+              {analysis.returnPassengerProbabilityPct !== undefined && (
+                <div className="pt-1 border-t border-white/10 flex items-center justify-between text-[10px] opacity-85">
+                  <span>Probabilidade de retorno com passageiro:</span>
+                  <span className="font-mono-tabular font-bold">
+                    {analysis.returnPassengerProbabilityPct !== null
+                      ? `${analysis.returnPassengerProbabilityPct}% (${analysis.returnProbabilityEpistemicTag ?? 'Histórico'})`
+                      : 'Informação indisponível (<3 viagens)'}
+                  </span>
+                </div>
+              )}
             </div>
-          </div>
 
-          {/* Active Zone Intelligence Alerts inside Floating Card */}
-          {zoneAlerts.length > 0 && (
-            <div
-              data-testid="floating-card-zone-alerts"
-              className="rounded-xl bg-amber-500/20 border border-amber-400/50 p-2.5 space-y-1 text-[11px]"
-            >
-              {zoneAlerts.slice(0, 2).map((al) => {
-                const alt = al.alternatives[0];
-                return (
-                  <div key={`${al.zoneId ?? al.zoneName}`} className="flex items-start gap-2">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
-                    <div className="min-w-0">
-                      <p className="font-bold text-amber-200">
-                        {al.zoneName} · {al.tier}
-                        {al.isScheduleCurrentlyActive ? ' · ATIVO AGORA' : ''}
-                      </p>
-                      <p className="opacity-90 leading-snug">
-                        {al.title}{al.scheduleSummary ? ` (${al.scheduleSummary})` : ''} — {al.description}
-                      </p>
-                      {al.isEventNotConfirmedBan && (
-                        <p className="text-[10px] text-amber-100/90 italic mt-0.5">
-                          Nota: Evento regular identificado; não confirma proibição total oficial sem sinalização no local.
+            {/* Active Zone Intelligence Alerts inside Floating Card */}
+            {zoneAlerts.length > 0 && (
+              <div
+                data-testid="floating-card-zone-alerts"
+                className="rounded-xl bg-amber-500/20 border border-amber-400/50 p-2.5 space-y-1 text-[11px]"
+              >
+                {zoneAlerts.slice(0, 2).map((al) => {
+                  const alt = al.alternatives[0];
+                  return (
+                    <div key={`${al.zoneId ?? al.zoneName}`} className="flex items-start gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                      <div className="min-w-0">
+                        <p className="font-bold text-amber-200">
+                          {al.zoneName} · {al.tier}
+                          {al.isScheduleCurrentlyActive ? ' · ATIVO AGORA' : ''}
                         </p>
-                      )}
-                      {alt && (
-                        <p className="text-emerald-200 font-semibold mt-0.5">
-                          Alternativa segura: {alt.label} ({alt.walkingDistanceMeters}m / ~{alt.walkingTimeMin} min a pé)
+                        <p className="opacity-90 leading-snug">
+                          {al.title}{al.scheduleSummary ? ` (${al.scheduleSummary})` : ''} — {al.description}
                         </p>
-                      )}
+                        {al.isEventNotConfirmedBan && (
+                          <p className="text-[10px] text-amber-100/90 italic mt-0.5">
+                            Nota: Evento regular identificado; não confirma proibição total oficial sem sinalização no local.
+                          </p>
+                        )}
+                        {alt && (
+                          <p className="text-emerald-200 font-semibold mt-0.5">
+                            Alternativa segura: {alt.label} ({alt.walkingDistanceMeters}m / ~{alt.walkingTimeMin} min a pé)
+                          </p>
+                        )}
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Dynamic Metrics Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {overlayConfig.visibleMetrics.map((key) => {
+                const item = getMetricValue(key);
+                return (
+                  <div
+                    key={key}
+                    className="p-2 rounded-xl bg-white/10 border border-white/10"
+                  >
+                    <span className="text-[10px] uppercase tracking-wider opacity-70 block">
+                      {item.label}
+                    </span>
+                    <span className="font-mono-tabular font-bold text-sm">{item.value}</span>
                   </div>
                 );
               })}
             </div>
-          )}
 
-          {/* Dynamic Metrics Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {overlayConfig.visibleMetrics.map((key) => {
-              const item = getMetricValue(key);
-              return (
-                <div
-                  key={key}
-                  className="p-2 rounded-xl bg-white/10 border border-white/10"
-                >
-                  <span className="text-[10px] uppercase tracking-wider opacity-70 block">
-                    {item.label}
-                  </span>
-                  <span className="font-mono-tabular font-bold text-sm">{item.value}</span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* AI Recommended Action + Calibrated Confidence */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-white/10">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color: verdict.accentHex }} />
-              <span className="truncate font-semibold">
-                {recommendedAction ?? analysis.reasons[0]} ({confidenceLabel})
+            {/* AI Recommended Action + Calibrated Confidence */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-white/10">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color: verdict.accentHex }} />
+                <span className="truncate font-semibold">
+                  {recommendedAction ?? analysis.reasons[0]} ({confidenceLabel})
+                </span>
+              </div>
+              <span className="text-[10px] opacity-70 font-mono-tabular">
+                Pos: {overlayConfig.position} · {overlayConfig.autoDismiss ? `${overlayConfig.durationSeconds}s auto` : 'Manual'}
               </span>
             </div>
-            <span className="text-[10px] opacity-70 font-mono-tabular">
-              Pos: {overlayConfig.position} · {overlayConfig.autoDismiss ? `${overlayConfig.durationSeconds}s auto` : 'Manual'}
-            </span>
-          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          {(onAccept || onReject) && (
-            <div className="flex flex-wrap gap-2 pt-1">
-              {onAccept && (
-                <button
-                  type="button"
-                  onClick={onAccept}
-                  style={{ backgroundColor: verdict.accentHex }}
-                  className="flex-1 py-2 px-3 rounded-xl text-white text-xs font-bold hover:opacity-90 transition-opacity"
-                >
-                  Aceitar e Acompanhar Viagem
-                </button>
-              )}
-              {onReject && (
-                <button
-                  type="button"
-                  onClick={onReject}
-                  className="py-2 px-3 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-semibold transition-colors"
-                >
-                  Recusar
-                </button>
-              )}
-            </div>
+      {(onAccept || onReject) && (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {onAccept && (
+            <button
+              type="button"
+              onClick={onAccept}
+              style={{ backgroundColor: verdict.accentHex }}
+              className={`flex-1 rounded-xl text-white font-bold hover:opacity-90 transition-opacity ${touchTargetBtnClass}`}
+            >
+              Aceitar e Acompanhar Viagem
+            </button>
           )}
-        </>
+          {onReject && (
+            <button
+              type="button"
+              onClick={onReject}
+              className={`rounded-xl bg-white/15 hover:bg-white/25 font-semibold transition-colors ${touchTargetBtnClass}`}
+            >
+              Recusar
+            </button>
+          )}
+        </div>
       )}
-    </div>
+    </motion.div>
   );
 };
 

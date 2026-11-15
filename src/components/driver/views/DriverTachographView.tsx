@@ -23,6 +23,7 @@ import {
 } from '../../../core/exportUtils';
 import { daysAgoIso, formatDistance, getTodayIso } from '../../../core/localization';
 import {
+  buildTachographPeriodReport,
   buildTachographQrPayload,
   canTransitionTachographState,
   consolidateMultiPlatformJornada,
@@ -130,6 +131,15 @@ export const DriverTachographView: React.FC = () => {
   const periodSummary = useMemo(
     () => consolidateMultiPlatformJornada(filteredActivities, filteredIntervals, tacho.sessions),
     [filteredActivities, filteredIntervals, tacho.sessions]
+  );
+
+  const structuredPeriodReports = useMemo(
+    () => ({
+      diario: buildTachographPeriodReport(tacho, 'diario', todayIso),
+      semanal: buildTachographPeriodReport(tacho, 'semanal', todayIso),
+      mensal: buildTachographPeriodReport(tacho, 'mensal', todayIso),
+    }),
+    [tacho, todayIso]
   );
 
   const qrData = useMemo(
@@ -843,6 +853,37 @@ export const DriverTachographView: React.FC = () => {
                 PDF / Imprimir
               </button>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            {(
+              [
+                ['diario', 'Relatório Diário', structuredPeriodReports.diario],
+                ['semanal', 'Relatório Semanal', structuredPeriodReports.semanal],
+                ['mensal', 'Relatório Mensal', structuredPeriodReports.mensal],
+              ] as const
+            ).map(([pKey, title, rep]) => (
+              <button
+                key={pKey}
+                type="button"
+                onClick={() => setReportPeriod(pKey)}
+                className={`p-3 rounded-xl border text-left transition-colors ${
+                  reportPeriod === pKey
+                    ? 'border-blue-700 bg-blue-50/70 dark:bg-blue-950/40'
+                    : 'border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 hover:border-blue-500'
+                }`}
+              >
+                <span className="font-bold block text-slate-900 dark:text-white">{title}</span>
+                <span className="text-[10px] text-slate-500 block font-mono-tabular">
+                  {rep.startDate} → {rep.endDate}
+                </span>
+                <div className="mt-1.5 space-y-0.5 text-[11px] font-mono-tabular">
+                  <span className="block">Condução: <strong>{formatMins(rep.summary.drivingMinutes)}</strong></span>
+                  <span className="block">Jornada consol.: <strong>{formatMins(rep.summary.consolidatedOnlineMinutes)}</strong></span>
+                  <span className="block">Km: <strong>{rep.summary.totalKmDriven} km</strong> · Rev.: {rep.revisionsCount}</span>
+                </div>
+              </button>
+            ))}
           </div>
 
           <QrCodeVerifierCard

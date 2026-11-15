@@ -139,7 +139,7 @@ export const AdminLayout: React.FC = () => {
             className="flex items-center gap-2 text-base font-bold tracking-tight"
           >
             <PhoenixLogo size={26} />
-            <span>AIVAD Admin</span>
+            <span>AIVAD Management</span>
           </button>
           <span className="text-[11px] font-mono-tabular font-semibold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
             {availableMarketsForPortal.length}/{state.countries.length} Merc.
@@ -199,7 +199,7 @@ export const AdminLayout: React.FC = () => {
             <div className="h-14 px-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
               <span className="font-bold text-sm flex items-center gap-2">
                 <PhoenixLogo size={22} />
-                AIVAD Admin
+                AIVAD Management
               </span>
               <button
                 type="button"

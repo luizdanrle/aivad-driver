@@ -164,6 +164,8 @@ export interface ReportFilterOptions {
   customEnd?: string;
   dataScope: DataScopeFilter;
   platformId?: string;
+  vehicleId?: string;
+  zone?: string;
   category?: string;
   tripStatusFilter?: string;
   refDateIso?: string;
@@ -262,7 +264,7 @@ export interface ComprehensiveReportsBundle {
     rolling24h: ReturnType<typeof evaluateRolling24hCompliance>;
     consolidated: ReturnType<typeof consolidateMultiPlatformJornada>;
   };
-  // 8. Veículo & Energia
+  // 8. Veículo & Energia + Sub-relatório por Viatura
   vehicleAndEnergy: {
     activeVehicleName: string;
     homologatedRangeKm: number;
@@ -271,6 +273,16 @@ export interface ComprehensiveReportsBundle {
     energyLoggedExpensesEur: number;
     totalKmInPeriod: number;
     emptyKmPct: number;
+    byVehicle: Array<{
+      vehicleId: string;
+      vehicleLabel: string;
+      tripsCount: number;
+      totalKm: number;
+      grossRevenueEur: number;
+      netEur: number;
+      eurPerKm: number;
+      tcoPerKmEur: number;
+    }>;
   };
   // 9. Metas & Projeção
   goalsAndProjection: {
@@ -314,6 +326,12 @@ export function buildComprehensiveReports(params: {
     if (params.filters.platformId && params.filters.platformId !== 'ALL' && t.platformId !== params.filters.platformId) {
       return false;
     }
+    if (params.filters.vehicleId && params.filters.vehicleId !== 'ALL' && t.vehicleId !== params.filters.vehicleId) {
+      return false;
+    }
+    if (params.filters.zone && params.filters.zone !== 'ALL' && t.pickupZone !== params.filters.zone) {
+      return false;
+    }
     if (params.filters.category && params.filters.category !== 'ALL' && t.category !== params.filters.category) {
       return false;
     }
@@ -331,11 +349,18 @@ export function buildComprehensiveReports(params: {
     return true;
   };
 
+  const matchExpenseVehicle = (e: ExpenseRecord) => {
+    if (params.filters.vehicleId && params.filters.vehicleId !== 'ALL' && e.vehicleId && e.vehicleId !== params.filters.vehicleId) {
+      return false;
+    }
+    return true;
+  };
+
   const filteredTrips = scopeFilter(params.trips, period.startDate, period.endDate).filter(matchDimension);
   const prevTrips = scopeFilter(params.trips, period.prevStartDate, period.prevEndDate).filter(matchDimension);
 
-  const filteredExpenses = scopeFilter(params.expenses, period.startDate, period.endDate);
-  const prevExpenses = scopeFilter(params.expenses, period.prevStartDate, period.prevEndDate);
+  const filteredExpenses = scopeFilter(params.expenses, period.startDate, period.endDate).filter(matchExpenseVehicle);
+  const prevExpenses = scopeFilter(params.expenses, period.prevStartDate, period.prevEndDate).filter(matchExpenseVehicle);
 
   const completedTrips = filteredTrips.filter((t) => isCompletedTripStatus(t.status));
   const excludedTrips = filteredTrips.filter((t) => !isCompletedTripStatus(t.status));
@@ -578,7 +603,7 @@ export function buildComprehensiveReports(params: {
     (i) => i.date >= period.startDate && i.date <= period.endDate
   );
 
-  // 8. Veículo & Energia
+  // 8. Veículo & Energia + Sub-relatório por viatura
   const energyLoggedExpensesEur = round2(
     filteredExpenses
       .filter((e) => e.category === 'Energia' || e.category === 'Combustível')
@@ -586,10 +611,34 @@ export function buildComprehensiveReports(params: {
   );
   const emptyKmPct = summary.totalKm > 0 ? Math.round((summary.emptyKm / summary.totalKm) * 100) : 0;
 
+  const vehicleIdsInPeriod = Array.from(new Set(completedTrips.map((t) => t.vehicleId)));
+  const byVehicle = vehicleIdsInPeriod
+    .map((vid) => {
+      const veh = params.vehicles.find((v) => v.id === vid);
+      const vTrips = completedTrips.filter((t) => t.vehicleId === vid);
+      const totalKm = round2(vTrips.reduce((s, t) => s + t.pickupDistanceKm + t.tripDistanceKm, 0));
+      const grossRevenueEur = round2(vTrips.reduce((s, t) => s + t.grossEur + t.tipEur + t.bonusEur, 0));
+      const netEur = round2(vTrips.reduce((s, t) => s + t.netEur, 0));
+      const vTco = veh
+        ? computeVehicleOwnershipTcoPerKm(veh, params.costConfig.monthlyKmEstimate).totalEstimatedCostPerKmEur
+        : tco.totalEstimatedCostPerKmEur;
+      return {
+        vehicleId: vid,
+        vehicleLabel: veh ? `${veh.brand} ${veh.model} (${veh.year})` : vid,
+        tripsCount: vTrips.length,
+        totalKm,
+        grossRevenueEur,
+        netEur,
+        eurPerKm: totalKm > 0 ? round2(grossRevenueEur / totalKm) : 0,
+        tcoPerKmEur: vTco,
+      };
+    })
+    .sort((a, b) => b.netEur - a.netEur);
+
   // 9. Metas & Projeção
-  const dailyTargetEur = params.routine.dailyNetTargetEur;
-  const weeklyTargetEur = round2(dailyTargetEur * 5);
-  const monthlyTargetEur = round2(dailyTargetEur * 22);
+  const dailyTargetEur = params.autoPilot.thresholds.dailyGoalEur ?? params.routine.dailyNetTargetEur;
+  const weeklyTargetEur = params.autoPilot.thresholds.weeklyGoalEur ?? round2(dailyTargetEur * 5);
+  const monthlyTargetEur = params.autoPilot.thresholds.monthlyGoalEur ?? round2(dailyTargetEur * 22);
   const periodTargetEur = round2(dailyTargetEur * Math.max(1, Math.min(22, period.daysCount)));
   const currentDailyEquivalentNetEur = round2(configuredNetEur / Math.max(1, period.daysCount));
   const progressPctOfPeriodTarget =
@@ -666,6 +715,7 @@ export function buildComprehensiveReports(params: {
       energyLoggedExpensesEur,
       totalKmInPeriod: summary.totalKm,
       emptyKmPct,
+      byVehicle,
     },
     goalsAndProjection: {
       dailyTargetEur,

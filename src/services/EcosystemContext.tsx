@@ -1,9 +1,11 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
-  analyzeProposal,
+  applyCaptureManualCorrection,
   computeFinancialSummary,
   evaluateAutoPilot,
   isCompletedTripStatus,
+  normalizeCanonicalStrategyMode,
+  parseAndNormalizeCaptureInput,
   reconcileCapturedEvent,
   round2,
 } from '../core/intelligence';
@@ -15,7 +17,23 @@ import {
   type ProposalAiDecisionPackage,
 } from '../core/aiCore';
 import {
+  INITIAL_BOLT_CONNECTOR,
+  INITIAL_UBER_CONNECTOR,
+  registerConnectorFailure,
+  runConnectorVerificationSuite,
+  syncConnectorWithServerEnv,
+  type ConnectorTestResult,
+  type PlatformConnectorState,
+} from '../core/connectors';
+import {
+  computeDriverDeactivatedPlatformsForLocation,
+  getValidatedPlatformsForLocation,
+  upsertPlatformCountryOperation,
+} from '../core/marketCatalog';
+import {
+  appendIdempotentLifecycleEvent,
   buildCancelledTripFromActiveSession,
+  createLifecycleAuditEvent,
   hasExistingLifecycleTrip,
   markTripArrivedAtPickup,
   startActiveTripFromProposal,
@@ -41,8 +59,19 @@ import {
   type ConsolidatedTachographSummary,
   type Rolling24hComplianceResult,
 } from '../core/tachograph';
-import { createDriverZoneObservation } from '../core/zones';
 import {
+  DEFAULT_VOICE_COPILOT_CONFIG,
+  buildLifecycleVoiceAnnouncement,
+  buildOperationalAlertVoiceAnnouncement,
+  buildProposalVoiceAnnouncement,
+  enqueueVoiceAnnouncement,
+  speakWithWebSpeech,
+  type VoiceAnnouncementItem,
+  type VoiceCopilotConfig,
+} from '../core/voiceCopilot';
+import { createDriverZoneObservation, createZoneRelocationLog } from '../core/zones';
+import {
+  DEFAULT_PERSISTED_VEHICLE_FILTERS,
   SEED_AI_PREDICTIONS,
   SEED_AUDIT_LOGS,
   SEED_AUTH_SESSION,
@@ -56,6 +85,7 @@ import {
   SEED_EVENTS,
   SEED_EXPENSES,
   SEED_FINANCIAL_COST_CONFIG,
+  SEED_LIFECYCLE_AUDIT_EVENTS,
   SEED_LOCALIZATION,
   SEED_NOTIFICATIONS,
   SEED_OBLIGATIONS,
@@ -65,6 +95,7 @@ import {
   SEED_PLANS,
   SEED_PLATFORMS,
   SEED_PROPOSALS,
+  SEED_REFERRAL_COUPONS,
   SEED_REMOTE_CONFIG,
   SEED_REVIEWS,
   SEED_ROUTINE_PREFS,
@@ -79,6 +110,7 @@ import {
   SEED_VEHICLES,
   SEED_VERSIONS,
   SEED_ZONE_OBSERVATIONS,
+  SEED_ZONE_RELOCATIONS,
   SEED_ZONES,
 } from '../data/seedData';
 import type {
@@ -195,16 +227,37 @@ export interface EcosystemState {
   activeTrip: ActiveTripSession | null;
   zoneObservations: DriverZoneObservation[];
   financialCostConfig: FinancialCostConfig;
-  reportFilters: {
-    preset: DateRangePreset;
-    customStart: string;
-    customEnd: string;
-    dataScope: DataScopeFilter;
-    platformId: string;
-    category: string;
-    tripStatusFilter: string;
-  };
-}
+    reportFilters: {
+      preset: DateRangePreset;
+      customStart: string;
+      customEnd: string;
+      dataScope: DataScopeFilter;
+      platformId: string;
+      vehicleId: string;
+      zone: string;
+      category: string;
+      tripStatusFilter: string;
+    };
+    // Comando 6 extensions
+    voiceConfig: VoiceCopilotConfig;
+    voiceHistory: VoiceAnnouncementItem[];
+    latestVisualVoiceBanner: VoiceAnnouncementItem | null;
+    connectors: {
+      uber: PlatformConnectorState;
+      bolt: PlatformConnectorState;
+    };
+    lifecycleAuditEvents: import('../models/types').LifecycleAuditEvent[];
+    zoneRelocationLogs: import('../models/types').ZoneRelocationLog[];
+    referralCoupons: import('../models/types').ReferralCouponRecord[];
+    vehicleCatalogFilters: import('../models/types').PersistedVehicleCatalogFilters;
+    floatingCardQuickHidden: boolean;
+    cmsPersistenceInfo: {
+      lastServerScope: 'global_published' | 'demo_sandbox_isolated' | 'local_only';
+      lastUpdatedAt: string | null;
+    };
+    serverSyncVersion: number;
+    syncConflictDetail: string | null;
+  }
 
 const STORAGE_KEY_DEMO = 'aivad_ecosystem_demo_v2';
 const STORAGE_KEY_REAL = 'aivad_ecosystem_real_v2';
@@ -229,7 +282,12 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
     activePortalPage: 'inicio',
     activeDriverUserId: 'usr-driver-1',
     activeAdminRole: 'Superadministrador',
-    driverDeactivatedPlatformIds: [],
+    driverDeactivatedPlatformIds: computeDriverDeactivatedPlatformsForLocation(
+      SEED_PLATFORMS,
+      SEED_LOCALIZATION.selectedMarketCode,
+      SEED_LOCALIZATION.currentLocation.region,
+      SEED_LOCALIZATION.currentLocation.city
+    ),
     platforms: SEED_PLATFORMS,
     vehicles: SEED_VEHICLES,
     trips: isReal ? [] : SEED_TRIPS,
@@ -275,9 +333,35 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
       customEnd: new Date().toISOString().slice(0, 10),
       dataScope: isReal ? 'real' : 'all',
       platformId: 'ALL',
+      vehicleId: 'ALL',
+      zone: 'ALL',
       category: 'ALL',
       tripStatusFilter: 'ALL',
     },
+    voiceConfig: DEFAULT_VOICE_COPILOT_CONFIG,
+    voiceHistory: [],
+    latestVisualVoiceBanner: null,
+    connectors: {
+      uber: {
+        ...INITIAL_UBER_CONNECTOR,
+        dataOriginTag: isReal ? 'Dados importados' : 'Dados simulados',
+      },
+      bolt: {
+        ...INITIAL_BOLT_CONNECTOR,
+        dataOriginTag: isReal ? 'Dados importados' : 'Dados simulados',
+      },
+    },
+    lifecycleAuditEvents: isReal ? [] : SEED_LIFECYCLE_AUDIT_EVENTS,
+    zoneRelocationLogs: isReal ? [] : SEED_ZONE_RELOCATIONS,
+    referralCoupons: SEED_REFERRAL_COUPONS,
+    vehicleCatalogFilters: { ...DEFAULT_PERSISTED_VEHICLE_FILTERS },
+    floatingCardQuickHidden: false,
+    cmsPersistenceInfo: {
+      lastServerScope: 'local_only',
+      lastUpdatedAt: null,
+    },
+    serverSyncVersion: 0,
+    syncConflictDetail: null,
   };
 }
 
@@ -287,9 +371,16 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
     parsed.countries && parsed.countries.length > 0 && 'marketStatus' in parsed.countries[0]
       ? parsed.countries
       : initial.countries;
+  const canonicalMode = normalizeCanonicalStrategyMode(parsed.autoPilot?.mode, parsed.autoPilot?.strategyMode);
   const mergedAutoPilot: AutoPilotConfig = {
     ...initial.autoPilot,
     ...(parsed.autoPilot ?? {}),
+    mode: canonicalMode,
+    strategyMode: canonicalMode,
+    thresholds: {
+      ...initial.autoPilot.thresholds,
+      ...(parsed.autoPilot?.thresholds ?? {}),
+    },
     modeConfigs: parsed.autoPilot?.modeConfigs ?? initial.autoPilot.modeConfigs,
     semiAutoBounds: parsed.autoPilot?.semiAutoBounds ?? initial.autoPilot.semiAutoBounds,
     savedPresets: parsed.autoPilot?.savedPresets ?? initial.autoPilot.savedPresets,
@@ -302,13 +393,27 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
     visibleSections: parsed.cms?.visibleSections ?? initial.cms.visibleSections,
     benefits: parsed.cms?.benefits ?? initial.cms.benefits,
     faqs: parsed.cms?.faqs ?? initial.cms.faqs,
+    navigationMenus: parsed.cms?.navigationMenus ?? initial.cms.navigationMenus,
+    pagesContent: parsed.cms?.pagesContent ?? initial.cms.pagesContent,
+    mediaAssets: parsed.cms?.mediaAssets ?? initial.cms.mediaAssets,
+    supportedLanguages: parsed.cms?.supportedLanguages ?? initial.cms.supportedLanguages,
+    localizedContent: parsed.cms?.localizedContent ?? initial.cms.localizedContent,
   };
+  const hydratedPlatforms =
+    parsed.platforms && parsed.platforms.length > 0 && parsed.platforms[0]?.countryOperations
+      ? parsed.platforms
+      : initial.platforms;
   return {
     ...initial,
     ...parsed,
-    session: parsed.session?.authenticated ? parsed.session : initial.session,
+    // Segurança PARTE V: localStorage NUNCA é usado como mecanismo de autenticação ou autorização
+    session: SEED_AUTH_SESSION,
+    platforms: hydratedPlatforms,
     rbacDeniedMessage: null,
-    driverDeactivatedPlatformIds: parsed.driverDeactivatedPlatformIds ?? initial.driverDeactivatedPlatformIds,
+    driverDeactivatedPlatformIds:
+      parsed.driverDeactivatedPlatformIds && parsed.driverDeactivatedPlatformIds.length > 0
+        ? parsed.driverDeactivatedPlatformIds
+        : initial.driverDeactivatedPlatformIds,
     savedPlaces: parsed.savedPlaces ?? initial.savedPlaces,
     routinePreferences: parsed.routinePreferences ?? initial.routinePreferences,
     aiPredictions: parsed.aiPredictions ?? initial.aiPredictions,
@@ -331,6 +436,29 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
       ...initial.reportFilters,
       ...(parsed.reportFilters ?? {}),
     },
+    voiceConfig: {
+      ...initial.voiceConfig,
+      ...(parsed.voiceConfig ?? {}),
+      categories: {
+        ...initial.voiceConfig.categories,
+        ...(parsed.voiceConfig?.categories ?? {}),
+      },
+    },
+    voiceHistory: parsed.voiceHistory ?? initial.voiceHistory,
+    latestVisualVoiceBanner: null,
+    connectors: {
+      uber: { ...initial.connectors.uber, ...(parsed.connectors?.uber ?? {}) },
+      bolt: { ...initial.connectors.bolt, ...(parsed.connectors?.bolt ?? {}) },
+    },
+    lifecycleAuditEvents: parsed.lifecycleAuditEvents ?? initial.lifecycleAuditEvents,
+    zoneRelocationLogs: parsed.zoneRelocationLogs ?? initial.zoneRelocationLogs,
+    referralCoupons: parsed.referralCoupons ?? initial.referralCoupons,
+    vehicleCatalogFilters: {
+      ...initial.vehicleCatalogFilters,
+      ...(parsed.vehicleCatalogFilters ?? {}),
+    },
+    floatingCardQuickHidden: Boolean(parsed.floatingCardQuickHidden),
+    cmsPersistenceInfo: parsed.cmsPersistenceInfo ?? initial.cmsPersistenceInfo,
   };
 }
 
@@ -381,6 +509,7 @@ interface EcosystemContextValue {
   enterDemoSandbox: (profile: 'driver' | 'admin') => Promise<{ ok: boolean; error?: string }>;
   loginAsRole: (role: UserRole, userId?: string) => void;
   logoutSession: () => void;
+  revokeCurrentServerSession: () => Promise<{ ok: boolean; revokedCount: number }>;
   clearRbacDenied: () => void;
   setTheme: (theme: ThemeMode) => void;
   toggleTheme: () => void;
@@ -389,7 +518,7 @@ interface EcosystemContextValue {
   setPortalPage: (page: string) => void;
   setAdminRole: (role: AdminRole) => void;
   resetDemoData: () => void;
-  syncNowToServer: () => Promise<{ ok: boolean; message: string }>;
+  syncNowToServer: (options?: { forceOverwrite?: boolean }) => Promise<{ ok: boolean; message: string; conflictDetected?: boolean }>;
   // Reports & Cost Config
   updateFinancialCostConfig: (patch: Partial<FinancialCostConfig>) => void;
   updateReportFilters: (patch: Partial<EcosystemState['reportFilters']>) => void;
@@ -502,12 +631,34 @@ interface EcosystemContextValue {
   createTicket: (ticket: { subject: string; category: TicketRecord['category']; priority: TicketRecord['priority']; message: string }) => void;
   replyToTicket: (ticketId: string, sender: 'Motorista' | 'Suporte', text: string, internalNote?: boolean) => void;
   updateTicketStatus: (ticketId: string, status: TicketRecord['status'], assignee?: string) => void;
-  // Admin Platform, Countries, Payments, Subscription, Compliance, CMS & Config Services
+  // Admin Platform, Countries, Organizations, Payments, Subscription, Compliance, CMS & Config Services
   updatePlatformStatus: (platformId: PlatformId, status: PlatformStatus) => void;
   addPlatform: (platform: Omit<PlatformRecord, 'isDemo'>) => void;
+  updatePlatformCountryOperation: (
+    platformId: PlatformId,
+    countryCode: string,
+    patch: {
+      operationalStatus: import('../models/types').PlatformCountryOperationalStatus;
+      preselectForDrivers?: boolean;
+      regions?: string[];
+      cities?: string[];
+      licensingNote?: string;
+      validationSource: string;
+      changeNote?: string;
+    }
+  ) => void;
   addCountryMarket: (country: CountryMarketConfig) => void;
   updateCountryMarketStatus: (countryCode: string, status: MarketStatus) => void;
   addRegionOrCityToCountry: (countryCode: string, regionName: string, cityName: string) => void;
+  createOrganization: (input: {
+    name: string;
+    type: import('../models/types').OrganizationType;
+    countryCode: string;
+    taxId: string;
+    driversCount?: number;
+    vehiclesCount?: number;
+  }) => Promise<{ ok: boolean; error?: string }>;
+  assignUserOrganization: (userId: string, organizationId: string | null) => void;
   addPaymentTransaction: (payment: Omit<PaymentTransactionRecord, 'id' | 'createdAt'>) => void;
   validateLegislation: (obligationId: string, newStatus: ComplianceObligation['status']) => void;
   addLegislation: (obligation: Omit<ComplianceObligation, 'id' | 'isDemo'>) => void;
@@ -521,6 +672,51 @@ interface EcosystemContextValue {
   broadcastNotification: (title: string, body: string, targetUserId: string | 'ALL', category: NotificationRecord['category']) => void;
   toggleRemoteFlag: (flag: string) => void;
   updateDriverPrivacyConsent: (consent: boolean) => void;
+  // Comando 6 Actions
+  updateVoiceCopilotConfig: (patch: Partial<VoiceCopilotConfig>) => void;
+  triggerVoiceAnnouncement: (
+    draft: Pick<VoiceAnnouncementItem, 'category' | 'priority' | 'shortText' | 'fullText' | 'dedupHash'>
+  ) => { spoken: boolean; suppressedByCooldown: boolean };
+  dismissVisualVoiceBanner: () => void;
+  runConnectorTest: (connectorId: 'uber' | 'bolt', level: 1 | 2 | 3) => ConnectorTestResult;
+  updateConnectorPermissions: (
+    connectorId: 'uber' | 'bolt',
+    patch: { readCapturePermissionGranted?: boolean; externalControlPermissionGranted?: boolean }
+  ) => void;
+  simulateConnectorDisconnection: (connectorId: 'uber' | 'bolt', reason: string) => void;
+  parseAndImportSmartCaptures: (params: {
+    rawInput: string;
+    format: 'ocr_or_notification' | 'csv' | 'json';
+    defaultPlatformId?: PlatformId;
+    source?: CaptureSource;
+  }) => { importedCount: number; duplicatesCount: number; message: string };
+  correctSmartCaptureRecord: (
+    captureId: string,
+    patch: { amountEur?: number; platformId?: PlatformId; destinationZone?: string; category?: string },
+    reason: string
+  ) => { ok: boolean; error?: string };
+  overrideProposalAutoPilotDecision: (
+    proposalId: string,
+    overrideChoice: 'Aceite manualmente' | 'Recusado manualmente',
+    overrideReason: string
+  ) => void;
+  logZoneRelocation: (params: {
+    zoneId?: string;
+    fromZone: string;
+    targetZone: string;
+    suggestedReason: string;
+    destinationNotes?: string;
+  }) => void;
+  completeZoneRelocationOutcome: (
+    relocationId: string,
+    outcome: 'Corrida obtida na zona' | 'Sem corrida (reposicionado)' | 'Cancelado',
+    waitMinutesUntilRide?: number
+  ) => void;
+  updateVehicleCatalogFilters: (patch: Partial<import('../models/types').PersistedVehicleCatalogFilters>) => void;
+  resetVehicleCatalogFilters: () => void;
+  setFloatingCardQuickHidden: (hidden: boolean) => void;
+  addReferralCoupon: (coupon: Omit<import('../models/types').ReferralCouponRecord, 'id' | 'currentRedemptions' | 'billingExecutionState'>) => void;
+  toggleReferralCouponActive: (couponId: string) => void;
 }
 
 const EcosystemContext = createContext<EcosystemContextValue | null>(null);
@@ -528,7 +724,7 @@ const EcosystemContext = createContext<EcosystemContextValue | null>(null);
 export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<EcosystemState>(loadInitialUnauthenticatedState);
 
-  // Restore server cookie session & shared zone observations on boot
+  // Restore server cookie session, shared zone observations & server-published CMS on boot
   useEffect(() => {
     let cancelled = false;
     fetch('/api/auth/session', { credentials: 'include' })
@@ -565,6 +761,61 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // Offline / Vite-only fallback
       });
 
+    fetch('/api/cms/public', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok || !data?.cms || typeof data.cms !== 'object') return;
+        setState((prev) => ({
+          ...prev,
+          cms: {
+            ...prev.cms,
+            ...(data.cms as Partial<CmsContentState>),
+            draftSnapshot: data.draft ? (data.draft as CmsContentState['draftSnapshot']) : prev.cms.draftSnapshot,
+          },
+          cmsPersistenceInfo: {
+            lastServerScope: data.scope === 'demo_sandbox_isolated' ? 'demo_sandbox_isolated' : 'global_published',
+            lastUpdatedAt: data.updatedAt ?? null,
+          },
+        }));
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    fetch('/api/catalog/public', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setState((prev) => {
+          const nextCountries = Array.isArray(data.countries) ? data.countries : prev.countries;
+          const nextPlatforms = Array.isArray(data.platforms) ? data.platforms : prev.platforms;
+          return {
+            ...prev,
+            countries: nextCountries,
+            platforms: nextPlatforms,
+          };
+        });
+      })
+      .catch(() => {
+        // ignore
+      });
+
+    fetch('/api/connectors/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        setState((prev) => ({
+          ...prev,
+          connectors: {
+            uber: syncConnectorWithServerEnv(prev.connectors.uber, Boolean(data.uber?.serverVaultConfigured)),
+            bolt: syncConnectorWithServerEnv(prev.connectors.bolt, Boolean(data.bolt?.serverVaultConfigured)),
+          },
+        }));
+      })
+      .catch(() => {
+        // ignore
+      });
+
     fetch('/api/zones/observations')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -587,17 +838,18 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   }, []);
 
-  // Persist Demo vs Real states in strictly separated storage keys
+  // Persist Demo vs Real operational cache in strictly separated storage keys (NEVER storing authenticated session)
   useEffect(() => {
     try {
+      const sanitizedForCache = { ...state, session: SEED_AUTH_SESSION };
       if (!state.session.authenticated) {
-        localStorage.setItem(STORAGE_KEY_DEMO, JSON.stringify({ ...state, session: SEED_AUTH_SESSION }));
+        localStorage.setItem(STORAGE_KEY_DEMO, JSON.stringify(sanitizedForCache));
         return;
       }
       const key = state.session.isDemoSession
         ? STORAGE_KEY_DEMO
         : `${STORAGE_KEY_REAL}_${state.session.userId}`;
-      localStorage.setItem(key, JSON.stringify(state));
+      localStorage.setItem(key, JSON.stringify(sanitizedForCache));
     } catch {
       // Ignore storage quota errors
     }
@@ -1042,6 +1294,28 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }));
     },
 
+    revokeCurrentServerSession: async () => {
+      try {
+        const res = await fetch('/api/auth/sessions/revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ revokeAllForUser: true }),
+        });
+        const data = await res.json();
+        setState((prev) => ({
+          ...prev,
+          mode: 'portal',
+          rbacDeniedMessage: null,
+          session: SEED_AUTH_SESSION,
+          activeTrip: null,
+        }));
+        return { ok: Boolean(res.ok && data?.ok), revokedCount: Number(data?.revokedCount ?? 0) };
+      } catch {
+        return { ok: false, revokedCount: 0 };
+      }
+    },
+
     clearRbacDenied: () => setState((prev) => ({ ...prev, rbacDeniedMessage: null })),
     setTheme: (theme) => setState((prev) => ({ ...prev, theme })),
     toggleTheme: () =>
@@ -1070,12 +1344,27 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }));
     },
 
-    syncNowToServer: async () => {
+    syncNowToServer: async (options) => {
       if (!state.session.authenticated) {
         return { ok: false, message: 'Inicie sessão para sincronizar com o servidor.' };
       }
-      setState((prev) => ({ ...prev, syncStatus: 'pendente' }));
+      setState((prev) => ({ ...prev, syncStatus: 'pendente', syncConflictDetail: null }));
       try {
+        if (state.tachograph.offlineQueue.length > 0) {
+          await fetch('/api/sync/offline-replay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              operations: state.tachograph.offlineQueue.map((item) => ({
+                idempotencyKey: item.idempotencyKey,
+                operationType: `TACHOGRAPH_${item.actionType}`,
+                payload: item,
+              })),
+            }),
+          }).catch(() => undefined);
+        }
+
         const key = `sync:${state.session.userId}:${Date.now()}`;
         const res = await fetch('/api/sync/push', {
           method: 'POST',
@@ -1083,6 +1372,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           credentials: 'include',
           body: JSON.stringify({
             idempotencyKey: key,
+            baseVersion: state.serverSyncVersion > 0 ? state.serverSyncVersion : undefined,
+            forceOverwrite: Boolean(options?.forceOverwrite),
             state: {
               tripsCount: state.trips.length,
               expensesCount: state.expenses.length,
@@ -1092,6 +1383,17 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }),
         });
         const data = await res.json();
+        if (res.status === 409 && data?.conflictDetected) {
+          const conflictMsg =
+            data.error ||
+            `Conflito de versão detetado: servidor em v${data.serverVersion}. Resolva ou force sincronização.`;
+          setState((prev) => ({
+            ...prev,
+            syncStatus: 'erro',
+            syncConflictDetail: conflictMsg,
+          }));
+          return { ok: false, message: conflictMsg, conflictDetected: true };
+        }
         if (!res.ok || !data?.ok) {
           setState((prev) => ({ ...prev, syncStatus: 'erro' }));
           return { ok: false, message: data?.error || 'Falha de sincronização no servidor.' };
@@ -1100,6 +1402,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ...prev,
           syncStatus: 'sincronizado',
           lastSyncedAt: data.updatedAt,
+          serverSyncVersion: Number(data.version ?? prev.serverSyncVersion + 1),
+          syncConflictDetail: null,
         }));
         return { ok: true, message: `Sincronizado com servidor (v${data.version}).` };
       } catch {
@@ -1133,26 +1437,40 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         aiRecommendation: aiRec,
       });
       const now = new Date().toISOString();
-      setState((prev) => ({
-        ...prev,
-        activeTrip: sessionTrip,
-        proposals: prev.proposals.map((p) =>
-          p.id === proposal.id
-            ? {
-                ...p,
-                lifecycleState: 'Aceite pelo motorista',
-                stateTimestamps: { ...p.stateTimestamps, 'Aceite pelo motorista': now },
-              }
-            : p
-        ),
-        auditLogs: pushAudit(
-          prev,
-          'Aceitação de Proposta',
-          proposal.id,
-          `Iniciada deslocação para recolha (${proposal.input.platformId.toUpperCase()}). Espera ainda a 0s.`,
-          prev.activeDriverUserId
-        ),
-      }));
+      const lceStart = createLifecycleAuditEvent({
+        eventType: 'Viagem iniciada',
+        originPlatform: proposal.input.platformId,
+        previousState: proposal.lifecycleState,
+        currentState: 'Em deslocação para recolha',
+        changeOrigin: 'Motorista',
+        associatedEntityId: proposal.id,
+        associatedPayloadSummary: `Aceite proposta ${proposal.input.platformId.toUpperCase()} (€${proposal.input.grossValueEur.toFixed(2)}) — cronómetro de espera a 0s.`,
+        isDemo: Boolean(state.session.isDemoSession),
+      });
+      setState((prev) => {
+        const nextLce = appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lceStart).updated;
+        return {
+          ...prev,
+          activeTrip: sessionTrip,
+          lifecycleAuditEvents: nextLce,
+          proposals: prev.proposals.map((p) =>
+            p.id === proposal.id
+              ? {
+                  ...p,
+                  lifecycleState: 'Aceite pelo motorista',
+                  stateTimestamps: { ...p.stateTimestamps, 'Aceite pelo motorista': now },
+                }
+              : p
+          ),
+          auditLogs: pushAudit(
+            prev,
+            'Aceitação de Proposta',
+            proposal.id,
+            `Iniciada deslocação para recolha (${proposal.input.platformId.toUpperCase()}). Espera ainda a 0s.`,
+            prev.activeDriverUserId
+          ),
+        };
+      });
       return { ok: true };
     },
 
@@ -1172,27 +1490,74 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     markActiveTripArrived: (method, startWaitImmediately = true) =>
       setState((prev) => {
         if (!prev.activeTrip) return prev;
+        const updated = markTripArrivedAtPickup(prev.activeTrip, method, startWaitImmediately);
+        const lce = createLifecycleAuditEvent({
+          eventType: 'Chegada à recolha',
+          originPlatform: prev.activeTrip.platformId,
+          previousState: prev.activeTrip.phase,
+          currentState: updated.phase,
+          changeOrigin: 'Motorista',
+          associatedEntityId: prev.activeTrip.id,
+          associatedPayloadSummary: `Chegada registada via ${method} (${startWaitImmediately ? 'espera iniciada' : 'aguarda início manual de espera'}).`,
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
+        const vDraft = buildLifecycleVoiceAnnouncement(
+          updated.phase,
+          prev.activeTrip.platformId,
+          `Espera gratuita até ${prev.activeTrip.ruleApplied.freeWaitMinutes} minutos.`
+        );
+        const vRes = enqueueVoiceAnnouncement(prev.voiceHistory, vDraft, prev.voiceConfig);
+        if (vRes.accepted && vRes.shouldSpeakAudio && vRes.item) {
+          speakWithWebSpeech(vRes.item.spokenText, prev.voiceConfig);
+        }
         return {
           ...prev,
-          activeTrip: markTripArrivedAtPickup(prev.activeTrip, method, startWaitImmediately),
+          activeTrip: updated,
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
+          voiceHistory: vRes.updatedHistory,
+          latestVisualVoiceBanner: vRes.accepted && vRes.shouldShowVisual ? vRes.item : prev.latestVisualVoiceBanner,
         };
       }),
 
     startActiveTripWait: () =>
       setState((prev) => {
         if (!prev.activeTrip) return prev;
+        const updated = startTripPassengerWait(prev.activeTrip);
+        const lce = createLifecycleAuditEvent({
+          eventType: 'Espera',
+          originPlatform: prev.activeTrip.platformId,
+          previousState: prev.activeTrip.phase,
+          currentState: updated.phase,
+          changeOrigin: 'Motorista',
+          associatedEntityId: prev.activeTrip.id,
+          associatedPayloadSummary: 'Cronómetro de espera no local de recolha iniciado sem sobreposição com deslocação.',
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
         return {
           ...prev,
-          activeTrip: startTripPassengerWait(prev.activeTrip),
+          activeTrip: updated,
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
         };
       }),
 
     startActiveTripInProgress: () =>
       setState((prev) => {
         if (!prev.activeTrip) return prev;
+        const updated = startTripInProgress(prev.activeTrip);
+        const lce = createLifecycleAuditEvent({
+          eventType: 'Viagem iniciada',
+          originPlatform: prev.activeTrip.platformId,
+          previousState: prev.activeTrip.phase,
+          currentState: updated.phase,
+          changeOrigin: 'Motorista',
+          associatedEntityId: prev.activeTrip.id,
+          associatedPayloadSummary: 'Passageiro a bordo — viagem em curso.',
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
         return {
           ...prev,
-          activeTrip: startTripInProgress(prev.activeTrip),
+          activeTrip: updated,
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
         };
       }),
 
@@ -1263,10 +1628,23 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isDemo: Boolean(state.session.isDemoSession),
       };
 
+      const lceDone = createLifecycleAuditEvent({
+        eventType: 'Viagem concluída',
+        originPlatform: sess.platformId,
+        previousState: sess.phase,
+        currentState: 'Concluída',
+        changeOrigin: 'Motorista',
+        associatedEntityId: trip.id,
+        associatedPayloadSummary: `Viagem ${trip.externalRef} concluída (€${trip.grossEur.toFixed(2)} bruto · €${trip.netEur.toFixed(2)} líquido).`,
+        idempotencyKey: `lce:done:${sess.id}`,
+        isDemo: Boolean(state.session.isDemoSession),
+      });
+
       setState((prev) => ({
         ...prev,
         activeTrip: null,
         trips: [trip, ...prev.trips],
+        lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lceDone).updated,
         proposals: sess.proposalId
           ? prev.proposals.map((p) =>
               p.id === sess.proposalId
@@ -1310,10 +1688,22 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         commissionPct: plat?.commissionPct ?? 25,
       });
       const nowIso = new Date().toISOString();
+      const lceCanc = createLifecycleAuditEvent({
+        eventType: 'Cancelamento',
+        originPlatform: cancelledTrip.platformId,
+        previousState: state.activeTrip.phase,
+        currentState: cancelledTrip.status,
+        changeOrigin: 'Motorista',
+        associatedEntityId: cancelledTrip.id,
+        associatedPayloadSummary: `${cancelledTrip.status} (${cancellationBy}): ${reason} · Taxa €${compensationEur.toFixed(2)}`,
+        idempotencyKey: `lce:canc:${state.activeTrip.id}`,
+        isDemo: Boolean(state.session.isDemoSession),
+      });
       setState((prev) => ({
         ...prev,
         activeTrip: null,
         trips: [cancelledTrip, ...prev.trips],
+        lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lceCanc).updated,
         proposals: prev.activeTrip?.proposalId
           ? prev.proposals.map((p) =>
               p.id === prev.activeTrip!.proposalId
@@ -1442,8 +1832,29 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           resolvedRegion,
           prev.countries
         );
+        // PARTE II: pré-selecionar apenas plataformas com operação validada nesta localização
+        const validatedPlatforms = getValidatedPlatformsForLocation(
+          prev.platforms,
+          countryCode,
+          resolvedRegion,
+          city
+        );
+        const deactivatedForLoc = computeDriverDeactivatedPlatformsForLocation(
+          prev.platforms,
+          countryCode,
+          resolvedRegion,
+          city
+        );
         return {
           ...prev,
+          driverDeactivatedPlatformIds: deactivatedForLoc,
+          autoPilot: {
+            ...prev.autoPilot,
+            thresholds: {
+              ...prev.autoPilot.thresholds,
+              allowedPlatforms: validatedPlatforms,
+            },
+          },
           localization: {
             ...evalRes.nextProfile,
             currentLocation: {
@@ -1456,9 +1867,9 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             idempotencyKey: `loc_manual:${countryCode}:${city}:${Date.now()}`,
             type: 'LOCATION_UPDATED',
             source: 'Localization Selector',
-            target: 'Localization Profile (History Preserved)',
+            target: 'Localization Profile (Validated Platforms Preselected)',
             userId: prev.activeDriverUserId,
-            payloadSummary: `Localização atual definida para ${city} (${country?.name ?? countryCode}). Moedas anteriores preservadas.`,
+            payloadSummary: `Localização definida para ${city} (${country?.name ?? countryCode}). Pré-selecionadas apenas plataformas validadas: ${validatedPlatforms.join(', ') || 'nenhuma'}.`,
           }),
         };
       });
@@ -1469,16 +1880,36 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const candidate = countryCode ?? prev.localization.currentLocation.countryCode;
         const targetCode = candidate === 'UNSET' ? prev.localization.primaryProfessionalMarketCode : candidate;
         const nextLoc = confirmLocalMarketAdaptation(prev.localization, targetCode, prev.countries);
+        const validatedPlatforms = getValidatedPlatformsForLocation(
+          prev.platforms,
+          targetCode,
+          nextLoc.currentLocation.region,
+          nextLoc.currentLocation.city
+        );
+        const deactivatedForLoc = computeDriverDeactivatedPlatformsForLocation(
+          prev.platforms,
+          targetCode,
+          nextLoc.currentLocation.region,
+          nextLoc.currentLocation.city
+        );
         return {
           ...prev,
+          driverDeactivatedPlatformIds: deactivatedForLoc,
+          autoPilot: {
+            ...prev.autoPilot,
+            thresholds: {
+              ...prev.autoPilot.thresholds,
+              allowedPlatforms: validatedPlatforms,
+            },
+          },
           localization: nextLoc,
           events: pushEvent(prev, {
             idempotencyKey: `market_confirm:${targetCode}:${Date.now()}`,
             type: 'LOCATION_UPDATED',
             source: 'Localization Confirmation',
-            target: 'UI Currency · Units · Compliance · Platforms',
+            target: 'UI Currency · Units · Compliance · Validated Platforms',
             userId: prev.activeDriverUserId,
-            payloadSummary: `Experiência local adaptada para ${targetCode} (${nextLoc.languageCode}, ${nextLoc.unitSystem}).`,
+            payloadSummary: `Experiência local adaptada para ${targetCode} (${nextLoc.languageCode}, ${nextLoc.unitSystem}). Plataformas ativas validadas: ${validatedPlatforms.join(', ') || 'nenhuma'}.`,
           }),
         };
       });
@@ -1521,6 +1952,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         countryCode: activeMarket.code,
         city: state.localization.currentLocation.city,
         notes,
+        isDemo: Boolean(state.session.isDemoSession),
       });
       if (!res.ok) return { ok: false, error: res.error };
 
@@ -1635,26 +2067,53 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         calibratedPredictions: driverPredictions,
         completedTripsCount: activeDriverTrips.filter((t) => isCompletedTripStatus(t.status)).length,
       });
+      const connectorPerm =
+        input.platformId === 'uber'
+          ? state.connectors.uber.externalControlPermissionGranted
+          : input.platformId === 'bolt'
+            ? state.connectors.bolt.externalControlPermissionGranted
+            : false;
+      const effectiveAutoPilot: AutoPilotConfig = {
+        ...state.autoPilot,
+        officialAutomationAuthorized: state.autoPilot.officialAutomationAuthorized || connectorPerm,
+        authorizedExecutionChannel: connectorPerm
+          ? 'Bridge Nativo Autorizado'
+          : state.autoPilot.officialAutomationAuthorized
+            ? 'API Oficial Autorizada'
+            : state.autoPilot.authorizedExecutionChannel ?? 'Nenhum',
+      };
       const decision = evaluateAutoPilot(
         id,
         input,
         aiPackage.analysis,
-        state.autoPilot,
+        effectiveAutoPilot,
         state.campaigns
       );
       const now = new Date().toISOString();
       const isSandbox = Boolean(options?.isSimulatedSandbox);
       const isDemoRecord = Boolean(state.session.isDemoSession);
+
+      // Se o modo Automático executou automaticamente a decisão via canal autorizado:
+      const autoAccepted = Boolean(decision.executedAutomatically && decision.action === 'Executado automaticamente: Aceitar');
+      const autoRejected = Boolean(decision.executedAutomatically && decision.action === 'Executado automaticamente: Recusar');
+      const initialLifecycleState: ProposalLifecycleState = autoAccepted
+        ? 'Aceite pelo motorista'
+        : autoRejected
+          ? 'Recusada'
+          : 'Apresentada';
+
       const record: ProposalRecord = {
         id,
         createdAt: now,
         input: { ...input, id },
         analysis: aiPackage.analysis,
-        lifecycleState: 'Apresentada',
+        lifecycleState: initialLifecycleState,
         stateTimestamps: {
           Capturada: now,
           Analisada: now,
           Apresentada: now,
+          ...(autoAccepted ? { 'Aceite pelo motorista': now } : {}),
+          ...(autoRejected ? { Recusada: now } : {}),
         },
         autoPilotDecision: decision,
         source,
@@ -1679,11 +2138,90 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           learningNote: `Recomendação: ${aiPackage.recommendedAction} (confiança: ${confTxt}).`,
           epistemicTag: 'Previsão',
         };
-        setState((prev) => ({
-          ...prev,
-          proposals: [record, ...prev.proposals],
-          aiPredictions: [pred, ...prev.aiPredictions].slice(0, 60),
-        }));
+
+        const lceRecv = createLifecycleAuditEvent({
+          eventType: 'Proposta recebida',
+          originPlatform: input.platformId,
+          previousState: 'Nenhuma',
+          currentState: 'Capturada',
+          changeOrigin: source === 'Manual' ? 'Motorista' : 'Smart Capture',
+          associatedEntityId: id,
+          associatedPayloadSummary: `${input.platformId.toUpperCase()} ${input.category} · €${input.grossValueEur.toFixed(2)}`,
+          idempotencyKey: `lce:recv:${id}`,
+          isDemo: isDemoRecord,
+        });
+        const lceAnlz = createLifecycleAuditEvent({
+          eventType: 'Proposta analisada',
+          originPlatform: input.platformId,
+          previousState: 'Capturada',
+          currentState: `Sinal ${aiPackage.analysis.classification.toUpperCase()} (${decision.action})`,
+          changeOrigin:
+            decision.modeAtDecision === 'Automático'
+              ? 'AutoPilot Automático'
+              : decision.modeAtDecision === 'Semiautomático'
+                ? 'AutoPilot Semiautomático'
+                : 'Sistema',
+          associatedEntityId: id,
+          associatedPayloadSummary: `€${aiPackage.analysis.eurPerKm.toFixed(2)}/km · €${aiPackage.analysis.eurPerHour.toFixed(2)}/h · Score ${aiPackage.analysis.score}`,
+          idempotencyKey: `lce:anlz:${id}`,
+          isDemo: isDemoRecord,
+        });
+
+        setState((prev) => {
+          let nextActiveTrip = prev.activeTrip;
+          let lceList = appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lceRecv).updated;
+          lceList = appendIdempotentLifecycleEvent(lceList, lceAnlz).updated;
+
+          if (autoAccepted && !prev.activeTrip) {
+            nextActiveTrip = startActiveTripFromProposal({
+              proposal: record,
+              countryCode: activeMarket.code,
+              aiRecommendation: 'Aceitar',
+              nowIso: now,
+            });
+            const lceAutoExec = createLifecycleAuditEvent({
+              eventType: 'Aceitação / Rejeição',
+              originPlatform: input.platformId,
+              previousState: 'Apresentada',
+              currentState: 'Aceite automaticamente',
+              changeOrigin: 'AutoPilot Automático',
+              associatedEntityId: id,
+              associatedPayloadSummary: `Executado automaticamente via ${decision.executionChannelUsed}.`,
+              idempotencyKey: `lce:autoacc:${id}`,
+              isDemo: isDemoRecord,
+            });
+            lceList = appendIdempotentLifecycleEvent(lceList, lceAutoExec).updated;
+          } else if (autoRejected) {
+            const lceAutoRej = createLifecycleAuditEvent({
+              eventType: 'Aceitação / Rejeição',
+              originPlatform: input.platformId,
+              previousState: 'Apresentada',
+              currentState: 'Recusada automaticamente',
+              changeOrigin: 'AutoPilot Automático',
+              associatedEntityId: id,
+              associatedPayloadSummary: `Recusada automaticamente via ${decision.executionChannelUsed}.`,
+              idempotencyKey: `lce:autorej:${id}`,
+              isDemo: isDemoRecord,
+            });
+            lceList = appendIdempotentLifecycleEvent(lceList, lceAutoRej).updated;
+          }
+
+          const voiceDraft = buildProposalVoiceAnnouncement(input, aiPackage.analysis, decision.action);
+          const vRes = enqueueVoiceAnnouncement(prev.voiceHistory, voiceDraft, prev.voiceConfig, now);
+          if (vRes.accepted && vRes.shouldSpeakAudio && vRes.item) {
+            speakWithWebSpeech(vRes.item.spokenText, prev.voiceConfig);
+          }
+
+          return {
+            ...prev,
+            activeTrip: nextActiveTrip,
+            proposals: [record, ...prev.proposals],
+            aiPredictions: [pred, ...prev.aiPredictions].slice(0, 60),
+            lifecycleAuditEvents: lceList,
+            voiceHistory: vRes.updatedHistory,
+            latestVisualVoiceBanner: vRes.accepted && vRes.shouldShowVisual ? vRes.item : prev.latestVisualVoiceBanner,
+          };
+        });
       }
       return { record, aiPackage };
     },
@@ -1847,7 +2385,10 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     updateAutoPilotConfig: (patch) =>
       setState((prev) => {
-        const curStrategyMode: StrategyMode = prev.autoPilot.strategyMode ?? 'Semiautomático';
+        const nextCanonical = normalizeCanonicalStrategyMode(
+          patch.mode ?? prev.autoPilot.mode,
+          patch.strategyMode ?? prev.autoPilot.strategyMode
+        );
         const nextThresholds = patch.thresholds ?? prev.autoPilot.thresholds;
         const nextModeConfigs = {
           ...(prev.autoPilot.modeConfigs ?? {
@@ -1855,21 +2396,23 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             Semiautomático: prev.autoPilot.thresholds,
             Automático: prev.autoPilot.thresholds,
           }),
-          [curStrategyMode]: nextThresholds,
+          [nextCanonical]: nextThresholds,
         };
         return {
           ...prev,
           autoPilot: {
             ...prev.autoPilot,
             ...patch,
+            mode: nextCanonical,
+            strategyMode: nextCanonical,
             thresholds: nextThresholds,
             modeConfigs: patch.modeConfigs ?? nextModeConfigs,
           },
           auditLogs: pushAudit(
             prev,
             'Configuração Estratégia',
-            'Estratégia das Aplicações',
-            `Modo: ${patch.strategyMode ?? curStrategyMode}`,
+            'AutoPilot Unificado',
+            `Modo: ${nextCanonical}`,
             prev.activeDriverUserId
           ),
         };
@@ -1877,8 +2420,6 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     setStrategyMode: (mode) =>
       setState((prev) => {
-        const mappedAutoPilot =
-          mode === 'Manual' ? 'Manual' : mode === 'Automático' ? 'Automático' : 'Assistido';
         const modeConfigs = prev.autoPilot.modeConfigs ?? {
           Manual: prev.autoPilot.thresholds,
           Semiautomático: prev.autoPilot.thresholds,
@@ -1890,14 +2431,14 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           autoPilot: {
             ...prev.autoPilot,
             strategyMode: mode,
-            mode: mappedAutoPilot,
+            mode,
             thresholds: { ...targetThresholds },
             modeConfigs,
           },
           auditLogs: pushAudit(
             prev,
             'Mudança Modo Estratégia',
-            'Estratégia',
+            'AutoPilot Unificado',
             `Alterado para ${mode}`,
             prev.activeDriverUserId
           ),
@@ -1908,7 +2449,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setState((prev) => {
         const cleanName = name.trim();
         if (!cleanName) return prev;
-        const curMode: StrategyMode = prev.autoPilot.strategyMode ?? 'Semiautomático';
+        const curMode: StrategyMode = normalizeCanonicalStrategyMode(prev.autoPilot.mode, prev.autoPilot.strategyMode);
         const newPreset = {
           id: `preset-${Date.now()}`,
           name: cleanName,
@@ -1930,18 +2471,12 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setState((prev) => {
         const preset = (prev.autoPilot.savedPresets ?? []).find((p) => p.id === presetId);
         if (!preset) return prev;
-        const mappedAutoPilot =
-          preset.mode === 'Manual'
-            ? 'Manual'
-            : preset.mode === 'Automático'
-            ? 'Automático'
-            : 'Assistido';
         return {
           ...prev,
           autoPilot: {
             ...prev.autoPilot,
             strategyMode: preset.mode,
-            mode: mappedAutoPilot,
+            mode: preset.mode,
             thresholds: { ...preset.thresholds },
             semiAutoBounds: preset.semiAutoBounds ?? prev.autoPilot.semiAutoBounds,
             modeConfigs: {
@@ -2272,7 +2807,14 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       getPlatformLifecycleStateHelper(platformId, state.platforms, state.driverDeactivatedPlatformIds),
 
     captureExternalEvent: (payload) => {
-      const outcome = reconcileCapturedEvent(payload, state.captures, state.trips);
+      const outcome = reconcileCapturedEvent(
+        {
+          ...payload,
+          isDemo: Boolean(state.session.isDemoSession),
+        },
+        state.captures,
+        state.trips
+      );
       setState((prev) => {
         const nextTrips = outcome.updatedTrip
           ? prev.trips.map((t) => (t.id === outcome.updatedTrip!.id ? outcome.updatedTrip! : t))
@@ -2679,9 +3221,17 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             }
           : null;
 
+        const nextPlatforms = prev.platforms.map((p) => (p.id === platformId ? { ...p, status } : p));
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: prev.countries, platforms: nextPlatforms }),
+        }).catch(() => undefined);
+
         return {
           ...prev,
-          platforms: prev.platforms.map((p) => (p.id === platformId ? { ...p, status } : p)),
+          platforms: nextPlatforms,
           notifications: notif ? [notif, ...prev.notifications] : prev.notifications,
           events: pushEvent(prev, {
             idempotencyKey: `platform_status:${platformId}:${status}:${Date.now()}`,
@@ -2696,46 +3246,117 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }),
 
     addPlatform: (platform) =>
-      setState((prev) => ({
-        ...prev,
-        platforms: [...prev.platforms, { ...platform, isDemo: true }],
-        auditLogs: pushAudit(prev, 'Nova Plataforma', platform.name, `Adicionada ao catálogo (${platform.status})`),
-      })),
+      setState((prev) => {
+        const nextPlatforms = [...prev.platforms, { ...platform, isDemo: true }];
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: prev.countries, platforms: nextPlatforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          platforms: nextPlatforms,
+          auditLogs: pushAudit(prev, 'Nova Plataforma', platform.name, `Adicionada ao catálogo (${platform.status})`),
+        };
+      }),
+
+    updatePlatformCountryOperation: (platformId, countryCode, patch) =>
+      setState((prev) => {
+        const nextPlatforms = prev.platforms.map((p) =>
+          p.id === platformId ? upsertPlatformCountryOperation(p, countryCode, patch) : p
+        );
+        const validatedForCountry = getValidatedPlatformsForLocation(nextPlatforms, countryCode);
+        const nextCountries = prev.countries.map((c) =>
+          c.code.toUpperCase() === countryCode.toUpperCase()
+            ? { ...c, activePlatforms: validatedForCountry }
+            : c
+        );
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: nextPlatforms }),
+        }).catch(() => undefined);
+
+        const isCurrentDriverCountry =
+          prev.localization.selectedMarketCode.toUpperCase() === countryCode.toUpperCase();
+        const nextDeactivated = isCurrentDriverCountry
+          ? computeDriverDeactivatedPlatformsForLocation(
+              nextPlatforms,
+              prev.localization.selectedMarketCode,
+              prev.localization.currentLocation.region,
+              prev.localization.currentLocation.city
+            )
+          : prev.driverDeactivatedPlatformIds;
+
+        return {
+          ...prev,
+          platforms: nextPlatforms,
+          countries: nextCountries,
+          driverDeactivatedPlatformIds: nextDeactivated,
+          auditLogs: pushAudit(
+            prev,
+            'Operação Plataforma por País',
+            `${platformId.toUpperCase()} (${countryCode.toUpperCase()})`,
+            `Estado local -> ${patch.operationalStatus} | Fonte: ${patch.validationSource}`
+          ),
+        };
+      }),
 
     addCountryMarket: (country) =>
-      setState((prev) => ({
-        ...prev,
-        countries: [country, ...prev.countries],
-        events: pushEvent(prev, {
-          idempotencyKey: `market_added:${country.code}:${Date.now()}`,
-          type: 'MARKET_STATUS_CHANGED',
-          source: 'Admin International Markets',
-          target: 'Portal · Localization · Compliance',
-          userId: 'ADMIN',
-          payloadSummary: `País ${country.name} (${country.code}) adicionado com estado "${country.marketStatus}".`,
-        }),
-        auditLogs: pushAudit(prev, 'Novo Mercado Internacional', country.name, `Estado: ${country.marketStatus} (${country.currency})`),
-      })),
+      setState((prev) => {
+        const nextCountries = [country, ...prev.countries];
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: prev.platforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          countries: nextCountries,
+          events: pushEvent(prev, {
+            idempotencyKey: `market_added:${country.code}:${Date.now()}`,
+            type: 'MARKET_STATUS_CHANGED',
+            source: 'Admin International Markets',
+            target: 'Portal · Localization · Compliance',
+            userId: 'ADMIN',
+            payloadSummary: `País ${country.name} (${country.code}) adicionado com estado "${country.marketStatus}".`,
+          }),
+          auditLogs: pushAudit(prev, 'Novo Mercado Internacional', country.name, `Estado: ${country.marketStatus} (${country.currency})`),
+        };
+      }),
 
     updateCountryMarketStatus: (countryCode, status) =>
-      setState((prev) => ({
-        ...prev,
-        countries: prev.countries.map((c) => (c.code === countryCode ? { ...c, marketStatus: status } : c)),
-        events: pushEvent(prev, {
-          idempotencyKey: `market_status:${countryCode}:${status}:${Date.now()}`,
-          type: 'MARKET_STATUS_CHANGED',
-          source: 'Admin International Markets',
-          target: 'Portal Mercados · Driver Localization',
-          userId: 'ADMIN',
-          payloadSummary: `Mercado ${countryCode} alterado para "${status}".`,
-        }),
-        auditLogs: pushAudit(prev, 'Estado de Mercado', countryCode, `Alterado para ${status}`),
-      })),
+      setState((prev) => {
+        const nextCountries = prev.countries.map((c) =>
+          c.code === countryCode ? { ...c, marketStatus: status } : c
+        );
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: prev.platforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          countries: nextCountries,
+          events: pushEvent(prev, {
+            idempotencyKey: `market_status:${countryCode}:${status}:${Date.now()}`,
+            type: 'MARKET_STATUS_CHANGED',
+            source: 'Admin International Markets',
+            target: 'Portal Mercados · Driver Localization',
+            userId: 'ADMIN',
+            payloadSummary: `Mercado ${countryCode} alterado para "${status}".`,
+          }),
+          auditLogs: pushAudit(prev, 'Estado de Mercado', countryCode, `Alterado para ${status}`),
+        };
+      }),
 
     addRegionOrCityToCountry: (countryCode, regionName, cityName) =>
-      setState((prev) => ({
-        ...prev,
-        countries: prev.countries.map((c) => {
+      setState((prev) => {
+        const nextCountries = prev.countries.map((c) => {
           if (c.code !== countryCode) return c;
           const existingRegion = c.regions.find((r) => r.name.toLowerCase() === regionName.toLowerCase());
           const updatedRegions = existingRegion
@@ -2746,8 +3367,80 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               )
             : [...c.regions, { name: regionName, cities: [cityName] }];
           return { ...c, regions: updatedRegions };
+        });
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: prev.platforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          countries: nextCountries,
+          auditLogs: pushAudit(prev, 'Cidade/Região Adicionada', countryCode, `${cityName} (${regionName})`),
+        };
+      }),
+
+    createOrganization: async (input) => {
+      try {
+        const res = await fetch('/api/management/organizations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(input),
+        });
+        const data = await res.json();
+        if (res.ok && data?.ok && data?.organization) {
+          const org = data.organization as OrganizationRecord;
+          setState((prev) => ({
+            ...prev,
+            organizations: [org, ...prev.organizations],
+            auditLogs: pushAudit(prev, 'Organização Criada', org.name, `${org.type} (${org.countryCode})`),
+          }));
+          return { ok: true };
+        }
+        return { ok: false, error: data?.error || 'Não foi possível criar a organização.' };
+      } catch {
+        // Fallback local em modo offline
+        const fallbackOrg: OrganizationRecord = {
+          id: `org-local-${Date.now()}`,
+          name: input.name,
+          type: input.type,
+          countryCode: input.countryCode,
+          taxId: input.taxId,
+          driversCount: input.driversCount ?? 1,
+          vehiclesCount: input.vehiclesCount ?? 1,
+          planId: 'plan-fleet',
+          status: 'Ativa',
+          isolationPolicy: 'strict_tenant',
+        };
+        setState((prev) => ({
+          ...prev,
+          organizations: [fallbackOrg, ...prev.organizations],
+        }));
+        return { ok: true };
+      }
+    },
+
+    assignUserOrganization: (userId, organizationId) =>
+      setState((prev) => ({
+        ...prev,
+        users: prev.users.map((u) => (u.id === userId ? { ...u, organizationId } : u)),
+        organizations: prev.organizations.map((org) => {
+          const curMembers = new Set(org.memberUserIds ?? []);
+          if (org.id === organizationId) curMembers.add(userId);
+          else curMembers.delete(userId);
+          return {
+            ...org,
+            memberUserIds: Array.from(curMembers),
+          };
         }),
-        auditLogs: pushAudit(prev, 'Cidade/Região Adicionada', countryCode, `${cityName} (${regionName})`),
+        auditLogs: pushAudit(
+          prev,
+          'Associação Organização',
+          userId,
+          organizationId ? `Associado a ${organizationId}` : 'Definido como Motorista Independente (sem frota)'
+        ),
       })),
 
     addPaymentTransaction: (payment) =>
@@ -2835,18 +3528,41 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }),
 
-    saveCmsDraft: (patch) =>
-      setState((prev) => ({
-        ...prev,
-        cms: {
-          ...prev.cms,
-          draftSnapshot: {
-            ...(prev.cms.draftSnapshot ?? {}),
-            ...patch,
+    saveCmsDraft: (patch) => {
+      setState((prev) => {
+        const nextDraft = {
+          ...(prev.cms.draftSnapshot ?? {}),
+          ...patch,
+        };
+        void fetch('/api/cms/draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ draft: nextDraft }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (!data?.ok) return;
+            setState((cur) => ({
+              ...cur,
+              cmsPersistenceInfo: {
+                lastServerScope: data.targetScope,
+                lastUpdatedAt: data.updatedAt ?? new Date().toISOString(),
+              },
+            }));
+          })
+          .catch(() => undefined);
+
+        return {
+          ...prev,
+          cms: {
+            ...prev.cms,
+            draftSnapshot: nextDraft,
           },
-        },
-        auditLogs: pushAudit(prev, 'Rascunho CMS', 'Site Oficial', 'Rascunho guardado sem publicar'),
-      })),
+          auditLogs: pushAudit(prev, 'Rascunho CMS', 'Site Oficial', 'Rascunho guardado sem publicar'),
+        };
+      });
+    },
 
     discardCmsDraft: () =>
       setState((prev) => ({
@@ -2857,7 +3573,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         },
       })),
 
-    updateCmsAndPublish: (patch, summary) =>
+    updateCmsAndPublish: (patch, summary) => {
       setState((prev) => {
         const revision = {
           id: `rev-${Date.now()}`,
@@ -2880,14 +3596,35 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             visibleSections: prev.cms.visibleSections,
           },
         };
+        const nextCms: CmsContentState = {
+          ...prev.cms,
+          ...patch,
+          draftSnapshot: null,
+          revisionHistory: [revision, ...prev.cms.revisionHistory].slice(0, 15),
+        };
+
+        void fetch('/api/cms/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ cms: nextCms }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (!data?.ok) return;
+            setState((cur) => ({
+              ...cur,
+              cmsPersistenceInfo: {
+                lastServerScope: data.targetScope,
+                lastUpdatedAt: data.updatedAt ?? new Date().toISOString(),
+              },
+            }));
+          })
+          .catch(() => undefined);
+
         return {
           ...prev,
-          cms: {
-            ...prev.cms,
-            ...patch,
-            draftSnapshot: null,
-            revisionHistory: [revision, ...prev.cms.revisionHistory].slice(0, 15),
-          },
+          cms: nextCms,
           events: pushEvent(prev, {
             idempotencyKey: `cms_published:${Date.now()}`,
             type: 'CMS_PUBLISHED',
@@ -2898,19 +3635,27 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           }),
           auditLogs: pushAudit(prev, 'Publicação CMS', 'Site Oficial', summary),
         };
-      }),
+      });
+    },
 
     rollbackCms: (revisionId) =>
       setState((prev) => {
         const rev = prev.cms.revisionHistory.find((r) => r.id === revisionId);
         if (!rev) return prev;
+        const rolledCms: CmsContentState = {
+          ...prev.cms,
+          ...rev.snapshot,
+          draftSnapshot: null,
+        };
+        void fetch('/api/cms/publish', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ cms: rolledCms }),
+        }).catch(() => undefined);
         return {
           ...prev,
-          cms: {
-            ...prev.cms,
-            ...rev.snapshot,
-            draftSnapshot: null,
-          },
+          cms: rolledCms,
           auditLogs: pushAudit(prev, 'Rollback CMS', 'Site Oficial', `Revertido para revisão ${revisionId}`),
         };
       }),
@@ -2962,6 +3707,389 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           u.id === prev.activeDriverUserId ? { ...u, privacyConsentForSupport: consent } : u
         ),
         auditLogs: pushAudit(prev, 'Consentimento Privacidade', prev.activeDriverUserId, `Acesso de suporte: ${consent ? 'Autorizado' : 'Bloqueado'}`),
+      })),
+
+    // =======================================================================
+    // COMANDO 6 HANDLERS (Voice Copilot, Connectors, Smart Capture, Zones, Fleet)
+    // =======================================================================
+    updateVoiceCopilotConfig: (patch) =>
+      setState((prev) => ({
+        ...prev,
+        voiceConfig: {
+          ...prev.voiceConfig,
+          ...patch,
+          categories: {
+            ...prev.voiceConfig.categories,
+            ...(patch.categories ?? {}),
+          },
+        },
+      })),
+
+    triggerVoiceAnnouncement: (draft) => {
+      const res = enqueueVoiceAnnouncement(state.voiceHistory, draft, state.voiceConfig);
+      let spoken = false;
+      if (res.accepted && res.shouldSpeakAudio && res.item) {
+        spoken = speakWithWebSpeech(res.item.spokenText, state.voiceConfig);
+      }
+      if (res.accepted) {
+        setState((prev) => ({
+          ...prev,
+          voiceHistory: res.updatedHistory.map((it) =>
+            it.id === res.item?.id ? { ...it, deliveredAudio: spoken } : it
+          ),
+          latestVisualVoiceBanner: res.shouldShowVisual ? res.item : prev.latestVisualVoiceBanner,
+        }));
+      }
+      return { spoken, suppressedByCooldown: res.suppressedByCooldown };
+    },
+
+    dismissVisualVoiceBanner: () =>
+      setState((prev) => ({ ...prev, latestVisualVoiceBanner: null })),
+
+    runConnectorTest: (connectorId, level) => {
+      const target = state.connectors[connectorId];
+      const nativeBridgeDetected =
+        typeof window !== 'undefined' && Boolean((window as unknown as Record<string, unknown>).AivadNativeBridge);
+      const isRealAuthenticatedSession = state.session.authenticated && !state.session.isDemoSession;
+      const { updatedConnector, result } = runConnectorVerificationSuite(target, level, {
+        serverVaultConfigured: target.serverVaultConfigured,
+        nativeBridgeDetected,
+        isRealAuthenticatedSession,
+      });
+      setState((prev) => ({
+        ...prev,
+        connectors: {
+          ...prev.connectors,
+          [connectorId]: updatedConnector,
+        },
+      }));
+      return result;
+    },
+
+    updateConnectorPermissions: (connectorId, patch) =>
+      setState((prev) => {
+        const cur = prev.connectors[connectorId];
+        const nextRead = patch.readCapturePermissionGranted ?? cur.readCapturePermissionGranted;
+        const nextExec = patch.externalControlPermissionGranted ?? cur.externalControlPermissionGranted;
+        return {
+          ...prev,
+          connectors: {
+            ...prev.connectors,
+            [connectorId]: {
+              ...cur,
+              readCapturePermissionGranted: nextRead,
+              externalControlPermissionGranted: nextExec,
+              connectionState: nextExec
+                ? 'Autorizado (Leitura + Execução)'
+                : nextRead
+                  ? 'Simulador Interno Ativo'
+                  : 'Desligado',
+            },
+          },
+          auditLogs: pushAudit(
+            prev,
+            'Permissões Conector',
+            connectorId.toUpperCase(),
+            `Leitura=${nextRead ? 'Sim' : 'Não'} | Controlo Externo=${nextExec ? 'Autorizado' : 'Bloqueado'}`,
+            prev.activeDriverUserId
+          ),
+        };
+      }),
+
+    simulateConnectorDisconnection: (connectorId, reason) =>
+      setState((prev) => {
+        const updated = registerConnectorFailure(prev.connectors[connectorId], reason);
+        const lce = createLifecycleAuditEvent({
+          eventType: 'Perda de ligação',
+          originPlatform: connectorId,
+          previousState: prev.connectors[connectorId].connectionState,
+          currentState: updated.connectionState,
+          changeOrigin: 'Conector',
+          associatedEntityId: connectorId,
+          associatedPayloadSummary: `${reason} — Backoff exponencial: ${updated.nextReconnectBackoffSec}s.`,
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
+        return {
+          ...prev,
+          connectors: {
+            ...prev.connectors,
+            [connectorId]: updated,
+          },
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
+        };
+      }),
+
+    parseAndImportSmartCaptures: (params) => {
+      const normalizedList = parseAndNormalizeCaptureInput(params);
+      if (normalizedList.length === 0) {
+        const failLce = createLifecycleAuditEvent({
+          eventType: 'Falha de captura',
+          originPlatform: params.defaultPlatformId ?? 'aivad_system',
+          previousState: 'Entrada bruta',
+          currentState: 'Falha de extração',
+          changeOrigin: 'Smart Capture',
+          associatedPayloadSummary: `Não foi possível extrair dados válidos do formato ${params.format}.`,
+          isDemo: Boolean(state.session.isDemoSession),
+        });
+        setState((prev) => ({
+          ...prev,
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, failLce).updated,
+        }));
+        return {
+          importedCount: 0,
+          duplicatesCount: 0,
+          message: 'Nenhum registo válido encontrado. Verifique o formato do texto OCR, CSV ou JSON.',
+        };
+      }
+
+      let importedCount = 0;
+      let duplicatesCount = 0;
+      const isDemoFlag = Boolean(state.session.isDemoSession);
+
+      setState((prev) => {
+        let curCaptures = [...prev.captures];
+        let curTrips = [...prev.trips];
+        let curCampaigns = [...prev.campaigns];
+        const curVehId = prev.vehicles.find((v) => v.isActiveDriverVehicle)?.id ?? prev.vehicles[0]?.id ?? 'veh-default';
+
+        for (const norm of normalizedList) {
+          const outcome = reconcileCapturedEvent(
+            {
+              externalTxId: norm.externalTxId,
+              source: norm.source,
+              dataType: norm.dataType,
+              platformId: norm.platformId,
+              amountEur: norm.offerOrGrossEur,
+              pickupDistanceKm: norm.pickupDistanceKm,
+              tripDistanceKm: norm.tripDistanceKm,
+              estimatedDurationMin: norm.estimatedDurationMin,
+              destinationZone: norm.destinationZone,
+              category: norm.category,
+              bonusEur: norm.bonusEur,
+              tipEur: norm.tipEur,
+              confidencePct: norm.confidencePct,
+              rawSummary: norm.rawText,
+              isDemo: isDemoFlag,
+            },
+            curCaptures,
+            curTrips
+          );
+
+          curCaptures = [outcome.captureRecord, ...curCaptures];
+          if (outcome.isDuplicate) {
+            duplicatesCount++;
+            continue;
+          }
+          importedCount++;
+
+          if (outcome.updatedTrip) {
+            curTrips = curTrips.map((t) => (t.id === outcome.updatedTrip!.id ? outcome.updatedTrip! : t));
+          }
+          if (outcome.createdCampaign) {
+            curCampaigns = [outcome.createdCampaign, ...curCampaigns];
+          }
+          // Se for Viagem importada por CSV/JSON com valor > 0 e não existir no histórico, reconcilia em TripRecord
+          if (
+            norm.dataType === 'Viagem' &&
+            norm.offerOrGrossEur > 0 &&
+            !curTrips.some((t) => t.externalRef.toLowerCase() === norm.externalTxId.toLowerCase())
+          ) {
+            const plat = prev.platforms.find((p) => p.id === norm.platformId);
+            const commPct = plat?.commissionPct ?? 25;
+            const commEur = round2(norm.offerOrGrossEur * (commPct / 100));
+            const kmTot = (norm.pickupDistanceKm ?? 1.2) + (norm.tripDistanceKm ?? 6.5);
+            const opCost = round2(kmTot * 0.12);
+            const netEur = round2(norm.offerOrGrossEur + (norm.tipEur ?? 0) + (norm.bonusEur ?? 0) - commEur - opCost);
+            const newTrip: TripRecord = {
+              id: `trip-imp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+              externalRef: norm.externalTxId,
+              platformId: norm.platformId,
+              vehicleId: curVehId,
+              date: norm.capturedAtIso.slice(0, 10),
+              time: norm.capturedAtIso.slice(11, 16) || '12:00',
+              grossEur: norm.offerOrGrossEur,
+              tipEur: norm.tipEur ?? 0,
+              bonusEur: norm.bonusEur ?? 0,
+              tollsEur: 0,
+              commissionEur: commEur,
+              operationalCostEur: opCost,
+              netEur,
+              pickupDistanceKm: norm.pickupDistanceKm ?? 1.2,
+              tripDistanceKm: norm.tripDistanceKm ?? 6.5,
+              durationMin: norm.estimatedDurationMin ?? 16,
+              pickupZone: norm.pickupZone || 'Zona Importada',
+              destinationZone: norm.destinationZone || 'Destino Importado',
+              category: norm.category || 'Standard',
+              status: 'Concluída',
+              source: norm.source,
+              isDemo: isDemoFlag,
+            };
+            curTrips = [newTrip, ...curTrips];
+          }
+        }
+
+        return {
+          ...prev,
+          captures: curCaptures,
+          trips: curTrips,
+          campaigns: curCampaigns,
+          connectors: {
+            ...prev.connectors,
+            uber:
+              normalizedList.some((n) => n.platformId === 'uber') && !isDemoFlag
+                ? { ...prev.connectors.uber, dataOriginTag: 'Dados importados' }
+                : prev.connectors.uber,
+            bolt:
+              normalizedList.some((n) => n.platformId === 'bolt') && !isDemoFlag
+                ? { ...prev.connectors.bolt, dataOriginTag: 'Dados importados' }
+                : prev.connectors.bolt,
+          },
+        };
+      });
+
+      return {
+        importedCount,
+        duplicatesCount,
+        message: `${importedCount} registo(s) normalizado(s) com sucesso (${duplicatesCount} duplicado(s) bloqueado(s)).`,
+      };
+    },
+
+    correctSmartCaptureRecord: (captureId, patch, reason) => {
+      const target = state.captures.find((c) => c.id === captureId);
+      if (!target) return { ok: false, error: 'Captura não encontrada.' };
+      const res = applyCaptureManualCorrection(target, patch, activeDriver.name, reason);
+      if (!res.ok || !res.updatedRecord) return { ok: false, error: res.error };
+
+      const lce = createLifecycleAuditEvent({
+        eventType: 'Correção manual',
+        originPlatform: res.updatedRecord.platformId,
+        previousState: `${target.status} (€${target.amountEur.toFixed(2)})`,
+        currentState: `Corrigido (€${res.updatedRecord.amountEur.toFixed(2)})`,
+        changeOrigin: 'Motorista',
+        associatedEntityId: captureId,
+        associatedPayloadSummary: `Correção manual por ${activeDriver.name}: ${reason}`,
+        isDemo: Boolean(state.session.isDemoSession),
+      });
+
+      setState((prev) => ({
+        ...prev,
+        captures: prev.captures.map((c) => (c.id === captureId ? res.updatedRecord! : c)),
+        lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
+      }));
+      return { ok: true };
+    },
+
+    overrideProposalAutoPilotDecision: (proposalId, overrideChoice, overrideReason) =>
+      setState((prev) => {
+        const target = prev.proposals.find((p) => p.id === proposalId);
+        if (!target || !target.autoPilotDecision) return prev;
+        const nextLifecycle: ProposalLifecycleState =
+          overrideChoice === 'Aceite manualmente' ? 'Aceite pelo motorista' : 'Recusada';
+        const lce = createLifecycleAuditEvent({
+          eventType: 'Aceitação / Rejeição',
+          originPlatform: target.input.platformId,
+          previousState: target.autoPilotDecision.action,
+          currentState: overrideChoice,
+          changeOrigin: 'Motorista',
+          associatedEntityId: proposalId,
+          associatedPayloadSummary: `Revisão/override do motorista: ${overrideChoice} (${overrideReason || 'decisão soberana do condutor'})`,
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
+        return {
+          ...prev,
+          proposals: prev.proposals.map((p) =>
+            p.id === proposalId && p.autoPilotDecision
+              ? {
+                  ...p,
+                  lifecycleState: nextLifecycle,
+                  autoPilotDecision: {
+                    ...p.autoPilotDecision,
+                    driverOverride: overrideChoice,
+                    overrideReason: overrideReason || 'Decisão manual soberana do motorista',
+                  },
+                }
+              : p
+          ),
+          lifecycleAuditEvents: appendIdempotentLifecycleEvent(prev.lifecycleAuditEvents, lce).updated,
+        };
+      }),
+
+    logZoneRelocation: (params) =>
+      setState((prev) => {
+        const entry = createZoneRelocationLog({
+          ...params,
+          epistemicBasis: prev.session.isDemoSession ? 'Dados de demonstração' : 'Informação histórica',
+          isDemo: Boolean(prev.session.isDemoSession),
+        });
+        const vDraft = buildOperationalAlertVoiceAnnouncement(
+          'zones',
+          `Reposicionamento iniciado para ${params.targetZone}.`,
+          `Reposicionamento registado de ${params.fromZone} para ${params.targetZone}. ${params.suggestedReason}`,
+          'media'
+        );
+        const vRes = enqueueVoiceAnnouncement(prev.voiceHistory, vDraft, prev.voiceConfig);
+        if (vRes.accepted && vRes.shouldSpeakAudio && vRes.item) {
+          speakWithWebSpeech(vRes.item.spokenText, prev.voiceConfig);
+        }
+        return {
+          ...prev,
+          zoneRelocationLogs: [entry, ...prev.zoneRelocationLogs].slice(0, 40),
+          voiceHistory: vRes.updatedHistory,
+          latestVisualVoiceBanner: vRes.accepted && vRes.shouldShowVisual ? vRes.item : prev.latestVisualVoiceBanner,
+        };
+      }),
+
+    completeZoneRelocationOutcome: (relocationId, outcome, waitMinutesUntilRide) =>
+      setState((prev) => ({
+        ...prev,
+        zoneRelocationLogs: prev.zoneRelocationLogs.map((r) =>
+          r.id === relocationId
+            ? {
+                ...r,
+                outcome,
+                waitMinutesUntilRide,
+                completedAtIso: new Date().toISOString(),
+              }
+            : r
+        ),
+      })),
+
+    updateVehicleCatalogFilters: (patch) =>
+      setState((prev) => ({
+        ...prev,
+        vehicleCatalogFilters: { ...prev.vehicleCatalogFilters, ...patch },
+      })),
+
+    resetVehicleCatalogFilters: () =>
+      setState((prev) => ({
+        ...prev,
+        vehicleCatalogFilters: { ...DEFAULT_PERSISTED_VEHICLE_FILTERS },
+      })),
+
+    setFloatingCardQuickHidden: (hidden) =>
+      setState((prev) => ({ ...prev, floatingCardQuickHidden: hidden })),
+
+    addReferralCoupon: (coupon) =>
+      setState((prev) => ({
+        ...prev,
+        referralCoupons: [
+          {
+            ...coupon,
+            id: `cpn-${Date.now()}`,
+            currentRedemptions: 0,
+            billingExecutionState: 'Preparado (Sem cobrança real ativa)',
+          },
+          ...prev.referralCoupons,
+        ],
+        auditLogs: pushAudit(prev, 'Cupão Indicação Criado', coupon.code, `${coupon.trialDaysGranted} dias grátis`),
+      })),
+
+    toggleReferralCouponActive: (couponId) =>
+      setState((prev) => ({
+        ...prev,
+        referralCoupons: prev.referralCoupons.map((c) =>
+          c.id === couponId ? { ...c, active: !c.active } : c
+        ),
       })),
   };
 

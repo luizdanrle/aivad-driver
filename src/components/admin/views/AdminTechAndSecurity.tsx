@@ -20,13 +20,21 @@ const RBAC_MATRIX = [
 ];
 
 export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTab }) => {
-  const { state, toggleRemoteFlag, rollbackCms, resetDemoData } = useEcosystem();
+  const {
+    state,
+    toggleRemoteFlag,
+    rollbackCms,
+    resetDemoData,
+    revokeCurrentServerSession,
+    syncNowToServer,
+  } = useEcosystem();
   const [serverProbe, setServerProbe] = useState<{
     loading: boolean;
     health?: string;
     auditStatus?: string;
     auditDetails?: string;
   }>({ loading: false });
+  const [securityNotice, setSecurityNotice] = useState<string | null>(null);
 
   const runServerRbacProbe = async () => {
     setServerProbe({ loading: true });
@@ -39,10 +47,10 @@ export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTa
       const aJson = await aRes.json().catch(() => ({}));
       setServerProbe({
         loading: false,
-        health: `HTTP ${hRes.status} · Gemini Proxy: ${hJson.geminiConfigured ? 'Configurado (Server)' : 'Fallback Determinístico'}`,
+        health: `HTTP ${hRes.status} · Ambiente: ${hJson.environment ?? 'dev'} · Gemini Proxy: ${hJson.geminiProxyConfigured ? 'Configurado (Server)' : 'Fallback Determinístico'}`,
         auditStatus: `HTTP ${aRes.status} ${aRes.ok ? 'Autorizado' : 'Bloqueado (RBAC)'}`,
         auditDetails: aRes.ok
-          ? `Contas servidor: ${aJson.totalUsers ?? 0} · Observações zona: ${aJson.totalZoneObservations ?? 0} · Sessão: ${aJson.requestedBy ?? ''}`
+          ? `Contas reais: ${aJson.registeredRealUsersCount ?? 0} · Organizações: ${aJson.organizationsCount ?? 0} · Eventos segurança: ${aJson.securityAuditLogs?.length ?? 0} · Ator: ${aJson.actor ?? ''}`
           : aJson.error || 'Acesso administrativo negado pelo servidor Express.',
       });
     } catch {
@@ -101,9 +109,34 @@ export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTa
     return (
       <div className="space-y-4">
         <ContextualHelpBanner
-          title="Registo de Integrações Externas & Adaptadores"
-          description="Nenhuma integração externa é simulada como produção. Todas as APIs pendentes apresentam claramente o estado INTEGRAÇÃO A VALIDAR."
+          title="Conectores Uber/Bolt & Integrações Externas (Desbloqueio Limpo sem Credenciais)"
+          description="Quando UBER_CLIENT_ID / BOLT_CLIENT_ID não estão definidos no servidor, apenas o conector externo correspondente fica como 'Não configurado', mantendo o desenvolvimento, Preview, OCR/CSV e simulador Nível 1 100% operacionais."
         />
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          {(['uber', 'bolt'] as const).map((cid) => {
+            const conn = state.connectors[cid];
+            return (
+              <Card key={cid} className="p-5 space-y-2 border-blue-200/70 dark:border-blue-900/50">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold">{conn.displayName}</h3>
+                  <StatusLabel
+                    tone={conn.serverVaultConfigured ? 'success' : 'neutral'}
+                    text={conn.connectionState}
+                  />
+                </div>
+                <p className="text-slate-600 dark:text-slate-300">
+                  Cofre Server-Side (.env):{' '}
+                  <strong>{conn.serverVaultConfigured ? 'Credenciais presentes' : 'Não configurado (opcional em Dev/Preview)'}</strong>
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Leitura/Captura CSV &amp; OCR: {conn.readCapturePermissionGranted ? 'Pronta' : 'Desativada'} · Segredos nunca expostos no frontend.
+                </p>
+              </Card>
+            );
+          })}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {EXTERNAL_INTEGRATIONS.map((intg) => (
             <Card key={intg.id} className="p-5 space-y-2 text-xs">
@@ -218,26 +251,40 @@ export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTa
   if (activeTab === 'seguranca') {
     return (
       <div className="space-y-4">
+        {securityNotice && <StatusLabel tone="info" text={securityNotice} />}
+
         <Card className="p-5 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold flex items-center gap-2">
                 <Server className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                Verificação Real de RBAC &amp; Estado no Servidor Express
+                Autenticação Real, Revogação de Sessão &amp; Verificação RBAC Express
               </h2>
               <p className="text-slate-500">
-                Testa em tempo real os endpoints protegidos <code>/api/health</code> e <code>/api/admin/audit-summary</code> com o cookie de sessão atual.
+                Sessões validadas no servidor (<code>scrypt</code> + HMAC + <code>sessionId</code> revogável). O <code>localStorage</code> nunca é utilizado como mecanismo de autenticação ou autorização.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={runServerRbacProbe}
-              disabled={serverProbe.loading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold disabled:opacity-60"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${serverProbe.loading ? 'animate-spin' : ''}`} />
-              Testar Endpoints Express
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={runServerRbacProbe}
+                disabled={serverProbe.loading}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold disabled:opacity-60"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${serverProbe.loading ? 'animate-spin' : ''}`} />
+                Testar Endpoints Express
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await revokeCurrentServerSession();
+                  setSecurityNotice(`Sessão revogada no servidor (${res.revokedCount} token(s) invalidados).`);
+                }}
+                className="px-3 py-1.5 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-400 font-semibold"
+              >
+                Revogar Sessão no Servidor
+              </button>
+            </div>
           </div>
           {(serverProbe.health || serverProbe.auditStatus) && (
             <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1 font-mono-tabular">
@@ -246,6 +293,40 @@ export const AdminTechAndSecurity: React.FC<{ activeTab: string }> = ({ activeTa
               {serverProbe.auditDetails && <p className="text-slate-600 dark:text-slate-300">{serverProbe.auditDetails}</p>}
             </div>
           )}
+        </Card>
+
+        <Card className="p-5 space-y-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold">Arquitetura de Persistência em 3 Camadas &amp; Sincronização Versionada</h3>
+              <p className="text-slate-500">
+                Versão sincronizada atual: <strong className="font-mono-tabular">v{state.serverSyncVersion}</strong> · Estado: <strong>{state.syncStatus}</strong>
+              </p>
+            </div>
+            {state.syncConflictDetail && (
+              <button
+                type="button"
+                onClick={() => void syncNowToServer({ forceOverwrite: true })}
+                className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold"
+              >
+                Resolver Conflito (Forçar Push)
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p className="font-bold">1. Cache Local (Browser)</p>
+              <p className="text-slate-500 mt-1">Apenas preferências e fila offline idempotente. Zero tokens/sessões em localStorage.</p>
+            </div>
+            <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p className="font-bold">2. Servidor Protótipo Atual</p>
+              <p className="text-slate-500 mt-1">Express Domain Store (<code>.aivad-server-store.json</code>) com sessões revogáveis, RBAC e deteção de conflito HTTP 409.</p>
+            </div>
+            <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p className="font-bold">3. Alvo Produção (Comando 8 / Windsurf)</p>
+              <p className="text-slate-500 mt-1">PostgreSQL 16+ transacional com Row-Level Security multi-organização e Redis para sessões distribuídas.</p>
+            </div>
+          </div>
         </Card>
 
         <Card className="p-5 space-y-4 text-xs">

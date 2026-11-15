@@ -3,34 +3,70 @@ import type {
   AutoPilotConfig,
   AutoPilotDecisionRecord,
   CampaignRecord,
+  CaptureCorrectionEntry,
+  CaptureDataType,
   CaptureSource,
   ExpenseRecord,
+  NormalizedCapturePayload,
+  PlatformId,
   ProposalAnalysis,
   ProposalClassification,
   ProposalInput,
+  ProposalThresholds,
   SmartCaptureRecord,
+  StrategyMode,
   TripRecord,
   VehicleEligibilityResult,
   VehicleRecord,
+  VehicleSortOption,
 } from '../models/types';
+
+export function normalizeCanonicalStrategyMode(
+  mode?: AutoPilotConfig['mode'],
+  strategyMode?: StrategyMode
+): StrategyMode {
+  if (strategyMode === 'Manual' || strategyMode === 'Semiautomático' || strategyMode === 'Automático') {
+    if (mode === 'Manual') return 'Manual';
+    if (mode === 'Automático') return 'Automático';
+    if (mode === 'Semiautomático' || mode === 'Assistido') return 'Semiautomático';
+    return strategyMode;
+  }
+  if (mode === 'Manual') return 'Manual';
+  if (mode === 'Automático') return 'Automático';
+  return 'Semiautomático';
+}
 
 export function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+export interface ProposalOperationalContext {
+  currentVehicleRangeKm?: number;
+  minReserveRangeKm?: number;
+  remainingLegalWorkMinutes?: number;
+  destinationHistoricalTripsCount?: number;
+  referenceDate?: Date;
+}
+
 export function analyzeProposal(
   input: ProposalInput,
-  thresholds: {
-    minValueEur: number;
-    minEurPerKm: number;
-    minEurPerHour: number;
-    maxPickupKm: number;
-    maxTotalDistanceKm: number;
-    maxTotalTimeMin: number;
-    weightEurPerKm: number;
-    weightEurPerHour: number;
-    weightPickupEfficiency: number;
-  }
+  thresholds: Pick<
+    ProposalThresholds,
+    | 'minValueEur'
+    | 'maxValueEur'
+    | 'minEurPerKm'
+    | 'minEurPerHour'
+    | 'maxPickupKm'
+    | 'maxPickupTimeMin'
+    | 'maxTotalDistanceKm'
+    | 'maxTotalTimeMin'
+    | 'avoidEmptyReturnRisk'
+    | 'allowedDaysOfWeek'
+    | 'weightEurPerKm'
+    | 'weightEurPerHour'
+    | 'weightPickupEfficiency'
+  >,
+  operationalCtx?: ProposalOperationalContext
 ): ProposalAnalysis {
   const safePickupKm = Math.max(0, input.pickupDistanceKm);
   const safeTripKm = Math.max(0.1, input.tripDistanceKm);
@@ -62,6 +98,25 @@ export function analyzeProposal(
       ? 'Médio'
       : 'Baixo';
 
+  // Probabilidade de retorno com passageiro: calculada apenas quando há amostra histórica suficiente (>= 3 viagens)
+  const destCount = operationalCtx?.destinationHistoricalTripsCount ?? 0;
+  const returnPassengerProbabilityPct =
+    destCount >= 3
+      ? Math.min(92, Math.max(25, Math.round(45 + Math.min(destCount, 12) * 3.5 - (emptyReturnRisk === 'Alto' ? 25 : 0))))
+      : null;
+  const returnProbabilityEpistemicTag =
+    destCount >= 3 ? ('Informação histórica' as const) : ('Informação indisponível' as const);
+
+  const batteryAdequate =
+    operationalCtx?.currentVehicleRangeKm !== undefined
+      ? operationalCtx.currentVehicleRangeKm - totalDistanceKm >= (operationalCtx.minReserveRangeKm ?? 35)
+      : true;
+
+  const tvdeLimitCompliant =
+    operationalCtx?.remainingLegalWorkMinutes !== undefined
+      ? totalTimeMin <= operationalCtx.remainingLegalWorkMinutes
+      : true;
+
   const kmScore = Math.min(100, (eurPerKm / Math.max(0.1, thresholds.minEurPerKm)) * 75);
   const hourScore = Math.min(100, (eurPerHour / Math.max(1, thresholds.minEurPerHour)) * 75);
   const pickupScore = Math.max(0, 100 - pickupRatio * 180);
@@ -91,6 +146,9 @@ export function analyzeProposal(
   if (effectiveRevenueEur < thresholds.minValueEur) {
     reasons.push(`Valor total (€${effectiveRevenueEur.toFixed(2)}) abaixo do mínimo (€${thresholds.minValueEur.toFixed(2)}).`);
   }
+  if (thresholds.maxValueEur !== undefined && thresholds.maxValueEur > 0 && effectiveRevenueEur > thresholds.maxValueEur) {
+    reasons.push(`Valor total (€${effectiveRevenueEur.toFixed(2)}) excede o teto máximo configurado (€${thresholds.maxValueEur.toFixed(2)}).`);
+  }
   if (eurPerKm < thresholds.minEurPerKm) {
     reasons.push(`Rácio €${eurPerKm.toFixed(2)}/km inferior ao objetivo (€${thresholds.minEurPerKm.toFixed(2)}/km).`);
   }
@@ -100,15 +158,35 @@ export function analyzeProposal(
   if (safePickupKm > thresholds.maxPickupKm) {
     reasons.push(`Distância de recolha (${safePickupKm.toFixed(1)} km) excede o limite (${thresholds.maxPickupKm.toFixed(1)} km).`);
   }
+  if (thresholds.maxPickupTimeMin !== undefined && thresholds.maxPickupTimeMin > 0 && safePickupMin > thresholds.maxPickupTimeMin) {
+    reasons.push(`Tempo até à recolha (${safePickupMin} min) excede o máximo (${thresholds.maxPickupTimeMin} min).`);
+  }
   if (totalDistanceKm > thresholds.maxTotalDistanceKm) {
     reasons.push(`Distância total (${totalDistanceKm.toFixed(1)} km) acima do máximo definido.`);
   }
   if (totalTimeMin > thresholds.maxTotalTimeMin) {
     reasons.push(`Tempo comprometido (${totalTimeMin} min) acima do limite (${thresholds.maxTotalTimeMin} min).`);
   }
+  if (thresholds.avoidEmptyReturnRisk && emptyReturnRisk === 'Alto') {
+    reasons.push('Risco elevado de retorno sem passageiro — bloqueado pela preferência de retorno.');
+  }
+  if (thresholds.allowedDaysOfWeek && thresholds.allowedDaysOfWeek.length > 0 && operationalCtx?.referenceDate) {
+    const dow = operationalCtx.referenceDate.getDay();
+    if (!thresholds.allowedDaysOfWeek.includes(dow)) {
+      reasons.push('Dia da semana fora da janela operacional configurada pelo motorista.');
+    }
+  }
+  if (!batteryAdequate) {
+    reasons.push('Autonomia/bateria insuficiente para concluir a viagem preservando a reserva mínima de segurança.');
+  }
+  if (!tvdeLimitCompliant) {
+    reasons.push('Duração estimada ultrapassa o tempo restante do limite legal TVDE de 10h em 24h.');
+  }
 
   let classification: ProposalClassification = 'verde';
   if (
+    !batteryAdequate ||
+    !tvdeLimitCompliant ||
     reasons.length >= 2 ||
     eurPerKm < thresholds.minEurPerKm * 0.8 ||
     eurPerHour < thresholds.minEurPerHour * 0.8 ||
@@ -120,7 +198,7 @@ export function analyzeProposal(
   }
 
   if (reasons.length === 0) {
-    reasons.push('Todos os limiares mínimos de rentabilidade, recolha e tempo foram cumpridos.');
+    reasons.push('Todos os limiares mínimos de rentabilidade, recolha, autonomia e limites TVDE foram cumpridos.');
   }
 
   const basisDescription =
@@ -138,6 +216,10 @@ export function analyzeProposal(
     operatingCostEur,
     estimatedNetEur,
     emptyReturnRisk,
+    returnPassengerProbabilityPct,
+    returnProbabilityEpistemicTag,
+    batteryAdequate,
+    tvdeLimitCompliant,
     score,
     classification,
     basisDescription,
@@ -153,6 +235,7 @@ export function evaluateAutoPilot(
   activeCampaigns: CampaignRecord[]
 ): AutoPilotDecisionRecord {
   const now = new Date().toISOString();
+  const canonicalMode = normalizeCanonicalStrategyMode(config.mode, config.strategyMode);
   const t = config.thresholds;
   const rulesMatched: string[] = [];
 
@@ -168,6 +251,25 @@ export function evaluateAutoPilot(
     rulesMatched.push(`Categoria ${input.category} não selecionada para AutoPilot.`);
   }
 
+  const regionAllowed =
+    t.allowedRegions.length === 0 ||
+    t.allowedRegions.some((r) => input.region.toLowerCase().includes(r.toLowerCase()) || r.toLowerCase().includes(input.region.toLowerCase()));
+  if (!regionAllowed) {
+    rulesMatched.push(`Zona/Região "${input.region}" fora das zonas autorizadas.`);
+  }
+
+  const pickupTimeOk =
+    t.maxPickupTimeMin === undefined || t.maxPickupTimeMin <= 0 || input.pickupTimeMin <= t.maxPickupTimeMin;
+  if (!pickupTimeOk) {
+    rulesMatched.push(`Tempo de recolha (${input.pickupTimeMin} min) acima do máximo (${t.maxPickupTimeMin} min).`);
+  }
+
+  const maxValOk =
+    t.maxValueEur === undefined || t.maxValueEur <= 0 || analysis.effectiveRevenueEur <= t.maxValueEur;
+  if (!maxValOk) {
+    rulesMatched.push(`Valor (€${analysis.effectiveRevenueEur.toFixed(2)}) acima do máximo configurado (€${t.maxValueEur?.toFixed(2)}).`);
+  }
+
   const matchesCampaign =
     config.prioritizeCampaigns &&
     activeCampaigns.some((c) => c.platformId === input.platformId && c.status === 'Ativa');
@@ -179,39 +281,70 @@ export function evaluateAutoPilot(
     analysis.classification === 'verde' &&
     platformAllowed &&
     categoryAllowed &&
-    input.pickupDistanceKm <= t.maxPickupKm;
+    regionAllowed &&
+    pickupTimeOk &&
+    maxValOk &&
+    input.pickupDistanceKm <= t.maxPickupKm &&
+    analysis.batteryAdequate !== false &&
+    analysis.tvdeLimitCompliant !== false;
+
+  const shouldAccept =
+    passesThresholds ||
+    (analysis.classification === 'amarelo' &&
+      matchesCampaign &&
+      platformAllowed &&
+      categoryAllowed &&
+      regionAllowed &&
+      analysis.batteryAdequate !== false &&
+      analysis.tvdeLimitCompliant !== false);
 
   if (passesThresholds) {
-    rulesMatched.push('Proposta cumpre regras AutoPilot (€/km, €/h, recolha e plataforma).');
-  } else if (analysis.classification === 'amarelo' && matchesCampaign) {
-    rulesMatched.push('Proposta intermédia compensada por campanha ativa.');
+    rulesMatched.push('Proposta cumpre integralmente as regras configuradas pelo motorista.');
+  } else if (shouldAccept) {
+    rulesMatched.push('Proposta intermédia compensada por campanha ativa dentro dos limites de segurança.');
   } else {
     rulesMatched.push(...analysis.reasons);
   }
 
   let action: AutoPilotDecisionRecord['action'] = 'Aguardar decisão manual';
+  let executedAutomatically = false;
+  let executionChannelUsed = 'Nenhum';
   let reason = '';
 
-  if (config.mode === 'Manual') {
+  const hasAuthorizedChannel =
+    config.officialAutomationAuthorized ||
+    (config.authorizedExecutionChannel !== undefined && config.authorizedExecutionChannel !== 'Nenhum');
+
+  if (canonicalMode === 'Manual') {
     action = 'Aguardar decisão manual';
-    reason = 'Modo Manual ativo: AIVAD apenas calcula e apresenta métricas sem sugerir ação automática.';
-  } else if (config.mode === 'Assistido') {
-    action =
-      passesThresholds || (analysis.classification === 'amarelo' && matchesCampaign)
-        ? 'Aceitar sugerido'
-        : 'Recusar sugerido';
-    reason =
-      action === 'Aceitar sugerido'
-        ? 'Modo Assistido: recomendação positiva para confirmação humana do motorista.'
-        : 'Modo Assistido: recomendação de recusa por rentabilidade ou limites abaixo da meta.';
+    const manualRec = shouldAccept ? 'Recomendação AIVAD: Aceitar' : 'Recomendação AIVAD: Recusar';
+    reason = `Modo Manual: parâmetros fixos do motorista. ${manualRec} (€${analysis.eurPerKm.toFixed(2)}/km · €${analysis.eurPerHour.toFixed(2)}/h). Nenhuma decisão executada automaticamente.`;
+  } else if (canonicalMode === 'Semiautomático') {
+    action = shouldAccept ? 'Aceitar sugerido' : 'Recusar sugerido';
+    reason = shouldAccept
+      ? 'Modo Semiautomático: proposta aprovada pela estratégia adaptativa dentro dos limites autorizados; aguarda confirmação rápida do motorista.'
+      : 'Modo Semiautomático: proposta abaixo da meta dinâmica do turno; sugerida recusa.';
   } else {
-    if (!config.officialAutomationAuthorized) {
-      action = 'Bloqueado por ausência de API oficial';
-      reason =
-        'EXECUÇÃO AUTOMÁTICA BLOQUEADA: Sem integração oficial autorizada pela plataforma (AIVAD não simula cliques nem contorna proteções).';
+    // Modo Automático
+    if (hasAuthorizedChannel) {
+      executedAutomatically = true;
+      executionChannelUsed = config.authorizedExecutionChannel && config.authorizedExecutionChannel !== 'Nenhum'
+        ? config.authorizedExecutionChannel
+        : 'Canal Oficial Autorizado';
+      action = shouldAccept
+        ? 'Executado automaticamente: Aceitar'
+        : 'Executado automaticamente: Recusar';
+      reason = shouldAccept
+        ? `Modo Automático: proposta aceite automaticamente via ${executionChannelUsed} (regras cumpridas).`
+        : `Modo Automático: proposta rejeitada automaticamente via ${executionChannelUsed} (fora das regras configuradas).`;
     } else {
-      action = passesThresholds ? 'Aceitar sugerido' : 'Recusar sugerido';
-      reason = 'Modo Automático autorizado via adaptador oficial.';
+      executedAutomatically = false;
+      executionChannelUsed = 'Ação Assistida (Sem canal externo autorizado)';
+      action = shouldAccept
+        ? 'Decisão pronta (Ação assistida): Aceitar'
+        : 'Decisão pronta (Ação assistida): Recusar';
+      reason =
+        'Modo Automático: decisão calculada, mas não existe API oficial ou bridge nativo autorizado ativo para executar na app externa. Apresentada ação assistida transparente sem fingir execução automática.';
     }
   }
 
@@ -220,11 +353,249 @@ export function evaluateAutoPilot(
     proposalId,
     timestamp: now,
     platformId: input.platformId,
-    modeAtDecision: config.mode,
+    modeAtDecision: canonicalMode,
     action,
     rulesMatched,
-    platformConfirmed: false,
+    executedAutomatically,
+    executionChannelUsed,
+    platformConfirmed: executedAutomatically,
     reason,
+  };
+}
+
+export function parseAndNormalizeCaptureInput(params: {
+  rawInput: string;
+  format: 'ocr_or_notification' | 'csv' | 'json';
+  defaultPlatformId?: PlatformId;
+  source?: CaptureSource;
+  nowIso?: string;
+}): NormalizedCapturePayload[] {
+  const nowIso = params.nowIso ?? new Date().toISOString();
+  const text = params.rawInput.trim();
+  if (!text) return [];
+
+  if (params.format === 'json') {
+    try {
+      const parsed = JSON.parse(text);
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      return arr
+        .filter((item) => item && typeof item === 'object')
+        .map((item, idx) => {
+          const obj = item as Record<string, unknown>;
+          const platformId = String(obj.platformId ?? obj.platform ?? params.defaultPlatformId ?? 'uber').toLowerCase();
+          const offerOrGrossEur = Number(obj.grossEur ?? obj.amountEur ?? obj.value ?? obj.fare ?? 0);
+          const pickupDistanceKm = obj.pickupDistanceKm !== undefined ? Number(obj.pickupDistanceKm) : undefined;
+          const tripDistanceKm = obj.tripDistanceKm !== undefined ? Number(obj.tripDistanceKm) : obj.distanceKm !== undefined ? Number(obj.distanceKm) : undefined;
+          const estimatedDurationMin = obj.durationMin !== undefined ? Number(obj.durationMin) : undefined;
+          const tipEur = obj.tipEur !== undefined ? Number(obj.tipEur) : undefined;
+          const bonusEur = obj.bonusEur !== undefined ? Number(obj.bonusEur) : undefined;
+          const dataType: CaptureDataType =
+            (obj.dataType as CaptureDataType) ?? (tipEur && !offerOrGrossEur ? 'Gorjeta' : 'Viagem');
+          const externalTxId = String(obj.externalTxId ?? obj.externalRef ?? obj.id ?? `JSON-${idx + 1}-${round2(offerOrGrossEur)}`);
+          return {
+            platformId,
+            dataType,
+            offerOrGrossEur: round2(Number.isFinite(offerOrGrossEur) ? offerOrGrossEur : 0),
+            pickupDistanceKm: pickupDistanceKm !== undefined && Number.isFinite(pickupDistanceKm) ? round2(pickupDistanceKm) : undefined,
+            tripDistanceKm: tripDistanceKm !== undefined && Number.isFinite(tripDistanceKm) ? round2(tripDistanceKm) : undefined,
+            estimatedDurationMin: estimatedDurationMin !== undefined && Number.isFinite(estimatedDurationMin) ? Math.round(estimatedDurationMin) : undefined,
+            pickupZone: typeof obj.pickupZone === 'string' ? obj.pickupZone : undefined,
+            destinationZone: typeof obj.destinationZone === 'string' ? obj.destinationZone : undefined,
+            category: typeof obj.category === 'string' ? obj.category : undefined,
+            bonusEur: bonusEur !== undefined && Number.isFinite(bonusEur) ? round2(bonusEur) : undefined,
+            tipEur: tipEur !== undefined && Number.isFinite(tipEur) ? round2(tipEur) : undefined,
+            source: params.source ?? 'Extrato Importado',
+            capturedAtIso: typeof obj.date === 'string' ? obj.date : nowIso,
+            confidencePct: offerOrGrossEur > 0 ? 96 : 62,
+            externalTxId,
+            rawText: JSON.stringify(obj).slice(0, 180),
+          };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  if (params.format === 'csv') {
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return [];
+    const hasHeader = /valor|fare|gross|amount|plataforma|platform|dist/i.test(lines[0]);
+    const dataLines = hasHeader ? lines.slice(1) : lines;
+    return dataLines.map((line, idx) => {
+      const cols = line.split(/[;,]/).map((c) => c.trim().replace(/^"|"$/g, ''));
+      // Suporta formato: ref, plataforma, tipo, valor, km_viagem, min, destino, categoria
+      const ref = cols[0] || `CSV-${idx + 1}`;
+      const platRaw = (cols[1] || params.defaultPlatformId || 'uber').toLowerCase();
+      const platformId = ['uber', 'bolt', 'cabify', 'freenow'].includes(platRaw)
+        ? platRaw
+        : params.defaultPlatformId ?? 'uber';
+      const valNum = Number((cols[2] ?? '0').replace(',', '.').replace(/[^0-9.-]/g, ''));
+      const kmNum = cols[3] ? Number(cols[3].replace(',', '.').replace(/[^0-9.-]/g, '')) : undefined;
+      const minNum = cols[4] ? Number(cols[4].replace(',', '.').replace(/[^0-9.-]/g, '')) : undefined;
+      const dest = cols[5] || undefined;
+      const cat = cols[6] || undefined;
+
+      return {
+        platformId,
+        dataType: 'Viagem',
+        offerOrGrossEur: round2(Number.isFinite(valNum) ? valNum : 0),
+        tripDistanceKm: kmNum !== undefined && Number.isFinite(kmNum) ? round2(kmNum) : undefined,
+        estimatedDurationMin: minNum !== undefined && Number.isFinite(minNum) ? Math.round(minNum) : undefined,
+        destinationZone: dest,
+        category: cat,
+        source: params.source ?? 'Relatório CSV/PDF',
+        capturedAtIso: nowIso,
+        confidencePct: Number.isFinite(valNum) && valNum > 0 ? 94 : 55,
+        externalTxId: ref,
+        rawText: line.slice(0, 180),
+      };
+    });
+  }
+
+  // Formato 'ocr_or_notification': extrai plataforma, valor €, km recolha/viagem, minutos, destino, bónus e categoria
+  const lower = text.toLowerCase();
+  const platformId: PlatformId = lower.includes('bolt')
+    ? 'bolt'
+    : lower.includes('cabify')
+      ? 'cabify'
+      : lower.includes('free now') || lower.includes('freenow')
+        ? 'freenow'
+        : lower.includes('uber')
+          ? 'uber'
+          : params.defaultPlatformId ?? 'uber';
+
+  const euroMatches = Array.from(text.matchAll(/(?:€\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*€)/gi));
+  const amounts = euroMatches
+    .map((m) => Number((m[1] ?? m[2] ?? '0').replace(',', '.')))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const offerOrGrossEur = amounts[0] ? round2(amounts[0]) : 0;
+  const bonusEur = lower.includes('bónus') || lower.includes('bonus') || lower.includes('campanha')
+    ? amounts[1] ? round2(amounts[1]) : undefined
+    : undefined;
+
+  const kmMatches = Array.from(text.matchAll(/(\d+(?:[.,]\d{1,2})?)\s*km/gi))
+    .map((m) => Number(m[1].replace(',', '.')))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+
+  const pickupDistanceKm = kmMatches.length >= 2 ? round2(kmMatches[0]) : undefined;
+  const tripDistanceKm = kmMatches.length >= 2 ? round2(kmMatches[1]) : kmMatches[0] !== undefined ? round2(kmMatches[0]) : undefined;
+
+  const minMatches = Array.from(text.matchAll(/(\d+)\s*min/gi))
+    .map((m) => Number(m[1]))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const estimatedDurationMin =
+    minMatches.length >= 2 ? minMatches[0] + minMatches[1] : minMatches[0] ?? undefined;
+
+  const destMatch = text.match(/(?:destino|para|->|→)\s*:?\s*([^\n•|;]+)/i);
+  const destinationZone = destMatch ? destMatch[1].trim().slice(0, 60) : undefined;
+
+  const catMatch = text.match(/\b(UberX|Uber Green|Uber Comfort|Uber Black|UberXL|Bolt Green|Bolt Comfort|Bolt XL|Bolt)\b/i);
+  const category = catMatch ? catMatch[1] : undefined;
+
+  const dataType: CaptureDataType = lower.includes('gorjeta')
+    ? 'Gorjeta'
+    : lower.includes('campanha') && !tripDistanceKm
+      ? 'Campanha'
+      : lower.includes('recolha') || lower.includes('aceitar') || lower.includes('proposta')
+        ? 'Proposta'
+        : 'Viagem';
+
+  let fieldsFound = 0;
+  if (offerOrGrossEur > 0) fieldsFound += 2;
+  if (tripDistanceKm !== undefined) fieldsFound += 1;
+  if (estimatedDurationMin !== undefined) fieldsFound += 1;
+  if (destinationZone) fieldsFound += 1;
+  if (category) fieldsFound += 1;
+  const confidencePct = Math.min(97, Math.max(35, fieldsFound * 16));
+
+  const deterministicHash = `${platformId}-${offerOrGrossEur}-${tripDistanceKm ?? 0}-${estimatedDurationMin ?? 0}-${text.length}`;
+
+  return [
+    {
+      platformId,
+      dataType,
+      offerOrGrossEur,
+      pickupDistanceKm,
+      tripDistanceKm,
+      estimatedDurationMin,
+      destinationZone,
+      category,
+      bonusEur,
+      source: params.source ?? 'OCR',
+      capturedAtIso: nowIso,
+      confidencePct,
+      externalTxId: `OCR-${deterministicHash}`,
+      rawText: text.slice(0, 220),
+    },
+  ];
+}
+
+export function applyCaptureManualCorrection(
+  record: SmartCaptureRecord,
+  patch: {
+    amountEur?: number;
+    platformId?: PlatformId;
+    destinationZone?: string;
+    category?: string;
+    status?: SmartCaptureRecord['status'];
+  },
+  correctedBy: string,
+  reason: string,
+  nowIso = new Date().toISOString()
+): { ok: boolean; error?: string; updatedRecord?: SmartCaptureRecord } {
+  if (!reason || reason.trim().length < 4) {
+    return {
+      ok: false,
+      error: 'Indique um motivo objetivo para a correção manual (mínimo 4 caracteres).',
+    };
+  }
+  const newEntries: CaptureCorrectionEntry[] = [];
+  if (patch.amountEur !== undefined && patch.amountEur !== record.amountEur) {
+    newEntries.push({
+      correctedAt: nowIso,
+      correctedBy,
+      field: 'amountEur',
+      previousValue: record.amountEur,
+      newValue: patch.amountEur,
+      reason: reason.trim(),
+    });
+  }
+  if (patch.platformId !== undefined && patch.platformId !== record.platformId) {
+    newEntries.push({
+      correctedAt: nowIso,
+      correctedBy,
+      field: 'platformId',
+      previousValue: record.platformId,
+      newValue: patch.platformId,
+      reason: reason.trim(),
+    });
+  }
+  if (patch.destinationZone !== undefined && patch.destinationZone !== (record.destinationZone ?? '')) {
+    newEntries.push({
+      correctedAt: nowIso,
+      correctedBy,
+      field: 'destinationZone',
+      previousValue: record.destinationZone ?? '',
+      newValue: patch.destinationZone,
+      reason: reason.trim(),
+    });
+  }
+
+  return {
+    ok: true,
+    updatedRecord: {
+      ...record,
+      amountEur: patch.amountEur ?? record.amountEur,
+      platformId: patch.platformId ?? record.platformId,
+      destinationZone: patch.destinationZone ?? record.destinationZone,
+      category: patch.category ?? record.category,
+      status: patch.status ?? 'Corrigido',
+      confidencePct: 100,
+      corrections: [...(record.corrections ?? []), ...newEntries],
+    },
   };
 }
 
@@ -243,18 +614,28 @@ export function reconcileCapturedEvent(
     dataType: SmartCaptureRecord['dataType'];
     platformId: SmartCaptureRecord['platformId'];
     amountEur: number;
+    pickupDistanceKm?: number;
+    tripDistanceKm?: number;
+    estimatedDurationMin?: number;
+    destinationZone?: string;
+    category?: string;
+    bonusEur?: number;
+    tipEur?: number;
+    confidencePct?: number;
     relatedTripRef?: string;
     rawSummary: string;
+    isDemo?: boolean;
   },
   existingCaptures: SmartCaptureRecord[],
   existingTrips: TripRecord[]
 ): CaptureReconciliationOutcome {
+  const isDemoFlag = Boolean(payload.isDemo);
   const dedupKey = `${payload.platformId}:${payload.dataType}:${payload.externalTxId.trim().toLowerCase()}`;
   const existingDuplicate = existingCaptures.find((c) => c.dedupKey === dedupKey);
 
   if (existingDuplicate) {
     const captureRecord: SmartCaptureRecord = {
-      id: `cap-${Date.now()}`,
+      id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       externalTxId: payload.externalTxId,
       dedupKey,
       source: payload.source,
@@ -262,11 +643,17 @@ export function reconcileCapturedEvent(
       platformId: payload.platformId,
       capturedAt: new Date().toISOString(),
       amountEur: payload.amountEur,
+      pickupDistanceKm: payload.pickupDistanceKm,
+      tripDistanceKm: payload.tripDistanceKm,
+      estimatedDurationMin: payload.estimatedDurationMin,
+      destinationZone: payload.destinationZone,
+      category: payload.category,
+      confidencePct: payload.confidencePct ?? 90,
       relatedTripRef: payload.relatedTripRef,
       status: 'Rejeitado',
       rawSummary: `${payload.rawSummary} (Duplicação detetada: ${existingDuplicate.id})`,
       duplicateOfId: existingDuplicate.id,
-      isDemo: true,
+      isDemo: isDemoFlag,
     };
     return {
       captureRecord,
@@ -289,7 +676,7 @@ export function reconcileCapturedEvent(
         status: 'Ajustada',
       };
       const captureRecord: SmartCaptureRecord = {
-        id: `cap-${Date.now()}`,
+        id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
         externalTxId: payload.externalTxId,
         dedupKey,
         source: payload.source,
@@ -297,11 +684,12 @@ export function reconcileCapturedEvent(
         platformId: payload.platformId,
         capturedAt: new Date().toISOString(),
         amountEur: payload.amountEur,
+        confidencePct: payload.confidencePct ?? 95,
         relatedTripRef: payload.relatedTripRef,
         matchedTripId: targetTrip.id,
         status: 'Associado',
         rawSummary: payload.rawSummary,
-        isDemo: true,
+        isDemo: isDemoFlag,
       };
       return {
         captureRecord,
@@ -312,7 +700,7 @@ export function reconcileCapturedEvent(
     }
 
     const pendingRecord: SmartCaptureRecord = {
-      id: `cap-${Date.now()}`,
+      id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       externalTxId: payload.externalTxId,
       dedupKey,
       source: payload.source,
@@ -320,10 +708,11 @@ export function reconcileCapturedEvent(
       platformId: payload.platformId,
       capturedAt: new Date().toISOString(),
       amountEur: payload.amountEur,
+      confidencePct: payload.confidencePct ?? 72,
       relatedTripRef: payload.relatedTripRef,
       status: 'Pendente',
       rawSummary: `${payload.rawSummary} (Sem viagem correspondente — pendente de confirmação)`,
-      isDemo: true,
+      isDemo: isDemoFlag,
     };
     return {
       captureRecord: pendingRecord,
@@ -334,7 +723,7 @@ export function reconcileCapturedEvent(
 
   if (payload.dataType === 'Campanha') {
     const createdCampaign: CampaignRecord = {
-      id: `cmp-${Date.now()}`,
+      id: `cmp-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       platformId: payload.platformId,
       name: payload.rawSummary.slice(0, 48) || `Campanha ${payload.platformId}`,
       rewardEur: payload.amountEur,
@@ -343,15 +732,15 @@ export function reconcileCapturedEvent(
       periodStart: new Date().toISOString().slice(0, 10),
       periodEnd: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
       scheduleWindow: 'Todo o dia',
-      zone: 'Área Metropolitana',
+      zone: payload.destinationZone || 'Área Metropolitana',
       requirements: 'Identificada via Smart Data Capture — validar termos na plataforma.',
       estimatedExtraCostEur: 8,
       status: 'Ativa',
       source: payload.source,
-      isDemo: true,
+      isDemo: isDemoFlag,
     };
     const captureRecord: SmartCaptureRecord = {
-      id: `cap-${Date.now()}`,
+      id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       externalTxId: payload.externalTxId,
       dedupKey,
       source: payload.source,
@@ -359,9 +748,10 @@ export function reconcileCapturedEvent(
       platformId: payload.platformId,
       capturedAt: new Date().toISOString(),
       amountEur: payload.amountEur,
+      confidencePct: payload.confidencePct ?? 88,
       status: 'Confirmado',
       rawSummary: payload.rawSummary,
-      isDemo: true,
+      isDemo: isDemoFlag,
     };
     return {
       captureRecord,
@@ -371,8 +761,9 @@ export function reconcileCapturedEvent(
     };
   }
 
+  const lowConfidence = payload.confidencePct !== undefined && payload.confidencePct < 65;
   const captureRecord: SmartCaptureRecord = {
-    id: `cap-${Date.now()}`,
+    id: `cap-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
     externalTxId: payload.externalTxId,
     dedupKey,
     source: payload.source,
@@ -380,15 +771,23 @@ export function reconcileCapturedEvent(
     platformId: payload.platformId,
     capturedAt: new Date().toISOString(),
     amountEur: payload.amountEur,
+    pickupDistanceKm: payload.pickupDistanceKm,
+    tripDistanceKm: payload.tripDistanceKm,
+    estimatedDurationMin: payload.estimatedDurationMin,
+    destinationZone: payload.destinationZone,
+    category: payload.category,
+    bonusEur: payload.bonusEur,
+    tipEur: payload.tipEur,
+    confidencePct: payload.confidencePct ?? 90,
     relatedTripRef: payload.relatedTripRef,
-    status: 'Interpretado',
+    status: lowConfidence ? 'Pendente' : 'Interpretado',
     rawSummary: payload.rawSummary,
-    isDemo: true,
+    isDemo: isDemoFlag,
   };
   return {
     captureRecord,
     isDuplicate: false,
-    needsManualConfirmation: false,
+    needsManualConfirmation: lowConfidence,
   };
 }
 
@@ -608,12 +1007,21 @@ export interface VehicleCatalogFilters {
   city?: string;
   platformId?: string;
   category?: string;
+  brand?: string;
+  model?: string;
+  version?: string;
+  yearMin?: number;
+  yearMax?: number;
   fuelType?: string;
   minSeats?: number;
+  minDoors?: number;
+  minBatteryKwh?: number;
   minTrunkLiters?: number;
   minRangeKm?: number;
   onlyEligible?: boolean;
   colorQuery?: string;
+  maxCostPerKmEur?: number;
+  sortBy?: VehicleSortOption;
 }
 
 export function filterVehiclesCatalog(
@@ -621,17 +1029,38 @@ export function filterVehiclesCatalog(
   filters: VehicleCatalogFilters,
   platforms?: Array<{ id: string; name: string; categories: string[]; countryScope: string[]; status: string }>
 ): VehicleRecord[] {
-  return vehicles.filter((v) => {
+  const filtered = vehicles.filter((v) => {
     if (filters.countryCode && filters.countryCode !== 'ALL' && v.countryCode !== filters.countryCode) {
       return false;
     }
     if (filters.city && filters.city !== 'ALL' && v.city.toLowerCase() !== filters.city.toLowerCase()) {
       return false;
     }
+    if (filters.brand && filters.brand !== 'ALL' && v.brand.toLowerCase() !== filters.brand.toLowerCase()) {
+      return false;
+    }
+    if (filters.model && filters.model !== 'ALL' && !v.model.toLowerCase().includes(filters.model.toLowerCase())) {
+      return false;
+    }
+    if (filters.version && filters.version.trim() && !v.version.toLowerCase().includes(filters.version.trim().toLowerCase())) {
+      return false;
+    }
+    if (filters.yearMin && filters.yearMin > 0 && v.year < filters.yearMin) {
+      return false;
+    }
+    if (filters.yearMax && filters.yearMax > 0 && v.year > filters.yearMax) {
+      return false;
+    }
     if (filters.fuelType && filters.fuelType !== 'ALL' && v.fuelType !== filters.fuelType) {
       return false;
     }
     if (filters.minSeats && v.seats < filters.minSeats) {
+      return false;
+    }
+    if (filters.minDoors && v.doors < filters.minDoors) {
+      return false;
+    }
+    if (filters.minBatteryKwh && filters.minBatteryKwh > 0 && (v.batteryKwh ?? 0) < filters.minBatteryKwh) {
       return false;
     }
     if (filters.minTrunkLiters && v.trunkLiters < filters.minTrunkLiters) {
@@ -643,9 +1072,15 @@ export function filterVehiclesCatalog(
     if (filters.colorQuery && !v.color.toLowerCase().includes(filters.colorQuery.toLowerCase())) {
       return false;
     }
+    if (filters.maxCostPerKmEur && filters.maxCostPerKmEur > 0) {
+      const tco = computeVehicleOwnershipTcoPerKm(v);
+      if (tco.totalEstimatedCostPerKmEur > filters.maxCostPerKmEur) {
+        return false;
+      }
+    }
     if (filters.searchQuery) {
       const q = filters.searchQuery.toLowerCase();
-      const text = `${v.brand} ${v.model} ${v.version} ${v.color} ${v.equipment.join(' ')}`.toLowerCase();
+      const text = `${v.brand} ${v.model} ${v.version} ${v.year} ${v.color} ${v.city} ${v.equipment.join(' ')}`.toLowerCase();
       if (!text.includes(q)) return false;
     }
 
@@ -666,6 +1101,29 @@ export function filterVehiclesCatalog(
       if (!anyMatch) return false;
     }
     return true;
+  });
+
+  if (!filters.sortBy || filters.sortBy === 'relevance') {
+    return filtered;
+  }
+
+  return [...filtered].sort((a, b) => {
+    if (filters.sortBy === 'costAsc') {
+      return (
+        computeVehicleOwnershipTcoPerKm(a).totalEstimatedCostPerKmEur -
+        computeVehicleOwnershipTcoPerKm(b).totalEstimatedCostPerKmEur
+      );
+    }
+    if (filters.sortBy === 'rangeDesc') {
+      return (b.realRangeKm ?? b.rangeKm) - (a.realRangeKm ?? a.rangeKm);
+    }
+    if (filters.sortBy === 'yearDesc') {
+      return b.year - a.year;
+    }
+    if (filters.sortBy === 'trunkDesc') {
+      return b.trunkLiters - a.trunkLiters;
+    }
+    return 0;
   });
 }
 

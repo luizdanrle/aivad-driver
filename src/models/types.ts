@@ -35,13 +35,47 @@ export type AdminRole =
 
 export type UserRole = 'Motorista' | 'Operador' | AdminRole;
 
+export type RuntimeEnvironmentMode = 'development' | 'test' | 'preview' | 'production';
+
+export type CountryCatalogTier =
+  | 'Mercado Oficialmente Ativo'
+  | 'País Configurado'
+  | 'País Suportado';
+
+export type PlatformCountryOperationalStatus =
+  | 'Operação efetiva validada'
+  | 'Licenciada sem operação confirmada'
+  | 'Disponibilidade regional limitada'
+  | 'Suspensa'
+  | 'Encerrada no país'
+  | 'Em validação';
+
+export interface PlatformCountryOperation {
+  countryCode: string;
+  operationalStatus: PlatformCountryOperationalStatus;
+  regions?: string[];
+  cities?: string[];
+  preselectForDrivers: boolean;
+  licensingNote?: string;
+  validationSource: string;
+  verifiedAt: string;
+  history: Array<{
+    date: string;
+    status: PlatformCountryOperationalStatus;
+    note: string;
+  }>;
+}
+
 export interface AuthSession {
   authenticated: boolean;
+  sessionId?: string;
   userId: string;
   userName: string;
   email: string;
   role: UserRole;
+  organizationId?: string | null;
   signedInAt: string;
+  expiresAt?: string;
   isDemoSession?: boolean;
   authMethod?: 'server_credentials' | 'demo_sandbox';
 }
@@ -90,6 +124,7 @@ export interface PlatformRecord {
   integrationStatus: IntegrationAvailability;
   integrationLabel: string;
   lastErrorNote?: string;
+  countryOperations?: PlatformCountryOperation[];
   isDemo: boolean;
 }
 
@@ -187,6 +222,8 @@ export interface VehicleRecord {
   marketEligibilityDetail?: VehicleMarketEligibilityDetail;
   resaleEstimate?: VehicleResaleEstimate;
   isActiveDriverVehicle: boolean;
+  organizationId?: string | null;
+  ownerUserId?: string;
   isDemo: boolean;
 }
 
@@ -253,15 +290,25 @@ export interface ProposalInput {
 
 export interface ProposalThresholds {
   minValueEur: number;
+  maxValueEur?: number;
   minEurPerKm: number;
   minEurPerHour: number;
   maxPickupKm: number;
+  maxPickupTimeMin?: number;
   maxTotalDistanceKm: number;
   maxTotalTimeMin: number;
   allowedPlatforms: PlatformId[];
   allowedCategories: string[];
   allowedRegions: string[];
+  destinationZonesPreferred?: string[];
+  allowedDaysOfWeek?: number[]; // 0=Dom .. 6=Sáb
   activeScheduleWindow: string;
+  avoidEmptyReturnRisk?: boolean;
+  dailyGoalEur?: number;
+  weeklyGoalEur?: number;
+  monthlyGoalEur?: number;
+  maxContinuousDrivingMin?: number;
+  minBreakMinutes?: number;
   weightEurPerKm: number;
   weightEurPerHour: number;
   weightPickupEfficiency: number;
@@ -277,6 +324,10 @@ export interface ProposalAnalysis {
   operatingCostEur: number;
   estimatedNetEur: number;
   emptyReturnRisk: 'Baixo' | 'Médio' | 'Alto';
+  returnPassengerProbabilityPct?: number | null;
+  returnProbabilityEpistemicTag?: EpistemicTag;
+  batteryAdequate?: boolean;
+  tvdeLimitCompliant?: boolean;
   score: number;
   classification: ProposalClassification;
   basisDescription: string;
@@ -291,12 +342,12 @@ export interface ProposalRecord {
   lifecycleState: ProposalLifecycleState;
   stateTimestamps: Partial<Record<ProposalLifecycleState, string>>;
   autoPilotDecision?: AutoPilotDecisionRecord;
-  source: 'Manual' | 'Captura Simulada' | 'API Oficial (Pendente)';
+  source: 'Manual' | 'Captura Simulada' | 'API Oficial (Pendente)' | 'Notificação/OCR' | 'Conector Autorizado';
   isSimulatedSandbox?: boolean;
   isDemo: boolean;
 }
 
-export type AutoPilotMode = 'Manual' | 'Assistido' | 'Automático';
+export type AutoPilotMode = 'Manual' | 'Semiautomático' | 'Assistido' | 'Automático';
 export type StrategyMode = 'Manual' | 'Semiautomático' | 'Automático';
 
 export interface StrategyPreset {
@@ -325,6 +376,8 @@ export interface StrategyAdjustmentLogEntry {
   newValue: number;
   conditionTriggered: string;
   reason: string;
+  requiresConfirmation?: boolean;
+  confirmedByDriver?: boolean;
   observedOutcome?: string;
   reverted: boolean;
 }
@@ -348,7 +401,18 @@ export interface AutoPilotConfig {
   includeBonusInThreshold: boolean;
   exceptions: string[];
   officialAutomationAuthorized: boolean;
+  authorizedExecutionChannel?: 'Nenhum' | 'API Oficial Autorizada' | 'Bridge Nativo Autorizado';
 }
+
+export type AutoPilotDecisionAction =
+  | 'Executado automaticamente: Aceitar'
+  | 'Executado automaticamente: Recusar'
+  | 'Decisão pronta (Ação assistida): Aceitar'
+  | 'Decisão pronta (Ação assistida): Recusar'
+  | 'Aceitar sugerido'
+  | 'Recusar sugerido'
+  | 'Aguardar decisão manual'
+  | 'Bloqueado por ausência de API oficial';
 
 export interface AutoPilotDecisionRecord {
   id: string;
@@ -356,13 +420,13 @@ export interface AutoPilotDecisionRecord {
   timestamp: string;
   platformId: PlatformId;
   modeAtDecision: AutoPilotMode;
-  action:
-    | 'Aceitar sugerido'
-    | 'Recusar sugerido'
-    | 'Aguardar decisão manual'
-    | 'Bloqueado por ausência de API oficial';
+  action: AutoPilotDecisionAction;
   rulesMatched: string[];
+  executedAutomatically?: boolean;
+  executionChannelUsed?: string;
   platformConfirmed: boolean;
+  driverOverride?: 'Aceite manualmente' | 'Recusado manualmente' | 'Mantido';
+  overrideReason?: string;
   reason: string;
 }
 
@@ -375,8 +439,12 @@ export type FloatingMetricKey =
   | 'totalTime'
   | 'score';
 
+export type FloatingCardProfileId = 'Urbano' | 'Aeroporto' | 'Noturno' | 'Alto Contraste';
+
 export interface AndroidOverlayConfig {
   position: 'Topo' | 'Centro' | 'Fundo';
+  layoutMode?: 'compacto' | 'expandido';
+  captureProfile?: FloatingCardProfileId;
   widthPercent: number;
   opacityPercent: number;
   fontSizePx: number;
@@ -390,6 +458,8 @@ export interface AndroidOverlayConfig {
   autoDismiss: boolean;
   allowManualClose?: boolean;
   allowMinimize?: boolean;
+  highContrastAccessibility?: boolean;
+  largeTouchTargets?: boolean;
   showHistoryFloatingButton: boolean;
 }
 
@@ -404,6 +474,7 @@ export type CaptureSource =
 
 export type CaptureDataType =
   | 'Viagem'
+  | 'Proposta'
   | 'Ganho'
   | 'Gorjeta'
   | 'Campanha'
@@ -425,6 +496,36 @@ export type CaptureStatus =
   | 'Rejeitado'
   | 'Corrigido';
 
+export interface CaptureCorrectionEntry {
+  correctedAt: string;
+  correctedBy: string;
+  field: string;
+  previousValue: string | number;
+  newValue: string | number;
+  reason: string;
+}
+
+export interface NormalizedCapturePayload {
+  platformId: PlatformId;
+  dataType: CaptureDataType;
+  offerOrGrossEur: number;
+  pickupDistanceKm?: number;
+  tripDistanceKm?: number;
+  estimatedDurationMin?: number;
+  pickupZone?: string;
+  destinationZone?: string;
+  category?: string;
+  bonusEur?: number;
+  tipEur?: number;
+  actualNetEur?: number;
+  outcomeStatus?: TripStatus;
+  source: CaptureSource;
+  capturedAtIso: string;
+  confidencePct: number;
+  externalTxId: string;
+  rawText: string;
+}
+
 export interface SmartCaptureRecord {
   id: string;
   externalTxId: string;
@@ -434,6 +535,16 @@ export interface SmartCaptureRecord {
   platformId: PlatformId;
   capturedAt: string;
   amountEur: number;
+  pickupDistanceKm?: number;
+  tripDistanceKm?: number;
+  estimatedDurationMin?: number;
+  destinationZone?: string;
+  category?: string;
+  bonusEur?: number;
+  tipEur?: number;
+  outcomeStatus?: string;
+  confidencePct?: number;
+  corrections?: CaptureCorrectionEntry[];
   relatedTripRef?: string;
   matchedTripId?: string;
   status: CaptureStatus;
@@ -1077,18 +1188,30 @@ export interface UserAccount {
   appVersion: string;
   privacyConsentForSupport: boolean;
   createdAt: string;
+  organizationId?: string | null;
   isDemo: boolean;
 }
+
+export type OrganizationType =
+  | 'Frota TVDE'
+  | 'Operador Independente'
+  | 'Cooperativa / Equipa'
+  | 'Empresa Corporativa';
 
 export interface OrganizationRecord {
   id: string;
   name: string;
+  type?: OrganizationType;
   countryCode: string;
   taxId: string;
   driversCount: number;
   vehiclesCount: number;
   planId: string;
   status: 'Ativa' | 'Em validação' | 'Suspensa';
+  ownerUserId?: string;
+  memberUserIds?: string[];
+  vehicleIds?: string[];
+  isolationPolicy?: 'strict_tenant';
 }
 
 export interface TicketRecord {
@@ -1172,6 +1295,40 @@ export interface CmsContentState {
   visibleSections?: Record<PortalSectionId, boolean>;
   benefits?: Array<{ id: string; title: string; description: string }>;
   faqs?: Array<{ id: string; question: string; answer: string }>;
+  navigationMenus?: Array<{
+    id: string;
+    label: string;
+    pageId: string;
+    visible: boolean;
+    order: number;
+  }>;
+  pagesContent?: Record<
+    string,
+    {
+      title: string;
+      subtitle: string;
+      body: string;
+      updatedAt: string;
+    }
+  >;
+  mediaAssets?: Array<{
+    id: string;
+    slot: 'hero' | 'card' | 'logo';
+    label: string;
+    url: string;
+    alt: string;
+  }>;
+  supportedLanguages?: string[];
+  localizedContent?: Record<
+    string,
+    {
+      heroTitle: string;
+      heroSubtitle: string;
+      brandTagline: string;
+      announcementBanner: string;
+    }
+  >;
+  versionNumber?: number;
   draftSnapshot?: Partial<Omit<CmsContentState, 'revisionHistory' | 'draftSnapshot'>> | null;
   publications: Array<{
     id: string;
@@ -1186,6 +1343,7 @@ export interface CmsContentState {
     savedAt: string;
     savedBy: string;
     summary: string;
+    versionNumber?: number;
     snapshot: {
       heroTitle: string;
       heroSubtitle: string;
@@ -1229,6 +1387,9 @@ export interface CountryMarketConfig {
   taxCategories: string[];
   regions: CountryRegionConfig[];
   marketStatus: MarketStatus;
+  catalogTier?: CountryCatalogTier;
+  validationSource?: string;
+  verifiedAt?: string;
   notes?: string;
 }
 
@@ -1308,4 +1469,89 @@ export interface RemoteConfigState {
   enableAiAssistantServerProxy: boolean;
   featureFlags: Record<string, boolean>;
 }
+
+export type LifecycleAuditEventType =
+  | 'Proposta recebida'
+  | 'Proposta analisada'
+  | 'Aceitação / Rejeição'
+  | 'Viagem iniciada'
+  | 'Chegada à recolha'
+  | 'Espera'
+  | 'Viagem concluída'
+  | 'Cancelamento'
+  | 'Falha de captura'
+  | 'Perda de ligação'
+  | 'Correção manual';
+
+export interface LifecycleAuditEvent {
+  id: string;
+  idempotencyKey: string;
+  eventType: LifecycleAuditEventType;
+  originPlatform: PlatformId | 'aivad_system';
+  timestamp: string;
+  previousState: string;
+  currentState: string;
+  changeOrigin: 'Motorista' | 'AutoPilot Automático' | 'AutoPilot Semiautomático' | 'Smart Capture' | 'Conector' | 'Sistema';
+  associatedEntityId?: string;
+  associatedPayloadSummary: string;
+  auditTrail: string[];
+  isDemo: boolean;
+}
+
+export interface ZoneRelocationLog {
+  id: string;
+  zoneId?: string;
+  fromZone: string;
+  targetZone: string;
+  suggestedReason: string;
+  epistemicBasis: EpistemicTag;
+  startedAtIso: string;
+  completedAtIso?: string;
+  outcome: 'Em deslocação' | 'Corrida obtida na zona' | 'Sem corrida (reposicionado)' | 'Cancelado';
+  resultingTripId?: string;
+  waitMinutesUntilRide?: number;
+  destinationNotes?: string;
+  isDemo: boolean;
+}
+
+export interface ReferralCouponRecord {
+  id: string;
+  code: string;
+  referrerUserId?: string;
+  referrerName: string;
+  countryScope: string[]; // ['ALL'] ou códigos ISO
+  trialDaysGranted: number; // ex.: 30 dias
+  discountPctAfterTrial: number;
+  maxRedemptions: number;
+  currentRedemptions: number;
+  validUntil: string;
+  active: boolean;
+  billingExecutionState: 'Preparado (Sem cobrança real ativa)';
+}
+
+export type VehicleSortOption = 'relevance' | 'costAsc' | 'rangeDesc' | 'yearDesc' | 'trunkDesc';
+
+export interface PersistedVehicleCatalogFilters {
+  searchQuery: string;
+  countryCode: string;
+  city: string;
+  platformId: string;
+  category: string;
+  brand: string;
+  model: string;
+  version: string;
+  yearMin: number;
+  yearMax: number;
+  fuelType: string;
+  minSeats: number;
+  minDoors: number;
+  minBatteryKwh: number;
+  minRangeKm: number;
+  minTrunkLiters: number;
+  colorQuery: string;
+  onlyEligible: boolean;
+  maxCostPerKmEur: number;
+  sortBy: VehicleSortOption;
+}
+
 

@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   Activity,
   Bell,
@@ -10,14 +11,12 @@ import {
   FileSpreadsheet,
   Gauge,
   Globe,
-  HelpCircle,
   Home,
   Layers,
   LayoutDashboard,
   LifeBuoy,
   MapPin,
   Menu,
-  Cloud,
   Plug,
   RefreshCw,
   Search,
@@ -26,6 +25,8 @@ import {
   Sparkles,
   Star,
   User,
+  Volume2,
+  VolumeX,
   Wallet,
   X,
 } from 'lucide-react';
@@ -45,6 +46,7 @@ import { DriverFinanceAndFleet } from './views/DriverFinanceAndFleet';
 import { DriverFieldAndCompliance } from './views/DriverFieldAndCompliance';
 import { DriverAccountAndSupport } from './views/DriverAccountAndSupport';
 import { DriverTachographView } from './views/DriverTachographView';
+import { DriverDiagnosticsAndVoiceView } from './views/DriverDiagnosticsAndVoiceView';
 
 export type DriverMenuGroup =
   | 'VISÃO GERAL'
@@ -145,17 +147,31 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   },
   // PERSONALIZAÇÃO
   {
+    id: 'voz-copiloto',
+    label: 'AIVAD Voice · Copiloto',
+    group: 'PERSONALIZAÇÃO',
+    icon: Volume2,
+    keywords: 'voz copiloto sintese audio alerta propostas bateria maos livres',
+  },
+  {
     id: 'cartoes-flutuantes',
     label: 'Cartões flutuantes',
     group: 'PERSONALIZAÇÃO',
     icon: Smartphone,
-    keywords: 'overlay dinamico verde amarelo vermelho preview simulador android',
+    keywords: 'overlay dinamico verde amarelo vermelho preview simulador android perfis',
+  },
+  {
+    id: 'conectores',
+    label: 'Conectores Uber e Bolt',
+    group: 'PERSONALIZAÇÃO',
+    icon: Plug,
+    keywords: 'uber bolt conectores nivel 1 2 3 sandbox api permissoes backoff',
   },
   {
     id: 'apps-integracoes',
     label: 'Aplicações e integrações',
     group: 'PERSONALIZAÇÃO',
-    icon: Plug,
+    icon: Layers,
     keywords: 'uber bolt cabify freenow pop vloz ativar desativar plataforma',
   },
   {
@@ -166,6 +182,13 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
     keywords: 'conta perfil internacional idioma moeda privacidade notificacoes',
   },
   // APOIO
+  {
+    id: 'diagnostico',
+    label: 'Diagnóstico e estado',
+    group: 'APOIO',
+    icon: Activity,
+    keywords: 'diagnostico auditoria transparencia windsurf matriz estado real api',
+  },
   {
     id: 'suporte',
     label: 'Ajuda e suporte',
@@ -206,6 +229,9 @@ const NAV_LABELS: Record<string, string> = {
   'locais-rotas': 'Locais e rotas',
   'mapas-zonas': 'Locais e rotas',
   'cartoes-flutuantes': 'Cartões flutuantes',
+  'voz-copiloto': 'AIVAD Voice · Copiloto por Voz',
+  conectores: 'Conectores Uber & Bolt (Suite 3 Níveis)',
+  diagnostico: 'Diagnóstico Operacional & Auditoria',
   'apps-integracoes': 'Aplicações e integrações',
   perfil: 'Configurações',
   suporte: 'Ajuda e suporte',
@@ -219,6 +245,7 @@ const NAV_LABELS: Record<string, string> = {
 };
 
 export const DriverLayout: React.FC = () => {
+  const prefersReducedMotion = useReducedMotion();
   const {
     state,
     activeDriver,
@@ -228,6 +255,8 @@ export const DriverLayout: React.FC = () => {
     setMode,
     toggleTheme,
     syncNowToServer,
+    updateVoiceCopilotConfig,
+    dismissVisualVoiceBanner,
   } = useEcosystem();
 
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
@@ -274,6 +303,9 @@ export const DriverLayout: React.FC = () => {
     }
     setDriverNav(id);
     setMobileMenuOpen(false);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0 });
+    }
   };
 
   const activeTachoSession = state.tachograph.sessions.find(
@@ -293,6 +325,9 @@ export const DriverLayout: React.FC = () => {
   };
 
   const renderView = () => {
+    if (['voz-copiloto', 'conectores', 'diagnostico'].includes(activeNav)) {
+      return <DriverDiagnosticsAndVoiceView activeTab={activeNav} />;
+    }
     if (activeNav === 'ai-core' || activeNav === 'assistente-ia') {
       return <DriverAiCoreView />;
     }
@@ -578,7 +613,8 @@ export const DriverLayout: React.FC = () => {
 
       {/* Main Content Area (ZERO ADMIN BUTTONS) */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="sticky top-0 z-30 h-16 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between gap-2">
+        <div className="sticky top-0 z-30">
+          <header className="h-16 px-3 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
@@ -626,6 +662,19 @@ export const DriverLayout: React.FC = () => {
             </div>
             <button
               type="button"
+              onClick={() => updateVoiceCopilotConfig({ enabled: !state.voiceConfig.enabled })}
+              aria-label={state.voiceConfig.enabled ? 'Silenciar Copiloto de Voz' : 'Ativar Copiloto de Voz'}
+              title={state.voiceConfig.enabled ? 'Copiloto de Voz Ativo (clicar para silenciar)' : 'Copiloto de Voz Silenciado'}
+              className={`p-2 rounded-lg border text-xs transition-colors ${
+                state.voiceConfig.enabled
+                  ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-400'
+              }`}
+            >
+              {state.voiceConfig.enabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            </button>
+            <button
+              type="button"
               onClick={() => setDriverNav('notificacoes')}
               aria-label={`Notificações (${unreadNotifications} por ler)`}
               className="relative p-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-blue-600"
@@ -651,7 +700,7 @@ export const DriverLayout: React.FC = () => {
         </header>
 
         {state.session.isDemoSession && (
-          <div className="bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 px-4 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
+          <div className="bg-amber-50 dark:bg-amber-950 border-b border-amber-200 dark:border-amber-900 px-4 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 flex flex-wrap items-center justify-between gap-2">
             <span>
               <strong>Modo Demonstração (Sandbox):</strong> dados fictícios de exemplo isolados da conta real.{' '}
               {syncNotice ? `· ${syncNotice}` : ''}
@@ -665,6 +714,42 @@ export const DriverLayout: React.FC = () => {
             </button>
           </div>
         )}
+
+        <AnimatePresence>
+          {state.latestVisualVoiceBanner && (
+            <motion.div
+              key={state.latestVisualVoiceBanner.id}
+              initial={prefersReducedMotion ? false : { opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              className="bg-slate-900 text-white border-b border-blue-500/40 px-4 py-2 text-xs flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Volume2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="font-semibold truncate">{state.latestVisualVoiceBanner.spokenText}</span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setDriverNav('voz-copiloto')}
+                  className="text-[11px] text-blue-300 hover:underline font-semibold"
+                >
+                  Configurar Voz
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissVisualVoiceBanner}
+                  aria-label="Fechar aviso de voz"
+                  className="p-1 rounded hover:bg-white/10"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        </div>
 
         <main className="flex-1 p-4 sm:p-6 pb-24 lg:pb-8 max-w-7xl w-full mx-auto space-y-6">
           <div className="sm:hidden flex items-center justify-between gap-2">

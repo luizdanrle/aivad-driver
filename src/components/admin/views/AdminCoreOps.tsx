@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Banknote, Lock, Plus, Search, ShieldCheck, Users } from 'lucide-react';
 import { formatMoney } from '../../../core/localization';
-import type { PaymentTransactionRecord } from '../../../models/types';
+import type { OrganizationType, PaymentTransactionRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { HorizontalBreakdownBars } from '../../ui/ChartsAndVisuals';
 import {
@@ -11,12 +11,21 @@ import {
   StatusLabel,
 } from '../../ui/DesignSystem';
 
+const ORG_TYPES: OrganizationType[] = [
+  'Frota TVDE',
+  'Operador Independente',
+  'Cooperativa / Equipa',
+  'Empresa Corporativa',
+];
+
 export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
     availableMarketsForPortal,
     updateUserStatus,
     changeUserSubscriptionPlan,
+    createOrganization,
+    assignUserOrganization,
     addPaymentTransaction,
     toggleRemoteFlag,
     setAdminNav,
@@ -24,6 +33,22 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
 
   const [userSearch, setUserSearch] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [orgForm, setOrgForm] = useState<{
+    name: string;
+    type: OrganizationType;
+    countryCode: string;
+    taxId: string;
+    driversCount: number;
+    vehiclesCount: number;
+  }>({
+    name: '',
+    type: 'Frota TVDE',
+    countryCode: 'PT',
+    taxId: '',
+    driversCount: 1,
+    vehiclesCount: 1,
+  });
+  const [orgFeedback, setOrgFeedback] = useState<string | null>(null);
 
   const [payForm, setPayForm] = useState<{
     userId: string;
@@ -185,7 +210,7 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
                 <tr>
                   <th className="p-3">Utilizador</th>
                   <th className="p-3">Perfil</th>
-                  <th className="p-3">SO / Versão</th>
+                  <th className="p-3">Organização / Vínculo</th>
                   <th className="p-3">Plano</th>
                   <th className="p-3">Estado</th>
                   <th className="p-3">Ação</th>
@@ -204,8 +229,25 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
                         <p className="font-semibold">{u.name}</p>
                         <p className="text-slate-500">{u.email}</p>
                       </td>
-                      <td className="p-3">{u.role} ({u.countryCode})</td>
-                      <td className="p-3 font-mono-tabular">{u.osPlatform} v{u.appVersion}</td>
+                      <td className="p-3">
+                        <p>{u.role} ({u.countryCode})</p>
+                        <p className="font-mono-tabular text-[11px] text-slate-400">{u.osPlatform} v{u.appVersion}</p>
+                      </td>
+                      <td className="p-3" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          aria-label={`Organização de ${u.name}`}
+                          value={u.organizationId ?? ''}
+                          onChange={(e) => assignUserOrganization(u.id, e.target.value || null)}
+                          className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-[11px]"
+                        >
+                          <option value="">Independente (Sem Frota)</option>
+                          {state.organizations.map((org) => (
+                            <option key={org.id} value={org.id}>
+                              {org.name} ({org.type ?? 'Frota TVDE'})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                       <td className="p-3">{plan?.name ?? u.planId}</td>
                       <td className="p-3">
                         <StatusLabel
@@ -235,12 +277,18 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
           <Card className="lg:col-span-4 p-5 space-y-3 text-xs">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <Users className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-              Inspeção &amp; Privacidade RGPD
+              Inspeção, Isolamento &amp; Privacidade RGPD
             </h3>
             {inspected ? (
               <div className="space-y-3">
                 <p><strong>Nome:</strong> {inspected.name}</p>
                 <p><strong>Cidade / País:</strong> {inspected.city}, {inspected.countryCode}</p>
+                <p>
+                  <strong>Vínculo Organizacional:</strong>{' '}
+                  {inspected.organizationId
+                    ? state.organizations.find((o) => o.id === inspected.organizationId)?.name ?? inspected.organizationId
+                    : 'Motorista Independente (sem obrigação de frota)'}
+                </p>
                 <p><strong>Criado em:</strong> {inspected.createdAt}</p>
                 <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 space-y-1.5">
                   <div className="flex items-center gap-1.5 font-semibold">
@@ -268,38 +316,149 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
   }
 
   if (activeTab === 'organizacoes') {
+    const independentDriversCount = state.users.filter(
+      (u) => u.role === 'Motorista' && !u.organizationId
+    ).length;
+
     return (
-      <Card className="overflow-x-auto">
-        <div className="p-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-sm font-bold">Organizações &amp; Frotas TVDE</h2>
-        </div>
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
-            <tr>
-              <th className="p-3">Organização</th>
-              <th className="p-3">NIF / VAT</th>
-              <th className="p-3">País</th>
-              <th className="p-3">Motoristas / Veículos</th>
-              <th className="p-3">Plano</th>
-              <th className="p-3">Estado</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {state.organizations.map((org) => (
-              <tr key={org.id}>
-                <td className="p-3 font-semibold">{org.name}</td>
-                <td className="p-3 font-mono-tabular">{org.taxId}</td>
-                <td className="p-3">{org.countryCode}</td>
-                <td className="p-3 font-mono-tabular">{org.driversCount} / {org.vehiclesCount}</td>
-                <td className="p-3">{org.planId}</td>
-                <td className="p-3">
-                  <StatusLabel tone={org.status === 'Ativa' ? 'success' : 'warning'} text={org.status} />
-                </td>
+      <div className="space-y-6">
+        <ContextualHelpBanner
+          title="Multi-Organização & Isolamento Estrito de Dados (Tenant Isolation)"
+          description="Suporta Frotas TVDE, Operadores Independentes, Cooperativas/Equipas e Empresas Corporativas sem obrigar motoristas independentes a pertencer a uma frota. Acessos cruzados entre organizações são bloqueados no backend com HTTP 403 e auditoria."
+        />
+
+        {orgFeedback && <StatusLabel tone="info" text={orgFeedback} />}
+
+        <Card className="p-5 space-y-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-bold flex items-center gap-2">
+              <Plus className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              Registar Nova Organização (Isolamento strict_tenant)
+            </h3>
+            <span className="text-slate-500">
+              Motoristas independentes ativos sem frota: <strong className="font-mono-tabular">{independentDriversCount}</strong>
+            </span>
+          </div>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (!orgForm.name.trim() || !orgForm.taxId.trim()) return;
+              const res = await createOrganization({
+                name: orgForm.name.trim(),
+                type: orgForm.type,
+                countryCode: orgForm.countryCode,
+                taxId: orgForm.taxId.trim(),
+                driversCount: orgForm.driversCount,
+                vehiclesCount: orgForm.vehiclesCount,
+              });
+              if (res.ok) {
+                setOrgFeedback(`Organização "${orgForm.name.trim()}" criada com política de isolamento strict_tenant.`);
+                setOrgForm((f) => ({ ...f, name: '', taxId: '' }));
+              } else {
+                setOrgFeedback(res.error ?? 'Não foi possível registar a organização.');
+              }
+            }}
+            className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3 items-end"
+          >
+            <div>
+              <label htmlFor="org-name" className="block mb-1 font-medium">Designação</label>
+              <input
+                id="org-name"
+                type="text"
+                placeholder="Ex: Atlântico Mobilidade"
+                value={orgForm.name}
+                onChange={(e) => setOrgForm((f) => ({ ...f, name: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              />
+            </div>
+            <div>
+              <label htmlFor="org-type" className="block mb-1 font-medium">Tipologia</label>
+              <select
+                id="org-type"
+                value={orgForm.type}
+                onChange={(e) => setOrgForm((f) => ({ ...f, type: e.target.value as OrganizationType }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {ORG_TYPES.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="org-tax" className="block mb-1 font-medium">NIF / VAT</label>
+              <input
+                id="org-tax"
+                type="text"
+                placeholder="PT516000999"
+                value={orgForm.taxId}
+                onChange={(e) => setOrgForm((f) => ({ ...f, taxId: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="org-country" className="block mb-1 font-medium">País</label>
+              <select
+                id="org-country"
+                value={orgForm.countryCode}
+                onChange={(e) => setOrgForm((f) => ({ ...f, countryCode: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                {state.countries.map((c) => (
+                  <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="org-veh" className="block mb-1 font-medium">Viaturas</label>
+              <input
+                id="org-veh"
+                type="number"
+                min={0}
+                value={orgForm.vehiclesCount}
+                onChange={(e) => setOrgForm((f) => ({ ...f, vehiclesCount: Number(e.target.value) }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <button type="submit" className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold">
+              Criar Organização
+            </button>
+          </form>
+        </Card>
+
+        <Card className="overflow-x-auto">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800">
+            <h2 className="text-sm font-bold">Organizações, Operadores &amp; Cooperativas ({state.organizations.length})</h2>
+          </div>
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+              <tr>
+                <th className="p-3">Organização</th>
+                <th className="p-3">Tipologia</th>
+                <th className="p-3">NIF / VAT</th>
+                <th className="p-3">País</th>
+                <th className="p-3">Motoristas / Veículos</th>
+                <th className="p-3">Política de Isolamento</th>
+                <th className="p-3">Estado</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {state.organizations.map((org) => (
+                <tr key={org.id}>
+                  <td className="p-3 font-semibold">{org.name}</td>
+                  <td className="p-3">{org.type ?? 'Frota TVDE'}</td>
+                  <td className="p-3 font-mono-tabular">{org.taxId}</td>
+                  <td className="p-3 font-mono-tabular">{org.countryCode}</td>
+                  <td className="p-3 font-mono-tabular">{org.driversCount} / {org.vehiclesCount}</td>
+                  <td className="p-3 font-mono-tabular text-[11px]">{org.isolationPolicy ?? 'strict_tenant'}</td>
+                  <td className="p-3">
+                    <StatusLabel tone={org.status === 'Ativa' ? 'success' : 'warning'} text={org.status} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      </div>
     );
   }
 

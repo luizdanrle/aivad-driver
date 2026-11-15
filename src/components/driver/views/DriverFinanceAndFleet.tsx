@@ -42,6 +42,7 @@ import type {
   FuelType,
   TripRecord,
   VehicleRecord,
+  VehicleSortOption,
 } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { GoalDonutChart, HorizontalBreakdownBars, PlatformBadge } from '../../ui/ChartsAndVisuals';
@@ -101,6 +102,8 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     addVehicle,
     updateVehicle,
     setActiveVehicle,
+    updateVehicleCatalogFilters,
+    resetVehicleCatalogFilters,
   } = useEcosystem();
 
   const todayIso = getTodayIso();
@@ -135,19 +138,8 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   const [simKmMonth, setSimKmMonth] = useState(4200);
   const [simGrossPerKm, setSimGrossPerKm] = useState(1.18);
 
-  // Vehicle Catalog Filters + Resale Estimator Odometers + Add Form
-  const [vehFilters, setVehFilters] = useState({
-    searchQuery: '',
-    countryCode: 'ALL',
-    platformId: 'ALL',
-    category: 'ALL',
-    fuelType: 'ALL',
-    minSeats: 4,
-    minTrunkLiters: 0,
-    minRangeKm: 0,
-    colorQuery: '',
-    onlyEligible: false,
-  });
+  // Persisted Vehicle Catalog Filters (§11) + Resale Estimator Odometers + Add Form
+  const vehFilters = state.vehicleCatalogFilters;
   const [resaleOdometers, setResaleOdometers] = useState<Record<string, number>>({});
   const [vehForm, setVehForm] = useState({
     brand: 'Kia',
@@ -216,6 +208,12 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     };
 
     const allCats = Array.from(new Set(activeDriverTrips.map((t) => t.category)));
+    const allZones = Array.from(
+      new Set([
+        ...activeDriverTrips.map((t) => t.pickupZone).filter(Boolean),
+        ...state.zones.map((z) => z.name),
+      ])
+    );
 
     return (
       <div className="space-y-6">
@@ -370,6 +368,36 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             </div>
 
             <div>
+              <label htmlFor="rep-veh" className="block mb-1 font-medium">Viatura</label>
+              <select
+                id="rep-veh"
+                value={rf.vehicleId ?? 'ALL'}
+                onChange={(e) => updateReportFilters({ vehicleId: e.target.value })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="ALL">Todas as viaturas</option>
+                {state.vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>{v.brand} {v.model} ({v.year})</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="rep-zone" className="block mb-1 font-medium">Zona</label>
+              <select
+                id="rep-zone"
+                value={rf.zone ?? 'ALL'}
+                onChange={(e) => updateReportFilters({ zone: e.target.value })}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+              >
+                <option value="ALL">Todas as zonas</option>
+                {allZones.map((zn) => (
+                  <option key={zn} value={zn}>{zn}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
               <label htmlFor="rep-st" className="block mb-1 font-medium">Estado</label>
               <select
                 id="rep-st"
@@ -383,7 +411,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               </select>
             </div>
 
-            <div className="col-span-2 sm:col-span-2 lg:col-span-2 text-[11px] text-slate-500 flex flex-wrap items-center gap-2">
+            <div className="col-span-2 sm:col-span-4 lg:col-span-3 text-[11px] text-slate-500 flex flex-wrap items-center gap-2">
               <span className="font-semibold text-slate-700 dark:text-slate-200">
                 Período: {r.period.startDate} → {r.period.endDate}
               </span>
@@ -907,38 +935,88 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
           </div>
         )}
 
-        {/* 8. VEÍCULO & ENERGIA */}
+        {/* 8. VEÍCULO & ENERGIA + SUB-RELATÓRIO POR VIATURA */}
         {reportSubTab === 'veiculo_sub' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <MetricCard
-              label="Viatura Ativa"
-              value={r.vehicleAndEnergy.activeVehicleName}
-              subtext={`TCO est.: ${formatDistanceRate(r.vehicleAndEnergy.tcoPerKmEur, currency, unitSystem)}`}
-              explanation="Custo total estimado por quilómetro do veículo ativo considerando energia, desgaste e propriedade."
-              formula="(Custo energia/km + desgaste) + (mensalidade e seguro divididos pelos km mensais)."
-            />
-            <MetricCard
-              label="Autonomia Real vs WLTP"
-              value={formatDistance(r.vehicleAndEnergy.realRangeKm, unitSystem)}
-              subtext={`WLTP: ${formatDistance(r.vehicleAndEnergy.homologatedRangeKm, unitSystem)}`}
-              accent="blue"
-              explanation="Autonomia urbana real prevista face ao valor oficial de homologação WLTP."
-              formula="Autonomia real configurada/ajustada separada da ficha técnica oficial."
-            />
-            <MetricCard
-              label="Km no Período (% Vazio)"
-              value={formatDistance(r.vehicleAndEnergy.totalKmInPeriod, unitSystem)}
-              subtext={`${r.vehicleAndEnergy.emptyKmPct}% em deslocação sem passageiro`}
-              explanation="Quilometragem total registada com separação da percentagem de recolha/retorno sem passageiro."
-              formula="(Km de recolha + retorno em vazio) ÷ km totais × 100."
-            />
-            <MetricCard
-              label="Despesa Energia/Combustível"
-              value={formatMoney(r.vehicleAndEnergy.energyLoggedExpensesEur, currency)}
-              subtext="Registos lançados no período"
-              explanation="Total de carregamentos elétricos ou abastecimentos efetivamente lançados nas despesas."
-              formula="Soma das despesas da categoria Energia e Combustível no intervalo selecionado."
-            />
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <MetricCard
+                label="Viatura Ativa"
+                value={r.vehicleAndEnergy.activeVehicleName}
+                subtext={`TCO est.: ${formatDistanceRate(r.vehicleAndEnergy.tcoPerKmEur, currency, unitSystem)}`}
+                explanation="Custo total estimado por quilómetro do veículo ativo considerando energia, desgaste e propriedade."
+                formula="(Custo energia/km + desgaste) + (mensalidade e seguro divididos pelos km mensais)."
+              />
+              <MetricCard
+                label="Autonomia Real vs WLTP"
+                value={formatDistance(r.vehicleAndEnergy.realRangeKm, unitSystem)}
+                subtext={`WLTP: ${formatDistance(r.vehicleAndEnergy.homologatedRangeKm, unitSystem)}`}
+                accent="blue"
+                explanation="Autonomia urbana real prevista face ao valor oficial de homologação WLTP."
+                formula="Autonomia real configurada/ajustada separada da ficha técnica oficial."
+              />
+              <MetricCard
+                label="Km no Período (% Vazio)"
+                value={formatDistance(r.vehicleAndEnergy.totalKmInPeriod, unitSystem)}
+                subtext={`${r.vehicleAndEnergy.emptyKmPct}% em deslocação sem passageiro`}
+                explanation="Quilometragem total registada com separação da percentagem de recolha/retorno sem passageiro."
+                formula="(Km de recolha + retorno em vazio) ÷ km totais × 100."
+              />
+              <MetricCard
+                label="Despesa Energia/Combustível"
+                value={formatMoney(r.vehicleAndEnergy.energyLoggedExpensesEur, currency)}
+                subtext="Registos lançados no período"
+                explanation="Total de carregamentos elétricos ou abastecimentos efetivamente lançados nas despesas."
+                formula="Soma das despesas da categoria Energia e Combustível no intervalo selecionado."
+              />
+            </div>
+
+            <Card className="p-4 space-y-2 text-xs">
+              <h3 className="text-sm font-bold">Desempenho Consolidado por Viatura no Período</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+                    <tr>
+                      <th className="p-2">Viatura</th>
+                      <th className="p-2">Viagens</th>
+                      <th className="p-2">Distância</th>
+                      <th className="p-2">Receita Bruta</th>
+                      <th className="p-2">Líquido Viagens</th>
+                      <th className="p-2">{symbol}/km</th>
+                      <th className="p-2">TCO/km</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {r.vehicleAndEnergy.byVehicle.map((bv) => (
+                      <tr
+                        key={bv.vehicleId}
+                        onClick={() =>
+                          setDrillModal({
+                            title: `Viagens — ${bv.vehicleLabel}`,
+                            formula: 'Viagens concluídas atribuídas à viatura no período filtrado.',
+                            trips: r.completedTrips.filter((t) => t.vehicleId === bv.vehicleId),
+                          })
+                        }
+                        className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                      >
+                        <td className="p-2 font-semibold">{bv.vehicleLabel}</td>
+                        <td className="p-2 font-mono-tabular">{bv.tripsCount}</td>
+                        <td className="p-2 font-mono-tabular">{formatDistance(bv.totalKm, unitSystem)}</td>
+                        <td className="p-2 font-mono-tabular">{formatMoney(bv.grossRevenueEur, currency)}</td>
+                        <td className="p-2 font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                          {formatMoney(bv.netEur, currency)}
+                        </td>
+                        <td className="p-2 font-mono-tabular">
+                          {formatDistanceRate(bv.eurPerKm, currency, unitSystem)}
+                        </td>
+                        <td className="p-2 font-mono-tabular">
+                          {formatDistanceRate(bv.tcoPerKmEur, currency, unitSystem)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
           </div>
         )}
 
@@ -1344,7 +1422,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
         />
 
         <Card className="p-4 space-y-3 text-xs">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -1352,25 +1430,53 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
                 aria-label="Pesquisar veículos"
                 placeholder="Pesquisar marca, modelo, versão, equipamento..."
                 value={vehFilters.searchQuery}
-                onChange={(e) => setVehFilters((f) => ({ ...f, searchQuery: e.target.value }))}
+                onChange={(e) => updateVehicleCatalogFilters({ searchQuery: e.target.value })}
                 className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
               />
             </div>
-            <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium">
-              <input
-                type="checkbox"
-                checked={vehFilters.onlyEligible}
-                onChange={(e) => setVehFilters((f) => ({ ...f, onlyEligible: e.target.checked }))}
-              />
-              <span>Apenas elegíveis TVDE</span>
-            </label>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium">
+                <input
+                  type="checkbox"
+                  checked={vehFilters.onlyEligible}
+                  onChange={(e) => updateVehicleCatalogFilters({ onlyEligible: e.target.checked })}
+                />
+                <span>Apenas elegíveis TVDE</span>
+              </label>
+
+              <select
+                aria-label="Ordenar catálogo de veículos"
+                value={vehFilters.sortBy}
+                onChange={(e) => updateVehicleCatalogFilters({ sortBy: e.target.value as VehicleSortOption })}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-semibold"
+              >
+                <option value="relevance">Ordenar: Relevância (Ativo 1.º)</option>
+                <option value="costAsc">Menor TCO (€/km)</option>
+                <option value="rangeDesc">Maior Autonomia Real</option>
+                <option value="yearDesc">Mais Recente (Ano)</option>
+                <option value="trunkDesc">Maior Bagageira (L)</option>
+              </select>
+
+              <span className="px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 font-mono-tabular font-bold">
+                {filteredVehicles.length} de {state.vehicles.length} viaturas
+              </span>
+
+              <button
+                type="button"
+                onClick={resetVehicleCatalogFilters}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 font-medium"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" /> Limpar Filtros
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
             <select
               aria-label="Filtrar por país"
               value={vehFilters.countryCode}
-              onChange={(e) => setVehFilters((f) => ({ ...f, countryCode: e.target.value }))}
+              onChange={(e) => updateVehicleCatalogFilters({ countryCode: e.target.value })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
               <option value="ALL">Todos países</option>
@@ -1379,10 +1485,19 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               ))}
             </select>
 
+            <input
+              type="text"
+              aria-label="Filtrar por cidade"
+              placeholder="Cidade (ex: Lisboa)"
+              value={vehFilters.city === 'ALL' ? '' : vehFilters.city}
+              onChange={(e) => updateVehicleCatalogFilters({ city: e.target.value || 'ALL' })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+
             <select
               aria-label="Filtrar por plataforma"
               value={vehFilters.platformId}
-              onChange={(e) => setVehFilters((f) => ({ ...f, platformId: e.target.value }))}
+              onChange={(e) => updateVehicleCatalogFilters({ platformId: e.target.value })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
               <option value="ALL">Todas plataformas</option>
@@ -1394,7 +1509,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             <select
               aria-label="Filtrar por categoria comercial"
               value={vehFilters.category}
-              onChange={(e) => setVehFilters((f) => ({ ...f, category: e.target.value }))}
+              onChange={(e) => updateVehicleCatalogFilters({ category: e.target.value })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
               <option value="ALL">Todas categorias</option>
@@ -1403,10 +1518,28 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               ))}
             </select>
 
+            <input
+              type="text"
+              aria-label="Filtrar por marca"
+              placeholder="Marca (ex: Tesla, BYD)"
+              value={vehFilters.brand === 'ALL' ? '' : vehFilters.brand}
+              onChange={(e) => updateVehicleCatalogFilters({ brand: e.target.value || 'ALL' })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+
+            <input
+              type="text"
+              aria-label="Filtrar por modelo"
+              placeholder="Modelo (ex: Model 3)"
+              value={vehFilters.model === 'ALL' ? '' : vehFilters.model}
+              onChange={(e) => updateVehicleCatalogFilters({ model: e.target.value || 'ALL' })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+            />
+
             <select
               aria-label="Filtrar por motorização"
               value={vehFilters.fuelType}
-              onChange={(e) => setVehFilters((f) => ({ ...f, fuelType: e.target.value }))}
+              onChange={(e) => updateVehicleCatalogFilters({ fuelType: e.target.value })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             >
               <option value="ALL">Todas motorizações</option>
@@ -1417,12 +1550,45 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
 
             <input
               type="number"
+              aria-label="Ano mínimo"
+              min={2014}
+              max={currentYear + 1}
+              placeholder="Ano mín."
+              value={vehFilters.yearMin || ''}
+              onChange={(e) => updateVehicleCatalogFilters({ yearMin: Number(e.target.value) || 0 })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+
+            <input
+              type="number"
               aria-label="Lugares mínimos"
               min={4}
               max={9}
               placeholder="Lugares mín."
               value={vehFilters.minSeats}
-              onChange={(e) => setVehFilters((f) => ({ ...f, minSeats: Number(e.target.value) }))}
+              onChange={(e) => updateVehicleCatalogFilters({ minSeats: Number(e.target.value) || 4 })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+
+            <input
+              type="number"
+              aria-label="Portas mínimas"
+              min={0}
+              max={5}
+              placeholder="Portas mín."
+              value={vehFilters.minDoors || ''}
+              onChange={(e) => updateVehicleCatalogFilters({ minDoors: Number(e.target.value) || 0 })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+
+            <input
+              type="number"
+              aria-label="Bateria mínima (kWh)"
+              min={0}
+              step={5}
+              placeholder="Bateria mín. kWh"
+              value={vehFilters.minBatteryKwh || ''}
+              onChange={(e) => updateVehicleCatalogFilters({ minBatteryKwh: Number(e.target.value) || 0 })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
             />
 
@@ -1433,7 +1599,29 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               step={50}
               placeholder="Autonomia mín. km"
               value={vehFilters.minRangeKm || ''}
-              onChange={(e) => setVehFilters((f) => ({ ...f, minRangeKm: Number(e.target.value) || 0 }))}
+              onChange={(e) => updateVehicleCatalogFilters({ minRangeKm: Number(e.target.value) || 0 })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+
+            <input
+              type="number"
+              aria-label="Bagageira mínima (L)"
+              min={0}
+              step={25}
+              placeholder="Bagageira mín. L"
+              value={vehFilters.minTrunkLiters || ''}
+              onChange={(e) => updateVehicleCatalogFilters({ minTrunkLiters: Number(e.target.value) || 0 })}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+            />
+
+            <input
+              type="number"
+              aria-label="Custo máximo estimado por km"
+              min={0}
+              step={0.02}
+              placeholder={`TCO máx. (${symbol}/km)`}
+              value={vehFilters.maxCostPerKmEur || ''}
+              onChange={(e) => updateVehicleCatalogFilters({ maxCostPerKmEur: Number(e.target.value) || 0 })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
             />
 
@@ -1442,12 +1630,31 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               aria-label="Filtrar por cor"
               placeholder="Cor (ex: Branco, Preto)"
               value={vehFilters.colorQuery}
-              onChange={(e) => setVehFilters((f) => ({ ...f, colorQuery: e.target.value }))}
+              onChange={(e) => updateVehicleCatalogFilters({ colorQuery: e.target.value })}
               className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
             />
           </div>
         </Card>
 
+        {filteredVehicles.length === 0 ? (
+          <Card className="p-8 text-center space-y-3 text-xs">
+            <p className="text-sm font-bold text-slate-800 dark:text-slate-100">
+              Nenhuma viatura corresponde aos filtros combinados atuais.
+            </p>
+            <p className="text-slate-500">
+              Ajuste os critérios de autonomia, TCO máximo, plataforma ou motorização, ou limpe os filtros persistidos.
+            </p>
+            <div>
+              <button
+                type="button"
+                onClick={resetVehicleCatalogFilters}
+                className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+              >
+                Limpar Todos os Filtros
+              </button>
+            </div>
+          </Card>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filteredVehicles.map((v) => {
             const marketCfg = state.countries.find((c) => c.code === v.countryCode);
@@ -1650,6 +1857,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             );
           })}
         </div>
+        )}
 
         <Card className="p-5 space-y-3">
           <h3 className="text-sm font-bold flex items-center gap-2">

@@ -54,32 +54,32 @@ export const PLATFORM_CANCELLATION_RULES: PlatformCancellationRule[] = [
     notes: 'Prazo total até isenção de penalização e elegibilidade de taxa pode variar consoante aeroporto/campanha.',
   },
   {
-    id: 'rule-cabify-es-pt',
+    id: 'rule-cabify-es',
     platformId: 'cabify',
-    countryCode: 'PT',
+    countryCode: 'ES',
     category: 'Cabify / Executive',
     freeWaitMinutes: 3,
     paidWaitStartsAtMinutes: 3,
     cancellationDeadlineMinutes: 6,
     estimatedCompensationEur: 4.0,
-    source: 'Referência operacional VTC/TVDE Cabify',
+    source: 'Referência operacional VTC Cabify Espanha',
     verifiedAt: '2026-10-10',
     confirmationStatus: 'Referência operacional estimada',
-    notes: 'Reservas programadas podem ter janela de espera superior na app oficial.',
+    notes: 'Reservas programadas em Espanha/América Latina podem ter janela de espera superior na app oficial (operação em PT encerrada em nov/2019).',
   },
   {
-    id: 'rule-freenow-pt',
+    id: 'rule-freenow-eu',
     platformId: 'freenow',
-    countryCode: 'PT',
+    countryCode: 'ES',
     category: 'Ride / Eco Ride',
     freeWaitMinutes: 3,
     paidWaitStartsAtMinutes: 3,
     cancellationDeadlineMinutes: 5,
     estimatedCompensationEur: 3.5,
-    source: 'Referência operacional FREE NOW PT',
+    source: 'Referência operacional FREE NOW Europa (ES/UK/DE/FR)',
     verifiedAt: '2026-10-08',
     confirmationStatus: 'Referência operacional estimada',
-    notes: 'Verificar estado no botão "Passageiro não compareceu" dentro da app oficial.',
+    notes: 'Aplicável em Espanha, Reino Unido, França e Alemanha (operação TVDE em Portugal encerrada em abr/2023).',
   },
 ];
 
@@ -342,3 +342,55 @@ export function hasExistingLifecycleTrip(trips: TripRecord[], proposalId?: strin
       (externalRef && t.externalRef === externalRef)
   );
 }
+
+export function createLifecycleAuditEvent(params: {
+  eventType: import('../models/types').LifecycleAuditEventType;
+  originPlatform: PlatformId | 'aivad_system';
+  previousState: string;
+  currentState: string;
+  changeOrigin: import('../models/types').LifecycleAuditEvent['changeOrigin'];
+  associatedEntityId?: string;
+  associatedPayloadSummary: string;
+  auditNotes?: string[];
+  idempotencyKey?: string;
+  timestampIso?: string;
+  isDemo?: boolean;
+}): import('../models/types').LifecycleAuditEvent {
+  const ts = params.timestampIso ?? new Date().toISOString();
+  const idempotencyKey =
+    params.idempotencyKey ??
+    `lce:${params.eventType}:${params.originPlatform}:${params.associatedEntityId ?? 'global'}:${params.currentState}:${ts.slice(0, 19)}`;
+
+  return {
+    id: `lce-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    idempotencyKey,
+    eventType: params.eventType,
+    originPlatform: params.originPlatform,
+    timestamp: ts,
+    previousState: params.previousState,
+    currentState: params.currentState,
+    changeOrigin: params.changeOrigin,
+    associatedEntityId: params.associatedEntityId,
+    associatedPayloadSummary: params.associatedPayloadSummary,
+    auditTrail: [
+      `[${ts}] ${params.eventType}: "${params.previousState}" -> "${params.currentState}" (${params.changeOrigin})`,
+      ...(params.auditNotes ?? []),
+    ],
+    isDemo: Boolean(params.isDemo),
+  };
+}
+
+export function appendIdempotentLifecycleEvent(
+  existing: import('../models/types').LifecycleAuditEvent[],
+  incoming: import('../models/types').LifecycleAuditEvent,
+  maxEvents = 250
+): { updated: import('../models/types').LifecycleAuditEvent[]; deduplicated: boolean } {
+  if (existing.some((e) => e.idempotencyKey === incoming.idempotencyKey)) {
+    return { updated: existing, deduplicated: true };
+  }
+  return {
+    updated: [incoming, ...existing].slice(0, maxEvents),
+    deduplicated: false,
+  };
+}
+

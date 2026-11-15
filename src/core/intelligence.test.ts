@@ -107,7 +107,8 @@ test('evaluateAutoPilot blocks automatic execution when official API is unauthor
     officialAutomationAuthorized: false,
   };
   const decision = evaluateAutoPilot('prop-1', input, analysis, config, []);
-  assert.equal(decision.action, 'Bloqueado por ausência de API oficial');
+  assert.equal(decision.action, 'Decisão pronta (Ação assistida): Aceitar');
+  assert.equal(decision.executedAutomatically, false);
   assert.equal(decision.platformConfirmed, false);
 });
 
