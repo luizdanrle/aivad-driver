@@ -1,0 +1,6 @@
+{
+  "name": "AIVAD — Driver Intelligence & Management Ecosystem",
+  "description": "Ecossistema profissional integrado de inteligência operacional, análise de propostas em tempo real, gestão financeira, conformidade TVDE e administração SaaS para motoristas e frotas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
