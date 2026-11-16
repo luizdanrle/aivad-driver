@@ -875,7 +875,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                   }));
                   setNewBenefit({ title: '', description: '' });
                 }}
-                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+                className="inline-flex items-center justify-center gap-1 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Adicionar Benefício
@@ -936,7 +936,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
                   }));
                   setNewFaq({ question: '', answer: '' });
                 }}
-                className="inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+                className="inline-flex items-center justify-center gap-1 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold transition-colors cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Adicionar FAQ

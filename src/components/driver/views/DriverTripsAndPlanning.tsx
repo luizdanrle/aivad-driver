@@ -794,7 +794,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                     <button
                       type="button"
                       onClick={() => applyStrategyPreset(pr.id)}
-                      className="px-2.5 py-1 rounded bg-slate-900 dark:bg-blue-700 text-white font-medium"
+                      className="px-2.5 py-1 rounded-lg bg-blue-700 hover:bg-blue-600 text-white font-semibold transition-colors cursor-pointer"
                     >
                       Aplicar
                     </button>
@@ -1610,23 +1610,23 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               <Card className="lg:col-span-7 p-4 space-y-3">
-                <div className="relative w-full h-80 sm:h-96 rounded-xl bg-slate-900 overflow-hidden border border-slate-700">
+                <div className="relative w-full h-80 sm:h-96 rounded-2xl bg-gradient-to-b from-blue-50/90 to-indigo-50/60 dark:from-[#0B1324] dark:to-[#0F182B] overflow-hidden border border-blue-200/80 dark:border-slate-700">
                   <svg viewBox="0 0 100 100" className="w-full h-full">
                     <path
                       d="M0 25 H100 M0 50 H100 M0 75 H100 M25 0 V100 M50 0 V100 M75 0 V100"
-                      stroke="#1E293B"
+                      className="stroke-blue-200/90 dark:stroke-slate-800"
                       strokeWidth="0.4"
                     />
-                    <path d="M0 84 Q45 78 100 88 L100 100 L0 100 Z" fill="#0F2942" />
+                    <path d="M0 84 Q45 78 100 88 L100 100 L0 100 Z" className="fill-blue-200/75 dark:fill-[#0F2942]" />
                     {state.zones.map((z) => {
                       const fill =
                         mapLayers.favorites && z.preference === 'Favorita'
                           ? '#1D4ED8'
                           : mapLayers.favorites && z.preference === 'Evitar'
-                          ? '#DC2626'
+                          ? '#E11D48'
                           : z.activeEvent
                           ? '#D97706'
-                          : '#475569';
+                          : '#4F46E5';
                       return (
                         <g
                           key={z.id}
@@ -1639,17 +1639,17 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                               cy={z.y}
                               r={z.historicalDemand === 'Alta' ? 11 : 7}
                               fill={fill}
-                              fillOpacity={0.28}
-                              stroke={selectedZone?.id === z.id ? '#FFFFFF' : fill}
-                              strokeWidth={selectedZone?.id === z.id ? 0.9 : 0.4}
+                              fillOpacity={0.22}
+                              stroke={selectedZone?.id === z.id ? '#1D4ED8' : fill}
+                              strokeWidth={selectedZone?.id === z.id ? 0.9 : 0.45}
                             />
                           )}
-                          <circle cx={z.x} cy={z.y} r={2.2} fill="#FFFFFF" />
+                          <circle cx={z.x} cy={z.y} r={2.2} fill={fill} stroke="#FFFFFF" strokeWidth="0.5" />
                           <text
                             x={z.x}
                             y={z.y - 4}
                             textAnchor="middle"
-                            fill="#E2E8F0"
+                            className="fill-slate-800 dark:fill-slate-100"
                             fontSize="3.0"
                             fontWeight="bold"
                           >

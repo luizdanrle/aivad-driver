@@ -81,7 +81,7 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
         sublabel: 'Dispositivos ativos',
         value: count,
         formattedValue: `${count} conta(s)`,
-        color: os === 'Android' ? '#1D4ED8' : os === 'iOS' ? '#0F172A' : '#059669',
+        color: os === 'Android' ? '#1D4ED8' : os === 'iOS' ? '#4F46E5' : '#059669',
       };
     });
 

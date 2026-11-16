@@ -220,53 +220,41 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Sub-Navigation Tabs */}
+      {/* Top Sub-Navigation Tabs with Animated Pill */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Módulos de Voz, Conectores e Diagnóstico">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={currentSection === 'voz'}
-            onClick={() => setDriverNav('voz-copiloto')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${
-              currentSection === 'voz'
-                ? 'bg-blue-700 text-white border-blue-700'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-500'
-            }`}
-          >
-            <Volume2 className="w-4 h-4" />
-            <span>AIVAD Voice · Copiloto</span>
-          </button>
-
-          <button
-            type="button"
-            role="tab"
-            aria-selected={currentSection === 'conectores'}
-            onClick={() => setDriverNav('conectores')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${
-              currentSection === 'conectores'
-                ? 'bg-blue-700 text-white border-blue-700'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-500'
-            }`}
-          >
-            <Plug className="w-4 h-4" />
-            <span>Conectores Uber & Bolt (3 Níveis)</span>
-          </button>
-
-          <button
-            type="button"
-            role="tab"
-            aria-selected={currentSection === 'diagnostico'}
-            onClick={() => setDriverNav('diagnostico')}
-            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${
-              currentSection === 'diagnostico'
-                ? 'bg-blue-700 text-white border-blue-700'
-                : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-500'
-            }`}
-          >
-            <Activity className="w-4 h-4" />
-            <span>Diagnóstico, Auditoria & Matriz Nativa</span>
-          </button>
+        <div className="inline-flex flex-wrap gap-1.5 p-1 rounded-2xl bg-slate-100 dark:bg-[#131F36] border border-slate-200/80 dark:border-slate-800" role="tablist" aria-label="Módulos de Voz, Conectores e Diagnóstico">
+          {[
+            { id: 'voz' as const, nav: 'voz-copiloto', label: 'AIVAD Voice · Copiloto', icon: Volume2 },
+            { id: 'conectores' as const, nav: 'conectores', label: 'Conectores Uber & Bolt (3 Níveis)', icon: Plug },
+            { id: 'diagnostico' as const, nav: 'diagnostico', label: 'Diagnóstico, Auditoria & Matriz Nativa', icon: Activity },
+          ].map((tabItem) => {
+            const TabIcon = tabItem.icon;
+            const active = currentSection === tabItem.id;
+            return (
+              <button
+                key={tabItem.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setDriverNav(tabItem.nav)}
+                className={`relative min-h-[40px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                  active
+                    ? 'text-white'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId={prefersReducedMotion ? undefined : 'diag-voice-active-tab'}
+                    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                    className="absolute inset-0 rounded-xl bg-blue-700 shadow-xs"
+                  />
+                )}
+                <TabIcon className="w-4 h-4 relative z-10 shrink-0" />
+                <span className="relative z-10 whitespace-nowrap">{tabItem.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         <Badge tone={state.session.isDemoSession ? 'amber' : 'emerald'}>
@@ -285,7 +273,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
             className="space-y-6"
           >
             <SectionHeader
-              eyebrow="COPILOTO DE CONDUÇÃO MÃOS-LIVRES (GRATUITO)"
+              eyebrow="Copiloto de Condução Mãos-Livres (Gratuito)"
               title="AIVAD Voice — Síntese Inteligente com Fila de Prioridade"
               description="Leitura vocal imediata de propostas, classificação semafórica, alertas de zona, bateria EV e limites legais TVDE de 10h sem recorrer a APIs pagas."
               action={
@@ -559,10 +547,38 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
             className="space-y-6"
           >
             <SectionHeader
-              eyebrow="ARQUITETURA INDEPENDENTE DE PLATAFORMAS & TESTES VERIFICÁVEIS"
+              eyebrow="Arquitetura Independente de Plataformas & Testes Verificáveis"
               title="Conectores Uber & Bolt — Separação Real de APIs e Suite de 3 Níveis"
               description="Distingue rigorosamente API de Passageiros, Fleet/Partner API e Despacho de Motorista, separando permissão de leitura/captura da permissão de controlo externo."
             />
+
+            {/* 4 Explicit Connector States Legend (Comando 6.1 §6) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+              <Card className="p-3.5 space-y-1 border-slate-200 dark:border-slate-700">
+                <p className="font-bold text-slate-900 dark:text-white">1. Não configurado</p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Sem chaves OAuth no cofre do servidor. A importação CSV/OCR e o Simulador Nível 1 continuam 100% operacionais.
+                </p>
+              </Card>
+              <Card className="p-3.5 space-y-1 border-blue-200 dark:border-blue-800/70 bg-blue-50/40 dark:bg-blue-950/20">
+                <p className="font-bold text-blue-700 dark:text-blue-300">2. Configurado</p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Segredos de parceiro (<code className="font-mono">CLIENT_ID</code>) presentes no servidor, prontos para autorização do motorista.
+                </p>
+              </Card>
+              <Card className="p-3.5 space-y-1 border-amber-200 dark:border-amber-800/70 bg-amber-50/40 dark:bg-amber-950/20">
+                <p className="font-bold text-amber-800 dark:text-amber-300">3. Sandbox</p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Ambiente isolado de ensaio técnico (Nível 1 e Nível 2) para testar permissões e reconexão sem tocar em viagens reais.
+                </p>
+              </Card>
+              <Card className="p-3.5 space-y-1 border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/40 dark:bg-emerald-950/20">
+                <p className="font-bold text-emerald-800 dark:text-emerald-300">4. Integração real validada</p>
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Token OAuth oficial de parceiro ou bridge nativo Android Nível 3 ativo e verificado com dados reais autorizados.
+                </p>
+              </Card>
+            </div>
 
             {connectorNotice && (
               <div className="p-3 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/80 dark:bg-blue-950/40 text-xs font-medium text-blue-900 dark:text-blue-200">

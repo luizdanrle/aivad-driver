@@ -6,22 +6,83 @@
     --font-display: 'Outfit', system-ui, sans-serif;
     --font-sans: 'Manrope', system-ui, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    /* AIVAD Brand & Semantic Palette — Light Mode */
     --aivad-blue: #1D4ED8;
     --aivad-blue-strong: #1E40AF;
-    --aivad-red: #DC2626;
+    --aivad-blue-soft: #EFF6FF;
+    --aivad-red: #E11D48;
+    --aivad-red-strong: #BE123C;
+    --aivad-red-soft: #FFF1F2;
+    --aivad-ai: #4F46E5;
+    --aivad-ai-soft: #EEF2FF;
+    --aivad-success: #059669;
+    --aivad-warning: #D97706;
+    --aivad-danger: #DC2626;
+
+    /* Luminous Warm-Cool Neutral Surfaces */
+    --aivad-canvas: #F4F7FB;
     --aivad-surface: #FFFFFF;
-    --aivad-canvas: #F8FAFC;
+    --aivad-surface-subtle: #F8FAFC;
+    --aivad-surface-elevated: #FFFFFF;
+    --aivad-border: #E2E8F0;
+    --aivad-border-strong: #CBD5E1;
+    --aivad-text-primary: #0F172A;
+    --aivad-text-secondary: #475569;
+    --aivad-text-muted: #64748B;
+
+    /* Motion Curves & Radii */
+    --aivad-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --aivad-radius-card: 1rem;
+    --aivad-radius-control: 0.75rem;
+    --aivad-shadow-soft: 0 4px 20px -4px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+    --aivad-shadow-floating: 0 14px 34px -8px rgba(29, 78, 216, 0.24), 0 4px 12px -2px rgba(15, 23, 42, 0.08);
   }
 
   .dark {
-    --aivad-surface: #0F172A;
-    --aivad-canvas: #020617;
+    /* AIVAD Brand & Semantic Palette — Dark Mode (Layered Depth, Never Flat Black) */
+    --aivad-blue: #3B82F6;
+    --aivad-blue-strong: #2563EB;
+    --aivad-blue-soft: rgba(37, 99, 235, 0.16);
+    --aivad-red: #F43F5E;
+    --aivad-red-strong: #E11D48;
+    --aivad-red-soft: rgba(244, 63, 94, 0.16);
+    --aivad-ai: #818CF8;
+    --aivad-ai-soft: rgba(99, 102, 241, 0.16);
+    --aivad-success: #10B981;
+    --aivad-warning: #F59E0B;
+    --aivad-danger: #EF4444;
+
+    --aivad-canvas: #080E1C;
+    --aivad-surface: #0F182B;
+    --aivad-surface-subtle: #131F36;
+    --aivad-surface-elevated: #172540;
+    --aivad-border: #1E2D4A;
+    --aivad-border-strong: #2B3F66;
+    --aivad-text-primary: #F8FAFC;
+    --aivad-text-secondary: #CBD5E1;
+    --aivad-text-muted: #94A3B8;
+
+    --aivad-shadow-soft: 0 8px 26px -6px rgba(2, 6, 23, 0.55);
+    --aivad-shadow-floating: 0 16px 38px -8px rgba(37, 99, 235, 0.36), 0 6px 16px -4px rgba(2, 6, 23, 0.65);
+  }
+
+  html {
+    background-color: var(--aivad-canvas);
+    color: var(--aivad-text-primary);
+    scroll-behavior: smooth;
   }
 
   body {
     font-family: var(--font-sans);
+    background-color: var(--aivad-canvas);
+    color: var(--aivad-text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  .dark body {
+    letter-spacing: 0.005em;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -32,10 +93,34 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+
+  /* Accessible visible focus ring */
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--aivad-blue);
+    outline-offset: 2px;
+  }
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+.aivad-canvas-bg {
+  background-color: var(--aivad-canvas);
+  background-image:
+    radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.06) 0px, transparent 48%),
+    radial-gradient(at 100% 0%, rgba(79, 70, 229, 0.05) 0px, transparent 42%);
+}
+
+.dark .aivad-canvas-bg {
+  background-color: var(--aivad-canvas);
+  background-image:
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.11) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(244, 63, 94, 0.07) 0px, transparent 44%);
 }
 
 @media print {

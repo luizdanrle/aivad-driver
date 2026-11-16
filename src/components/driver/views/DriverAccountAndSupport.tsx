@@ -756,7 +756,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
             </div>
             <button
               type="submit"
-              className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold"
+              className="px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold shadow-xs transition-colors cursor-pointer"
             >
               {profSavedNotice ? 'Guardado ✓' : 'Guardar Perfil'}
             </button>

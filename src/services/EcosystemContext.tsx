@@ -740,20 +740,36 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             if (raw) {
               const parsed = JSON.parse(raw) as Partial<EcosystemState>;
               const hydrated = hydrateState(parsed, isDemo ? 'demo' : 'real');
+              const urlParams = new URLSearchParams(window.location.search);
+              if (urlParams.get('autostart') === '1') {
+                const reqMode = urlParams.get('mode') === 'admin' ? 'admin' : 'driver';
+                if ((reqMode === 'admin' && !isAdminRole(srvSession.role)) || (reqMode === 'driver' && isAdminRole(srvSession.role))) {
+                  return prev;
+                }
+              }
+              const forcedPortal = urlParams.get('mode') === 'portal';
               return {
                 ...hydrated,
                 session: srvSession,
-                mode: isAdminRole(srvSession.role) ? 'admin' : 'driver',
+                mode: forcedPortal ? 'portal' : isAdminRole(srvSession.role) ? 'admin' : 'driver',
               };
             }
           } catch {
             // ignore
           }
+          const urlParams = new URLSearchParams(window.location.search);
+          if (urlParams.get('autostart') === '1') {
+            const reqMode = urlParams.get('mode') === 'admin' ? 'admin' : 'driver';
+            if ((reqMode === 'admin' && !isAdminRole(srvSession.role)) || (reqMode === 'driver' && isAdminRole(srvSession.role))) {
+              return prev;
+            }
+          }
+          const forcedPortal = urlParams.get('mode') === 'portal';
           const base = buildInitialState(isDemo ? 'demo' : 'real');
           return {
             ...base,
             session: srvSession,
-            mode: isAdminRole(srvSession.role) ? 'admin' : 'driver',
+            mode: forcedPortal ? 'portal' : isAdminRole(srvSession.role) ? 'admin' : 'driver',
           };
         });
       })

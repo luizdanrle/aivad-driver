@@ -429,10 +429,10 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
               role="tab"
               aria-selected={reportSubTab === tab.id}
               onClick={() => setReportSubTab(tab.id)}
-              className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-colors ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
                 reportSubTab === tab.id
-                  ? 'bg-slate-900 dark:bg-blue-700 text-white border-slate-900 dark:border-blue-700'
-                  : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+                  ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
+                  : 'bg-white dark:bg-[#0F182B] border-slate-200 dark:border-slate-800 hover:border-blue-400 text-slate-700 dark:text-slate-200'
               }`}
             >
               {tab.label}

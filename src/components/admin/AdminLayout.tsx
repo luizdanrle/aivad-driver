@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   Activity,
   Banknote,
@@ -84,6 +85,7 @@ const ADMIN_ROLES: AdminRole[] = [
 ];
 
 export const AdminLayout: React.FC = () => {
+  const prefersReducedMotion = useReducedMotion();
   const { state, availableMarketsForPortal, setAdminNav, setAdminRole, setMode, toggleTheme, syncNowToServer } =
     useEcosystem();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -129,19 +131,19 @@ export const AdminLayout: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex lg:w-64 lg:flex-col border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shrink-0">
-        <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+    <div className="min-h-screen aivad-canvas-bg text-slate-900 dark:text-slate-100 flex">
+      {/* Desktop Structured Governance Sidebar */}
+      <aside className="hidden lg:flex lg:w-68 lg:flex-col border-r border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shrink-0">
+        <div className="h-16 px-4 border-b border-slate-200/90 dark:border-[#1E2D4A] flex items-center justify-between gap-2">
           <button
             type="button"
             onClick={() => setMode('portal')}
-            className="flex items-center gap-2 text-base font-bold tracking-tight"
+            className="flex items-center gap-2 text-base font-display font-extrabold tracking-tight cursor-pointer"
           >
             <PhoenixLogo size={26} />
             <span>AIVAD Management</span>
           </button>
-          <span className="text-[11px] font-mono-tabular font-semibold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300">
+          <span className="text-[11px] font-mono-tabular font-semibold text-rose-700 dark:text-rose-400">
             {availableMarketsForPortal.length}/{state.countries.length} Merc.
           </span>
         </div>
@@ -155,10 +157,10 @@ export const AdminLayout: React.FC = () => {
                 key={item.id}
                 type="button"
                 onClick={() => setAdminNav(item.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left ${
+                className={`w-full min-h-[38px] flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors text-left cursor-pointer ${
                   active
-                    ? 'bg-red-600 text-white'
-                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-gradient-to-r from-rose-600 to-red-600 text-white shadow-xs'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#131F36]'
                 }`}
               >
                 <Icon className="w-4 h-4 shrink-0" />
@@ -168,8 +170,8 @@ export const AdminLayout: React.FC = () => {
           })}
         </nav>
 
-        <div className="p-3 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
-          <label htmlFor="admin-role-sel" className="block text-[11px] text-slate-500">
+        <div className="p-3 border-t border-slate-200/90 dark:border-[#1E2D4A] space-y-1.5 text-xs">
+          <label htmlFor="admin-role-sel" className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
             {state.session.isDemoSession ? 'Perfil Sandbox (Demo)' : 'Perfil RBAC Autenticado'}
           </label>
           {state.session.isDemoSession ? (
@@ -177,99 +179,114 @@ export const AdminLayout: React.FC = () => {
               id="admin-role-sel"
               value={state.activeAdminRole}
               onChange={(e) => setAdminRole(e.target.value as AdminRole)}
-              className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-medium"
+              className="w-full px-2.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B1324] text-xs font-semibold"
             >
               {ADMIN_ROLES.map((r) => (
                 <option key={r} value={r}>{r}</option>
               ))}
             </select>
           ) : (
-            <div className="px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-semibold">
+            <div className="px-2.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1324] text-xs font-semibold">
               {state.activeAdminRole} (Servidor)
             </div>
           )}
         </div>
       </aside>
 
-      {/* Mobile Drawer */}
-      {mobileMenuOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div className="fixed inset-0 bg-slate-950/60" onClick={() => setMobileMenuOpen(false)} />
-          <aside className="relative w-72 max-w-[85vw] bg-white dark:bg-slate-900 h-full flex flex-col border-r border-slate-200 dark:border-slate-800 z-10">
-            <div className="h-14 px-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-              <span className="font-bold text-sm flex items-center gap-2">
-                <PhoenixLogo size={22} />
-                AIVAD Management
-              </span>
-              <button
-                type="button"
-                aria-label="Fechar menu admin"
-                onClick={() => setMobileMenuOpen(false)}
-                className="p-1.5"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
-              {ADMIN_MENU.map((item) => {
-                const Icon = item.icon;
-                const active = state.activeAdminNav === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setAdminNav(item.id);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs font-medium text-left ${
-                      active ? 'bg-red-600 text-white' : 'text-slate-700 dark:text-slate-300'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{item.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-          </aside>
-        </div>
-      )}
+      {/* Animated Mobile Drawer */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden flex">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              className="fixed inset-0 bg-slate-950/55 backdrop-blur-xs"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            <motion.aside
+              initial={prefersReducedMotion ? false : { x: -270, opacity: 0.8 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={prefersReducedMotion ? undefined : { x: -270, opacity: 0 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              className="relative w-72 max-w-[85vw] bg-white dark:bg-[#0F182B] h-full flex flex-col border-r border-slate-200 dark:border-[#1E2D4A] z-10 shadow-2xl"
+            >
+              <div className="h-14 px-4 border-b border-slate-200 dark:border-[#1E2D4A] flex items-center justify-between">
+                <span className="font-display font-bold text-sm flex items-center gap-2">
+                  <PhoenixLogo size={22} />
+                  AIVAD Management
+                </span>
+                <button
+                  type="button"
+                  aria-label="Fechar menu admin"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
+                {ADMIN_MENU.map((item) => {
+                  const Icon = item.icon;
+                  const active = state.activeAdminNav === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setAdminNav(item.id);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`w-full min-h-[44px] flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-left ${
+                        active ? 'bg-rose-600 text-white' : 'text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="sticky top-0 z-30 h-16 px-4 sm:px-6 border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm flex items-center justify-between gap-4">
+        <header className="sticky top-0 z-30 h-14 lg:h-16 px-4 sm:px-6 border-b border-slate-200/90 dark:border-[#1E2D4A] bg-white/95 dark:bg-[#0F182B]/95 backdrop-blur-md flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
               aria-label="Abrir navegação administrativa"
-              className="lg:hidden p-2 rounded-lg border border-slate-200 dark:border-slate-700"
+              className="lg:hidden min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131F36]"
             >
               <Menu className="w-4 h-4" />
             </button>
             <div className="min-w-0">
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                AIVAD Management · Perfil: {state.activeAdminRole}
+                AIVAD Management · Governança &amp; Operações ({state.activeAdminRole})
               </p>
-              <h1 className="text-sm sm:text-base font-bold truncate">{currentItem.label}</h1>
+              <h1 className="text-sm sm:text-base font-display font-extrabold truncate">{currentItem.label}</h1>
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             <span
-              className={`hidden md:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+              className={`hidden md:inline-flex items-center text-[11px] font-bold ${
                 state.session.isDemoSession
-                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
-                  : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                  ? 'text-amber-700 dark:text-amber-400'
+                  : 'text-emerald-700 dark:text-emerald-400'
               }`}
             >
-              {state.session.isDemoSession ? 'MODO DEMO' : 'CONTA REAL'}
+              {state.session.isDemoSession ? 'Sandbox Demo' : 'Conta Real'}
             </span>
             <button
               type="button"
               onClick={() => void syncNowToServer()}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-[11px] font-medium hover:border-blue-600"
+              className="min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131F36] text-[11px] font-semibold hover:border-blue-600 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5 text-emerald-600" />
               <span className="hidden sm:inline capitalize">{state.syncStatus}</span>
@@ -278,14 +295,14 @@ export const AdminLayout: React.FC = () => {
             <button
               type="button"
               onClick={() => setMode('portal')}
-              className="hidden sm:inline-flex px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+              className="hidden sm:inline-flex px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131F36] text-xs font-semibold hover:border-blue-600 whitespace-nowrap cursor-pointer"
             >
               Site Oficial
             </button>
             <button
               type="button"
               onClick={() => setMode('driver')}
-              className="px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold whitespace-nowrap"
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white text-xs font-bold shadow-xs transition-colors whitespace-nowrap cursor-pointer"
             >
               Modo Motorista
             </button>
@@ -293,7 +310,17 @@ export const AdminLayout: React.FC = () => {
         </header>
 
         <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto space-y-6">
-          {renderView()}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={state.activeAdminNav}
+              initial={prefersReducedMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0, y: -4 }}
+              transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {renderView()}
+            </motion.div>
+          </AnimatePresence>
         </main>
       </div>
 

@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   Activity,
   Bot,
   Brain,
   CheckCircle2,
   Cpu,
+  Loader2,
   Lock,
   Send,
   ShieldCheck,
@@ -13,7 +15,7 @@ import {
 import { AI_CORE_AGENTS, answerAiCoreQuery } from '../../../core/aiCore';
 import type { EpistemicTag } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
-import { Card, ContextualHelpBanner } from '../../ui/DesignSystem';
+import { Button, Card } from '../../ui/DesignSystem';
 
 const EPISTEMIC_STYLE: Record<EpistemicTag, string> = {
   'Informação confirmada':
@@ -23,7 +25,7 @@ const EPISTEMIC_STYLE: Record<EpistemicTag, string> = {
   Estimativa:
     'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
   Previsão:
-    'bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',
+    'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-800',
   'Informação indisponível':
     'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700',
   'Dados de demonstração':
@@ -31,6 +33,7 @@ const EPISTEMIC_STYLE: Record<EpistemicTag, string> = {
 };
 
 export const DriverAiCoreView: React.FC = () => {
+  const prefersReducedMotion = useReducedMotion();
   const {
     state,
     activeDriver,
@@ -137,52 +140,52 @@ export const DriverAiCoreView: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <ContextualHelpBanner
-        title="AIVAD AI CORE — O Cérebro Inteligente do Motorista"
-        description="Coordena 8 agentes especializados sobre os seus dados. A confiança (%) é calibrada apenas com amostra suficiente e fica indisponível quando não calculável."
-        demoNotice="Aprendizagem isolada por utilizador"
-      />
-
       {/* 8 Specialized Agents Grid */}
-      <Card className="p-5 space-y-4">
+      <Card variant="tinted-ai" className="p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-base font-display font-bold flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Arquitetura Multi-Agente (8 Especialistas)
-          </h2>
-          <button
-            type="button"
+          <div className="space-y-0.5">
+            <h2 className="text-base font-display font-extrabold flex items-center gap-2 text-slate-900 dark:text-white">
+              <Cpu className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              Arquitetura Multi-Agente (8 Especialistas Operacionais)
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Selecione qualquer especialista abaixo para filtrar os alertas e recomendações sobre a sua operação.
+            </p>
+          </div>
+          <Button
+            variant={selectedAgentId === 'ALL' ? 'ai' : 'secondary'}
+            size="sm"
             onClick={() => setSelectedAgentId('ALL')}
-            className={`px-3 py-1 rounded-lg text-xs font-semibold border ${
-              selectedAgentId === 'ALL'
-                ? 'bg-blue-700 text-white border-blue-700'
-                : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
-            }`}
           >
-            Todos os Agentes
-          </button>
+            Todos os Agentes ({AI_CORE_AGENTS.length})
+          </Button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {AI_CORE_AGENTS.map((agent) => {
             const active = selectedAgentId === agent.id;
             return (
-              <button
+              <motion.button
                 key={agent.id}
                 type="button"
+                whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
                 onClick={() => setSelectedAgentId(active ? 'ALL' : agent.id)}
-                className={`p-3.5 rounded-xl border text-left transition-all space-y-1.5 ${
+                className={`p-3.5 rounded-xl border text-left transition-colors space-y-1.5 cursor-pointer ${
                   active
-                    ? 'border-blue-600 bg-blue-50/70 dark:bg-blue-950/40'
-                    : 'border-slate-200 dark:border-slate-800 hover:border-blue-500'
+                    ? 'border-indigo-600 dark:border-indigo-400 bg-white dark:bg-[#172540] ring-2 ring-indigo-500/20 shadow-sm'
+                    : 'bg-white/90 dark:bg-[#0F182B]/90 border-slate-200 dark:border-slate-800 hover:border-indigo-400'
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <Brain className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400 shrink-0" />
+                    <Brain className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
                     {agent.name}
                   </span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                  {active && (
+                    <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300">
+                      Selecionado
+                    </span>
+                  )}
                 </div>
                 <p className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">
                   {agent.roleTitle}
@@ -190,7 +193,7 @@ export const DriverAiCoreView: React.FC = () => {
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                   {agent.scope}
                 </p>
-              </button>
+              </motion.button>
             );
           })}
         </div>
@@ -198,66 +201,187 @@ export const DriverAiCoreView: React.FC = () => {
 
       {/* Briefings with Epistemic Tags, Null-Safe Calibrated Confidence & Explainability */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {visibleBriefings.map((item) => (
-          <Card key={item.id} className="p-5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-bold text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5" />
-                {item.agentName}
-              </span>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${EPISTEMIC_STYLE[item.epistemicTag]}`}
-                >
-                  {item.epistemicTag}
-                </span>
-                <span className="font-mono-tabular text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                  {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
-                </span>
-              </div>
-            </div>
+        <AnimatePresence mode="popLayout">
+          {visibleBriefings.map((item, idx) => (
+            <motion.div
+              key={item.id}
+              layout={!prefersReducedMotion}
+              initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.2, delay: Math.min(idx * 0.03, 0.15) }}
+            >
+              <Card className="p-5 h-full space-y-3 flex flex-col justify-between">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-indigo-700 dark:text-indigo-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      {item.agentName}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${EPISTEMIC_STYLE[item.epistemicTag]}`}
+                      >
+                        {item.epistemicTag}
+                      </span>
+                      <span className="font-mono-tabular text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                        {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
+                      </span>
+                    </div>
+                  </div>
 
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">{item.title}</h3>
-            <p className="text-xs font-medium text-slate-800 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
-              <strong>Recomendação:</strong> {item.recommendation}
-            </p>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">{item.title}</h3>
+                  <p className="text-xs font-medium text-slate-800 dark:text-slate-200 bg-blue-50/60 dark:bg-[#131F36] p-3 rounded-xl border border-blue-100 dark:border-slate-700">
+                    <strong>Recomendação:</strong> {item.recommendation}
+                  </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
-              <div>
-                <p className="font-semibold text-slate-500 mb-1">Entradas consideradas</p>
-                <ul className="space-y-1 text-slate-600 dark:text-slate-300">
-                  {item.inputsConsidered.map((inp, idx) => (
-                    <li key={idx}>• {inp}</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <p className="font-semibold text-slate-500 mb-1">Passos &amp; Justificação</p>
-                <ul className="space-y-1 text-slate-600 dark:text-slate-300">
-                  {item.analysisSteps.map((st, idx) => (
-                    <li key={idx}>• {st}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+                    <div>
+                      <p className="font-semibold text-slate-500 dark:text-slate-400 mb-1">Entradas consideradas</p>
+                      <ul className="space-y-1 text-slate-600 dark:text-slate-300">
+                        {item.inputsConsidered.map((inp, i) => (
+                          <li key={i}>• {inp}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-500 dark:text-slate-400 mb-1">Passos &amp; Justificação</p>
+                      <ul className="space-y-1 text-slate-600 dark:text-slate-300">
+                        {item.analysisSteps.map((st, i) => (
+                          <li key={i}>• {st}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
 
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-              <span>{item.justification}</span>
-              <span className="font-mono-tabular">{item.operationLog}</span>
-            </div>
-          </Card>
-        ))}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                  <span>{item.justification}</span>
+                  <span className="font-mono-tabular">{item.operationLog}</span>
+                </div>
+              </Card>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
+
+      {/* Interactive Grounded AI CORE Consultation */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-display font-extrabold flex items-center gap-2 text-slate-900 dark:text-white">
+            <Bot className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            Consultar AIVAD AI CORE
+          </h2>
+          <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> Proxy servidor seguro + motor determinístico local
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {[
+            'Quantas horas legais 10h/24h me restam?',
+            'Qual a autonomia real vs homologada do veículo ativo?',
+            'Há trânsito ou obras ao vivo na minha zona?',
+            'Como está a minha estratégia semiautomática?',
+          ].map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => void handleAsk(preset)}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#131F36] text-xs font-medium hover:border-indigo-500 hover:bg-indigo-50/50 dark:hover:bg-indigo-950/30 transition-colors text-left cursor-pointer"
+            >
+              {preset}
+            </button>
+          ))}
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleAsk(question);
+          }}
+          className="flex flex-col sm:flex-row gap-2"
+        >
+          <input
+            type="text"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            placeholder="Pergunte sobre metas, horas 10h/24h, veículos, tráfego ou estratégia..."
+            aria-label="Pergunta ao AIVAD AI CORE"
+            className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B1324] text-xs sm:text-sm text-slate-900 dark:text-white focus:border-indigo-500"
+          />
+          <Button
+            type="submit"
+            variant="ai"
+            disabled={askingBusy}
+            icon={askingBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          >
+            {askingBusy ? 'A analisar dados...' : 'Analisar'}
+          </Button>
+        </form>
+
+        <AnimatePresence>
+          {askingBusy && (
+            <motion.div
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="p-3.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/40 flex items-center gap-3 text-xs text-indigo-800 dark:text-indigo-200"
+            >
+              <Loader2 className="w-4 h-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" />
+              <span>
+                <strong>AI CORE em análise:</strong> a cruzar histórico de viagens, veículo ativo e janela legal TVDE 10h/24h...
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {chatHistory.length > 0 && (
+          <div className="space-y-3 pt-2">
+            <AnimatePresence initial={false}>
+              {chatHistory.map((item, idx) => (
+                <motion.div
+                  key={`${item.q}-${idx}`}
+                  initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="p-4 rounded-2xl bg-slate-50 dark:bg-[#131F36] border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-slate-900 dark:text-white">{item.q}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${EPISTEMIC_STYLE[item.epistemicTag]}`}>
+                        {item.epistemicTag}
+                      </span>
+                      <span className="font-mono-tabular text-[11px] font-semibold">
+                        {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-slate-700 dark:text-slate-200 leading-relaxed whitespace-pre-line">{item.answer}</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>
+                      {item.agentName} ({item.engineMode === 'gemini' ? 'Gemini Servidor' : 'Determinístico'}) · Fontes:{' '}
+                      {item.sources.join(', ')}
+                    </span>
+                  </p>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        )}
+      </Card>
 
       {/* Isolated Driver Learning Ledger: Prediction vs Real */}
       <Card className="p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-base font-display font-bold flex items-center gap-2">
+            <h2 className="text-base font-display font-bold flex items-center gap-2 text-slate-900 dark:text-white">
               <Activity className="w-4 h-4 text-blue-700 dark:text-blue-400" />
               Aprendizagem Operacional Isolada (Previsto vs Real)
             </h2>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               Compara o líquido e duração previstos pré-decisão com o resultado real observado na conclusão.
             </p>
           </div>
@@ -271,7 +395,7 @@ export const DriverAiCoreView: React.FC = () => {
           {driverPredictions.map((pr) => (
             <div
               key={pr.id}
-              className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+              className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
             >
               <div className="space-y-1">
                 <div className="flex flex-wrap items-center gap-2">
@@ -303,93 +427,6 @@ export const DriverAiCoreView: React.FC = () => {
             </div>
           ))}
         </div>
-      </Card>
-
-      {/* Interactive Grounded AI CORE Consultation */}
-      <Card className="p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-base font-display font-bold flex items-center gap-2">
-            <Bot className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Consultar AIVAD AI CORE
-          </h2>
-          <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" /> Proxy servidor seguro + fallback determinístico transparente
-          </span>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {[
-            'Quantas horas legais 10h/24h me restam?',
-            'Qual a autonomia real vs homologada do veículo ativo?',
-            'Há trânsito ou obras ao vivo na minha zona?',
-            'Como está a minha estratégia semiautomática?',
-          ].map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              onClick={() => void handleAsk(preset)}
-              className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 text-xs font-medium hover:border-blue-600 text-left"
-            >
-              {preset}
-            </button>
-          ))}
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleAsk(question);
-          }}
-          className="flex gap-2"
-        >
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Pergunte sobre metas, horas 10h/24h, veículos, tráfego ou estratégia..."
-            aria-label="Pergunta ao AIVAD AI CORE"
-            className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs"
-          />
-          <button
-            type="submit"
-            disabled={askingBusy}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold disabled:opacity-60"
-          >
-            <Send className="w-3.5 h-3.5" />
-            <span>{askingBusy ? 'A analisar...' : 'Analisar'}</span>
-          </button>
-        </form>
-
-        {chatHistory.length > 0 && (
-          <div className="space-y-3 pt-2">
-            {chatHistory.map((item, idx) => (
-              <div
-                key={idx}
-                className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2 text-xs"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-bold text-slate-900 dark:text-white">{item.q}</span>
-                  <div className="flex items-center gap-2">
-                    <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${EPISTEMIC_STYLE[item.epistemicTag]}`}>
-                      {item.epistemicTag}
-                    </span>
-                    <span className="font-mono-tabular text-[11px] font-semibold">
-                      {item.confidencePct !== null ? `${item.confidencePct}% conf.` : item.confidenceStatus}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-slate-700 dark:text-slate-200 leading-relaxed whitespace-pre-line">{item.answer}</p>
-                <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
-                  <span>
-                    {item.agentName} ({item.engineMode === 'gemini' ? 'Gemini Servidor' : 'Determinístico'}) · Fontes:{' '}
-                    {item.sources.join(', ')}
-                  </span>
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
       </Card>
     </div>
   );

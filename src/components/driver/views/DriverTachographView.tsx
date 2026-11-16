@@ -40,7 +40,6 @@ import {
 } from '../../ui/ChartsAndVisuals';
 import {
   Card,
-  ContextualHelpBanner,
   SegmentedFilter,
   StatusLabel,
 } from '../../ui/DesignSystem';
@@ -229,12 +228,7 @@ export const DriverTachographView: React.FC = () => {
       : 'success';
 
   return (
-    <div className="space-y-6">
-      <ContextualHelpBanner
-        title="AIVAD TACÓGRAFO TVDE — Registo Digital Independente de Jornada"
-        description="Módulo autónomo com 10 estados validados, verificação de odómetro, consolidação multi-plataforma em janela móvel de 24h (limite legal 10h), fila offline auditável e QR verificável."
-        demoNotice="Módulo Independente (Agenda preservada separadamente)"
-      />
+    <div className="space-y-5">
 
       {/* Explicit Legal Disclaimer Banner */}
       <div
@@ -301,20 +295,21 @@ export const DriverTachographView: React.FC = () => {
         )}
       </Card>
 
-      {/* Live Tachograph Cockpit Hero */}
-      <Card className="p-5 sm:p-6 bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 text-white border-blue-900 space-y-5">
+      {/* Live Tachograph Cockpit Hero (Light & Dark Adaptive) */}
+      <Card variant="tinted-blue" className="p-5 sm:p-6 space-y-5 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="inline-flex items-center gap-1.5 font-mono-tabular px-2.5 py-0.5 rounded-md bg-blue-600/30 border border-blue-400/40 text-blue-100">
+              <span className="inline-flex items-center gap-1.5 font-mono-tabular font-bold text-blue-700 dark:text-blue-300">
                 <Gauge className="w-3.5 h-3.5" />
-                {activeSession ? 'TURNO ATIVO NO TACÓGRAFO' : 'FORA DE SERVIÇO / SEM TURNO ATIVO'}
+                {activeSession ? 'Turno Ativo no Tacógrafo' : 'Fora de Serviço · Sem Turno Ativo'}
               </span>
-              <span className="font-mono-tabular text-slate-300">
+              <span aria-hidden="true" className="text-slate-400">·</span>
+              <span className="font-mono-tabular text-slate-600 dark:text-slate-300">
                 ID Condutor: {activeDriver.id} · {activeDriver.name}
               </span>
             </div>
-            <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight flex items-center gap-2.5">
+            <h2 className="text-xl sm:text-2xl font-display font-extrabold tracking-tight text-slate-900 dark:text-white flex items-center gap-2.5">
               <span
                 className="w-3 h-3 rounded-full shrink-0"
                 style={{
@@ -324,37 +319,37 @@ export const DriverTachographView: React.FC = () => {
               />
               <span>Estado Atual: {activeSession?.currentState ?? 'Fora de serviço'}</span>
             </h2>
-            <p className="text-xs text-slate-300">
-              Viatura: <strong>{activeVehicle.brand} {activeVehicle.model}</strong> ({activeVehicle.year}) ·
-              Operador: <strong>{activeSession?.operatorName ?? operatorInput}</strong> ·
-              Mercado: <strong>{activeMarket.name} ({state.localization.currentLocation.city})</strong>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Viatura: <strong className="text-slate-900 dark:text-white">{activeVehicle.brand} {activeVehicle.model}</strong> ({activeVehicle.year}) ·
+              Operador: <strong className="text-slate-900 dark:text-white">{activeSession?.operatorName ?? operatorInput}</strong> ·
+              Mercado: <strong className="text-slate-900 dark:text-white">{activeMarket.name} ({state.localization.currentLocation.city})</strong>
             </p>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs shrink-0">
-            <div className="p-3 rounded-xl bg-white/10 border border-white/10">
-              <span className="text-slate-300 block">Odómetro Início</span>
-              <span className="text-base font-bold font-mono-tabular">
+            <div className="p-3 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80">
+              <span className="text-slate-500 dark:text-slate-400 block">Odómetro Início</span>
+              <span className="text-base font-bold font-mono-tabular text-slate-900 dark:text-white">
                 {activeSession ? `${activeSession.odometerStartKm} km` : '—'}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-white/10 border border-white/10">
-              <span className="text-slate-300 block">Odómetro Atual</span>
-              <span className="text-base font-bold font-mono-tabular">
+            <div className="p-3 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80">
+              <span className="text-slate-500 dark:text-slate-400 block">Odómetro Atual</span>
+              <span className="text-base font-bold font-mono-tabular text-slate-900 dark:text-white">
                 {activeSession
                   ? `${activeSession.odometerCurrentKm} km`
                   : `${latestSession?.odometerEndKm ?? latestSession?.odometerCurrentKm ?? 48450} km`}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-white/10 border border-white/10">
-              <span className="text-slate-300 block">Online Consolidado</span>
-              <span className="text-base font-bold font-mono-tabular text-emerald-300">
+            <div className="p-3 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80">
+              <span className="text-slate-500 dark:text-slate-400 block">Online Consolidado</span>
+              <span className="text-base font-bold font-mono-tabular text-emerald-700 dark:text-emerald-400">
                 {formatMins(periodSummary.consolidatedOnlineMinutes)}
               </span>
             </div>
-            <div className="p-3 rounded-xl bg-white/10 border border-white/10">
-              <span className="text-slate-300 block">Fila Offline</span>
-              <span className="text-base font-bold font-mono-tabular text-amber-300">
+            <div className="p-3 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80">
+              <span className="text-slate-500 dark:text-slate-400 block">Fila Offline</span>
+              <span className="text-base font-bold font-mono-tabular text-amber-700 dark:text-amber-400">
                 {pendingOfflineCount} pendente(s)
               </span>
             </div>
@@ -364,12 +359,12 @@ export const DriverTachographView: React.FC = () => {
         {feedback && (
           <div
             role="status"
-            className={`p-3 rounded-xl text-xs font-medium flex items-center justify-between gap-2 ${
+            className={`p-3 rounded-xl text-xs font-medium flex items-center justify-between gap-2 border ${
               feedback.tone === 'danger'
-                ? 'bg-red-900/70 border border-red-500 text-red-100'
+                ? 'bg-red-50 dark:bg-red-950/60 border-red-300 dark:border-red-800 text-red-800 dark:text-red-200'
                 : feedback.tone === 'success'
-                ? 'bg-emerald-900/70 border border-emerald-500 text-emerald-100'
-                : 'bg-blue-900/70 border border-blue-500 text-blue-100'
+                ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                : 'bg-blue-50 dark:bg-blue-950/60 border-blue-300 dark:border-blue-800 text-blue-800 dark:text-blue-200'
             }`}
           >
             <span>{feedback.text}</span>
@@ -380,9 +375,9 @@ export const DriverTachographView: React.FC = () => {
         )}
 
         {!activeSession ? (
-          <div className="p-4 rounded-xl bg-white/10 border border-white/15 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs items-end">
+          <div className="p-4 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs items-end">
             <div>
-              <label htmlFor="tac-start-odo" className="block font-medium text-slate-200 mb-1">
+              <label htmlFor="tac-start-odo" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                 Odómetro Inicial (km)
               </label>
               <input
@@ -390,11 +385,11 @@ export const DriverTachographView: React.FC = () => {
                 type="number"
                 value={startOdoInput}
                 onChange={(e) => setStartOdoInput(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white font-mono-tabular"
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono-tabular"
               />
             </div>
             <div className="sm:col-span-2">
-              <label htmlFor="tac-op-name" className="block font-medium text-slate-200 mb-1">
+              <label htmlFor="tac-op-name" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                 Operador / Frota
               </label>
               <input
@@ -402,7 +397,7 @@ export const DriverTachographView: React.FC = () => {
                 type="text"
                 value={operatorInput}
                 onChange={(e) => setOperatorInput(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white"
+                className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
               />
             </div>
             <button
@@ -419,7 +414,7 @@ export const DriverTachographView: React.FC = () => {
                   });
                 }
               }}
-              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold transition-colors"
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-bold shadow-xs transition-colors cursor-pointer"
             >
               <Play className="w-4 h-4" />
               <span>Iniciar Turno no Tacógrafo</span>
@@ -429,7 +424,7 @@ export const DriverTachographView: React.FC = () => {
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
               <div>
-                <label htmlFor="tac-odo" className="block font-medium text-slate-200 mb-1">
+                <label htmlFor="tac-odo" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                   Odómetro na Transição (km)
                 </label>
                 <input
@@ -437,18 +432,18 @@ export const DriverTachographView: React.FC = () => {
                   type="number"
                   value={odoInput}
                   onChange={(e) => setOdoInput(Number(e.target.value))}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white font-mono-tabular"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-mono-tabular"
                 />
               </div>
               <div>
-                <label htmlFor="tac-plat" className="block font-medium text-slate-200 mb-1">
+                <label htmlFor="tac-plat" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                   Plataforma Associada
                 </label>
                 <select
                   id="tac-plat"
                   value={selectedPlatform}
                   onChange={(e) => setSelectedPlatform(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
                 >
                   <option value="consolidado">Consolidado Multi-App</option>
                   {visibleDriverPlatforms.map((p) => (
@@ -459,7 +454,7 @@ export const DriverTachographView: React.FC = () => {
                 </select>
               </div>
               <div>
-                <label htmlFor="tac-mov" className="block font-medium text-slate-200 mb-1">
+                <label htmlFor="tac-mov" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                   Natureza do Movimento
                 </label>
                 <select
@@ -470,7 +465,7 @@ export const DriverTachographView: React.FC = () => {
                       e.target.value as NonNullable<TachographActivityRecord['movementKind']>
                     )
                   }
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
                 >
                   <option value="Com passageiro">Com passageiro</option>
                   <option value="Deslocação em vazio">Deslocação em vazio</option>
@@ -478,7 +473,7 @@ export const DriverTachographView: React.FC = () => {
                 </select>
               </div>
               <div>
-                <label htmlFor="tac-note" className="block font-medium text-slate-200 mb-1">
+                <label htmlFor="tac-note" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                   Nota Operacional (opcional)
                 </label>
                 <input
@@ -487,13 +482,13 @@ export const DriverTachographView: React.FC = () => {
                   placeholder="Ex: Pausa para carregamento EV"
                   value={noteInput}
                   onChange={(e) => setNoteInput(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-950/80 border border-white/20 text-white"
+                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#0B1324] border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400"
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+              <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
                 10 Estados Oficiais do Tacógrafo TVDE (Transições Validadas)
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
@@ -531,12 +526,12 @@ export const DriverTachographView: React.FC = () => {
                           });
                         }
                       }}
-                      className={`min-h-[44px] px-3 py-2 rounded-lg text-xs font-semibold text-left border transition-all flex items-center justify-between gap-2 ${
+                      className={`min-h-[44px] px-3 py-2 rounded-xl text-xs font-semibold text-left border transition-all flex items-center justify-between gap-2 cursor-pointer ${
                         isCurrent
-                          ? 'bg-white text-slate-900 border-white shadow-md'
+                          ? 'bg-blue-700 text-white border-blue-700 shadow-sm'
                           : guard.allowed
-                          ? 'bg-white/10 hover:bg-white/20 text-white border-white/20'
-                          : 'bg-slate-900/50 text-slate-400 border-white/10 opacity-70 hover:opacity-100'
+                          ? 'bg-white dark:bg-[#0B1324] hover:border-blue-500 text-slate-800 dark:text-slate-100 border-slate-200 dark:border-slate-700'
+                          : 'bg-slate-100/80 dark:bg-slate-800/50 text-slate-400 dark:text-slate-500 border-slate-200/80 dark:border-slate-800 opacity-75 hover:opacity-100'
                       }`}
                     >
                       <span className="truncate">{st}</span>

@@ -291,8 +291,12 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
         tripTimeMin: 16,
         stops: 0,
         tollsEur: 0,
-        bonusEur: 2.0,
-        region: `${state.localization.currentLocation.city} → Aeroporto`,
+        bonusEur: 0,
+        region: `${
+          state.localization.currentLocation.countryCode === activeMarket.code
+            ? state.localization.currentLocation.city
+            : activeMarket.regions[0]?.cities[0] ?? 'Lisboa'
+        } → Aeroporto`,
         vehicleCostPerKmEur: 0.12,
         calculationBasis: 'total_distance',
         mode: 'Equilibrado',
@@ -528,7 +532,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               completeActiveTripAction(sess.grossEstimatedEur, 0, 0);
               setCancelPanelOpen(false);
             }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold shadow-xs transition-colors"
           >
             <CheckCircle2 className="w-3.5 h-3.5" />
             Concluir Viagem (€{sess.grossEstimatedEur.toFixed(2)})
@@ -654,14 +658,17 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     return (
       <div className="space-y-6">
         {renderActiveTripLifecyclePanel()}
-        {/* Live Commercial Cockpit Strip */}
-        <Card className="p-5 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white border-blue-900">
+        {/* Live Commercial Cockpit Strip (Light & Dark Adaptive) */}
+        <Card
+          variant="tinted-blue"
+          className="p-5 sm:p-6 shadow-sm"
+        >
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-blue-600/30 border border-blue-400/40 font-semibold">
+                <span className="inline-flex items-center gap-1.5 font-semibold text-blue-800 dark:text-blue-300">
                   <span
-                    className="w-2 h-2 rounded-full"
+                    className="w-2.5 h-2.5 rounded-full"
                     style={{
                       backgroundColor:
                         TACHO_STATE_COLOR[activeTacho?.currentState ?? 'Fora de serviço'],
@@ -669,18 +676,20 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   />
                   {activeTacho ? 'Turno & Tacógrafo Ativos' : 'Sem Turno Ativo'}
                 </span>
+                <span aria-hidden="true" className="text-slate-400">·</span>
                 <span
-                  className={`px-2 py-0.5 rounded-md font-mono-tabular font-semibold ${
+                  className={`font-mono-tabular font-bold ${
                     isTachoCritical
-                      ? 'bg-red-600/80 text-white'
-                      : 'bg-emerald-600/30 border border-emerald-400/40 text-emerald-100'
+                      ? 'text-red-700 dark:text-red-400'
+                      : 'text-emerald-700 dark:text-emerald-400'
                   }`}
                 >
                   TVDE 10h/24h: {Math.floor(rolling24hCompliance.rolling24hWorkMinutes / 60)}h
                   {String(rolling24hCompliance.rolling24hWorkMinutes % 60).padStart(2, '0')}m (Restam{' '}
                   {rolling24hCompliance.remainingLegalMinutes}m)
                 </span>
-                <span className="text-slate-300 font-mono-tabular">
+                <span aria-hidden="true" className="text-slate-400">·</span>
+                <span className="text-slate-600 dark:text-slate-300 font-mono-tabular">
                   {state.localization.currentLocation.city},{' '}
                   {state.localization.currentLocation.countryCode}
                   {state.localization.currentLocation.countryCode !== activeMarket.code
@@ -689,11 +698,13 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   · {activeMarket.currency} ({activeMarket.unitSystem === 'imperial' ? 'mi' : 'km'})
                 </span>
               </div>
-              <h2 className="text-xl font-extrabold tracking-tight">
+              <h2 className="text-xl sm:text-2xl font-display font-extrabold tracking-tight text-slate-900 dark:text-white">
                 {activeTacho?.currentState ?? 'Fora de serviço'} ·{' '}
-                {formatMoney(metrics.net, activeMarket.currency)} líquidos
+                <span className="text-blue-700 dark:text-blue-400">
+                  {formatMoney(metrics.net, activeMarket.currency)} líquidos
+                </span>
               </h2>
-              <p className="text-xs text-slate-300">
+              <p className="text-xs text-slate-600 dark:text-slate-300">
                 Condução tacógrafo: {tachographSummary.drivingMinutes} min · Trabalho s/ condução:{' '}
                 {tachographSummary.workWithoutDrivingMinutes} min · Pausas/Refeições:{' '}
                 {tachographSummary.breakMinutes + tachographSummary.mealMinutes} min
@@ -704,7 +715,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <button
                 type="button"
                 onClick={() => setDriverNav('ai-core')}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-colors"
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold shadow-xs transition-all cursor-pointer"
               >
                 <Sparkles className="w-4 h-4" />
                 <span>Abrir AI CORE</span>
@@ -712,7 +723,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <button
                 type="button"
                 onClick={() => setDriverNav('tacografo')}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors"
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
               >
                 <Gauge className="w-4 h-4" />
                 <span>Tacógrafo</span>
@@ -720,9 +731,9 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <button
                 type="button"
                 onClick={() => setDriverNav('calculadora')}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold transition-colors"
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white dark:bg-[#131F36] hover:bg-blue-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-xs font-semibold transition-colors cursor-pointer"
               >
-                <Calculator className="w-4 h-4" />
+                <Calculator className="w-4 h-4 text-blue-700 dark:text-blue-400" />
                 <span>Analisar Proposta</span>
               </button>
             </div>
@@ -1120,11 +1131,26 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
     return (
       <div className="space-y-6">
-        <ContextualHelpBanner
-          title="Cartões Flutuantes Dinâmicos — Aparência, Métricas & Simulador Isolado"
-          description="Personalize largura, fonte, tamanho, transparência, posição, visibilidade e ordem das métricas. O simulador testa propostas Verde, Amarelo e Vermelho sem poluir o seu histórico real."
-          demoNotice="Overlay sobre outras apps no Android: INTEGRAÇÃO A VALIDAR"
-        />
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <Card className="p-4 space-y-1.5 border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/50 dark:bg-emerald-950/20">
+            <StatusLabel tone="success" text="1. Cartão Intra-App Web / PWA · Operacional Agora" />
+            <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+              Funciona imediatamente neste navegador e PWA: avalia propostas, calcula líquido e anima o semáforo Verde, Amarelo e Vermelho dentro do AIVAD.
+            </p>
+          </Card>
+          <Card className="p-4 space-y-1.5 border-blue-200 dark:border-blue-800/70 bg-blue-50/50 dark:bg-blue-950/20">
+            <StatusLabel tone="info" text="2. Overlay Nativo Android · Preparado para Windsurf" />
+            <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+              Para flutuar sobre o ecrã da Uber ou Bolt, o Android exige permissão nativa <code className="font-mono">SYSTEM_ALERT_WINDOW</code> na compilação nativa Android.
+            </p>
+          </Card>
+          <Card className="p-4 space-y-1.5 border-amber-200 dark:border-amber-800/70 bg-amber-50/50 dark:bg-amber-950/20">
+            <StatusLabel tone="warning" text="3. Dispositivos iOS · Restrição Oficial Apple" />
+            <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+              O iOS não permite janelas flutuantes sobre aplicações de terceiros; em iPhone o motorista utiliza o cartão intra-app e alertas sonoros AIVAD Voice.
+            </p>
+          </Card>
+        </div>
 
         {overlaySavedBanner && <StatusLabel tone="success" text={overlaySavedBanner} />}
 

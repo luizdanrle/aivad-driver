@@ -39,10 +39,10 @@ export const PlatformLogo: React.FC<{
   if (pid === 'uber') {
     return (
       <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
-        <rect width="40" height="40" rx="10" className="fill-slate-900 dark:fill-slate-100" />
+        <rect width="40" height="40" rx="10" className="fill-slate-800 dark:fill-blue-950" />
         <path
           d="M13 13V21.5C13 24.8 15.6 27.5 19.5 27.5C23.4 27.5 26 24.8 26 21.5V13H22.6V21.3C22.6 23.1 21.3 24.4 19.5 24.4C17.7 24.4 16.4 23.1 16.4 21.3V13H13Z"
-          className="fill-white dark:fill-slate-900"
+          fill="#FFFFFF"
         />
       </svg>
     );
@@ -92,14 +92,14 @@ export const PlatformLogo: React.FC<{
   if (pid === 'vloz') {
     return (
       <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
-        <rect width="40" height="40" rx="10" fill="#DC2626" />
+        <rect width="40" height="40" rx="10" fill="#E11D48" />
         <path d="M12.5 13.5L20 27.5L27.5 13.5H23.6L20 20.8L16.4 13.5H12.5Z" fill="#FFFFFF" />
       </svg>
     );
   }
   return (
     <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label={name} className="shrink-0">
-      <rect width="40" height="40" rx="10" fill="#475569" />
+      <rect width="40" height="40" rx="10" fill="#2563EB" />
       <path d="M13 20H27M20 13L27 20L20 27" stroke="#FFFFFF" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
@@ -139,42 +139,47 @@ export const FLOATING_CAPTURE_PROFILE_PRESETS: Record<
   }
 > = {
   Urbano: {
-    label: 'Urbano Rápido',
-    description: 'Leitura imediata em tráfego citadino com foco em €/km, €/h e recolha curta.',
-    bgColor: '#0F172A',
-    textColor: '#F8FAFC',
-    opacityPercent: 95,
+    label: 'Urbano Adaptativo',
+    description: 'Adapta-se automaticamente ao tema Claro/Escuro com foco imediato em €/km, €/h e recolha.',
+    bgColor: '#FFFFFF',
+    textColor: '#0F172A',
+    opacityPercent: 98,
     layoutMode: 'compacto',
     highContrastAccessibility: false,
   },
   Aeroporto: {
     label: 'Aeroporto / Longa Distância',
-    description: 'Vista expandida destacando probabilidade de retorno com passageiro, portagens e líquido.',
-    bgColor: '#0B192C',
-    textColor: '#F8FAFC',
-    opacityPercent: 96,
+    description: 'Vista expandida destacando retorno com passageiro, portagens e ganho líquido.',
+    bgColor: '#F8FAFC',
+    textColor: '#0F172A',
+    opacityPercent: 98,
     layoutMode: 'expandido',
     highContrastAccessibility: false,
   },
   Noturno: {
     label: 'Condução Noturna',
-    description: 'Brilho reduzido anti-encandeamento e contraste suave para turnos noturnos.',
-    bgColor: '#090D16',
-    textColor: '#E2E8F0',
-    opacityPercent: 90,
+    description: 'Superfície azul-noite profunda anti-encandeamento para turnos noturnos.',
+    bgColor: '#0F182B',
+    textColor: '#F8FAFC',
+    opacityPercent: 94,
     layoutMode: 'compacto',
     highContrastAccessibility: false,
   },
   'Alto Contraste': {
     label: 'Alto Contraste Solar',
-    description: 'Máxima legibilidade sob luz solar direta e alvos de toque alargados.',
-    bgColor: '#000000',
+    description: 'Máxima legibilidade sob luz solar intensa e alvos de toque alargados.',
+    bgColor: '#1E3A8A',
     textColor: '#FFFFFF',
     opacityPercent: 100,
     layoutMode: 'expandido',
     highContrastAccessibility: true,
   },
 };
+
+function isDocumentDarkTheme(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.documentElement.classList.contains('dark');
+}
 
 export const DynamicFloatingProposalCard: React.FC<{
   overlayConfig: AndroidOverlayConfig;
@@ -211,22 +216,35 @@ export const DynamicFloatingProposalCard: React.FC<{
 }) => {
   const prefersReducedMotion = useReducedMotion();
   const [minimized, setMinimized] = useState(overlayConfig.layoutMode === 'compacto');
+  const [isDarkTheme, setIsDarkTheme] = useState<boolean>(() => isDocumentDarkTheme());
 
   useEffect(() => {
     setMinimized(overlayConfig.layoutMode === 'compacto');
   }, [overlayConfig.layoutMode]);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    setIsDarkTheme(isDocumentDarkTheme());
+    const obs = new MutationObserver(() => {
+      setIsDarkTheme(isDocumentDarkTheme());
+    });
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => obs.disconnect();
+  }, []);
+
   if (quickHidden) {
     return (
       <div className="flex justify-end">
-        <button
+        <motion.button
           type="button"
+          whileHover={prefersReducedMotion ? undefined : { y: -1 }}
+          whileTap={prefersReducedMotion ? undefined : { scale: 0.97 }}
           onClick={() => onToggleQuickHidden?.(false)}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full bg-slate-900 text-white border border-blue-500 shadow-lg text-xs font-bold hover:bg-slate-800"
+          className="min-h-[42px] inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-blue-700 to-indigo-600 hover:from-blue-600 hover:to-indigo-500 text-white border border-blue-400/40 shadow-[var(--aivad-shadow-floating)] text-xs font-bold cursor-pointer"
         >
-          <Eye className="w-3.5 h-3.5 text-blue-400" />
+          <Eye className="w-4 h-4 text-blue-100" />
           <span>Reabrir Cartão Flutuante AIVAD</span>
-        </button>
+        </motion.button>
       </div>
     );
   }
@@ -235,10 +253,12 @@ export const DynamicFloatingProposalCard: React.FC<{
     return (
       <div
         data-testid="floating-proposal-card-loading"
-        className="rounded-2xl border-2 border-blue-500/60 bg-slate-900 text-white p-4 shadow-xl flex items-center gap-3 text-xs"
+        className="rounded-2xl border-2 border-blue-500/70 bg-blue-50 dark:bg-[#131F36] text-slate-900 dark:text-white p-4 shadow-lg flex items-center gap-3 text-xs"
       >
-        <Loader2 className="w-4 h-4 animate-spin text-blue-400 shrink-0" />
-        <span>A interpretar proposta e a calcular rentabilidade líquida em tempo real...</span>
+        <Loader2 className="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
+        <span className="font-medium">
+          A interpretar proposta e a calcular rentabilidade líquida em tempo real...
+        </span>
       </div>
     );
   }
@@ -247,12 +267,12 @@ export const DynamicFloatingProposalCard: React.FC<{
     return (
       <div
         data-testid="floating-proposal-card-error"
-        className="rounded-2xl border-2 border-red-500 bg-slate-950 text-red-100 p-4 shadow-xl flex items-start gap-3 text-xs"
+        className="rounded-2xl border-2 border-rose-500 bg-rose-50 dark:bg-rose-950/50 text-rose-950 dark:text-rose-100 p-4 shadow-lg flex items-start gap-3 text-xs"
       >
-        <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+        <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
         <div>
           <p className="font-bold">Falha de leitura na captura da proposta</p>
-          <p className="opacity-85 mt-0.5">
+          <p className="opacity-90 mt-0.5">
             {errorMessage ?? 'Dados insuficientes para calcular €/km com segurança. Confirme os valores na app oficial.'}
           </p>
         </div>
@@ -264,14 +284,14 @@ export const DynamicFloatingProposalCard: React.FC<{
     return (
       <div
         data-testid="floating-proposal-card-empty"
-        className="rounded-2xl border border-dashed border-slate-600 bg-slate-900/90 text-slate-200 p-4 text-xs flex items-center justify-between gap-2"
+        className="rounded-2xl border border-dashed border-blue-300 dark:border-slate-700 bg-blue-50/60 dark:bg-[#0F182B] text-slate-700 dark:text-slate-200 p-4 text-xs flex items-center justify-between gap-2"
       >
         <span>Sem proposta ativa em análise neste momento. A aguardar leitura autorizada ou entrada manual.</span>
         {onToggleQuickHidden && (
           <button
             type="button"
             onClick={() => onToggleQuickHidden(true)}
-            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[11px] font-semibold shrink-0"
+            className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-500 text-[11px] font-semibold shrink-0 cursor-pointer"
           >
             Ocultar
           </button>
@@ -280,26 +300,59 @@ export const DynamicFloatingProposalCard: React.FC<{
     );
   }
 
+  // Determine whether card renders on a dark surface or luminous light surface
+  const usesExplicitDarkProfile =
+    overlayConfig.captureProfile === 'Noturno' || overlayConfig.highContrastAccessibility;
+  const legacySeedDarkBg =
+    overlayConfig.bgColor.toUpperCase() === '#0F172A' ||
+    overlayConfig.bgColor.toUpperCase() === '#0B192C';
+
+  const renderDarkCard = usesExplicitDarkProfile || isDarkTheme || (!legacySeedDarkBg && overlayConfig.bgColor.startsWith('#0'));
+
+  const resolvedBg = overlayConfig.highContrastAccessibility
+    ? '#1E3A8A'
+    : renderDarkCard
+    ? legacySeedDarkBg || overlayConfig.bgColor.toUpperCase() === '#FFFFFF' || overlayConfig.bgColor.toUpperCase() === '#F8FAFC'
+      ? '#0F182B'
+      : overlayConfig.bgColor
+    : legacySeedDarkBg
+    ? '#FFFFFF'
+    : overlayConfig.bgColor;
+
+  const resolvedText = overlayConfig.highContrastAccessibility || renderDarkCard
+    ? '#F8FAFC'
+    : '#0F172A';
+
+  const subSurfaceClass =
+    overlayConfig.highContrastAccessibility || renderDarkCard
+      ? 'bg-white/10 border-white/15'
+      : 'bg-slate-50 border-slate-200/90';
+
+  const iconHoverClass =
+    overlayConfig.highContrastAccessibility || renderDarkCard
+      ? 'hover:bg-white/15 text-slate-200'
+      : 'hover:bg-slate-100 text-slate-600';
+
   const verdict =
     analysis.classification === 'verde'
       ? {
           label: 'VERDE · FAVORÁVEL',
-          accentHex: '#10B981',
-          badgeBg: 'rgba(16, 185, 129, 0.22)',
-          badgeText: '#34D399',
+          accentHex: '#059669',
+          badgeBg: renderDarkCard ? 'rgba(16, 185, 129, 0.22)' : '#ECFDF5',
+          badgeText: renderDarkCard ? '#6EE7B7' : '#047857',
         }
       : analysis.classification === 'amarelo'
       ? {
           label: 'AMARELO · ATENÇÃO',
-          accentHex: '#F59E0B',
-          badgeBg: 'rgba(245, 158, 11, 0.22)',
-          badgeText: '#FBBF24',
+          accentHex: '#D97706',
+          badgeBg: renderDarkCard ? 'rgba(245, 158, 11, 0.22)' : '#FFFBEB',
+          badgeText: renderDarkCard ? '#FCD34D' : '#B45309',
         }
       : {
-          label: 'VERMELHO · REJEITAR',
-          accentHex: '#EF4444',
-          badgeBg: 'rgba(239, 68, 68, 0.26)',
-          badgeText: '#FCA5A5',
+          label: 'VERMELHO · EVITAR',
+          accentHex: '#E11D48',
+          badgeBg: renderDarkCard ? 'rgba(244, 63, 94, 0.25)' : '#FFF1F2',
+          badgeText: renderDarkCard ? '#FDA4AF' : '#BE123C',
         };
 
   const fontClass =
@@ -336,48 +389,54 @@ export const DynamicFloatingProposalCard: React.FC<{
   const effectiveFontSize = overlayConfig.highContrastAccessibility
     ? Math.max(15, overlayConfig.fontSizePx + 1)
     : overlayConfig.fontSizePx;
-  const touchTargetBtnClass = overlayConfig.largeTouchTargets ? 'min-h-[46px] py-2.5 px-4 text-sm' : 'py-2 px-3 text-xs';
+  const touchTargetBtnClass = overlayConfig.largeTouchTargets
+    ? 'min-h-[46px] py-2.5 px-4 text-xs sm:text-sm'
+    : 'min-h-[40px] py-2 px-3 text-xs';
 
   return (
     <motion.div
       layout={!prefersReducedMotion}
-      initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.98 }}
-      animate={{ opacity: overlayConfig.opacityPercent / 100, scale: 1 }}
-      transition={{ duration: 0.16, ease: 'easeOut' }}
+      initial={prefersReducedMotion ? false : { opacity: 0, y: 8, scale: 0.985 }}
+      animate={{ opacity: overlayConfig.opacityPercent / 100, y: 0, scale: 1 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
       data-testid="floating-proposal-card"
       data-classification={analysis.classification}
       data-layout-mode={minimized ? 'compacto' : 'expandido'}
       style={{
         width: isPreviewSurface ? `${overlayConfig.widthPercent}%` : '100%',
-        backgroundColor: overlayConfig.highContrastAccessibility ? '#000000' : overlayConfig.bgColor,
-        color: overlayConfig.highContrastAccessibility ? '#FFFFFF' : overlayConfig.textColor,
+        backgroundColor: resolvedBg,
+        color: resolvedText,
         borderColor: verdict.accentHex,
         fontSize: `${effectiveFontSize}px`,
       }}
-      className={`rounded-2xl ${overlayConfig.highContrastAccessibility ? 'border-[3px]' : 'border-2'} p-4 shadow-xl space-y-3 mx-auto ${fontClass}`}
+      className={`rounded-2xl ${overlayConfig.highContrastAccessibility ? 'border-[3px]' : 'border-2'} p-4 shadow-xl space-y-3 mx-auto transition-colors duration-200 ${fontClass}`}
     >
       {/* Top Status & Gross Strip */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={32} />
+          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={34} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-bold uppercase tracking-tight">
+              <span className="font-extrabold tracking-tight">
                 {proposalInput.platformId.toUpperCase()} · {proposalInput.category}
               </span>
-              <span
+              <motion.span
+                key={analysis.classification}
+                initial={prefersReducedMotion ? false : { scale: 0.92, opacity: 0.7 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ duration: 0.18 }}
                 style={{ backgroundColor: verdict.badgeBg, color: verdict.badgeText }}
-                className="text-[10px] font-bold px-2 py-0.5 rounded-md font-mono-tabular whitespace-nowrap"
+                className="text-[10px] font-extrabold px-2 py-0.5 rounded-md font-mono-tabular whitespace-nowrap"
               >
                 {verdict.label}
-              </span>
+              </motion.span>
               {overlayConfig.captureProfile && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 font-semibold">
-                  Perfil: {overlayConfig.captureProfile}
+                <span className="text-[10px] opacity-75 font-medium">
+                  · {overlayConfig.captureProfile}
                 </span>
               )}
             </div>
-            <p className="text-[11px] opacity-85 truncate">
+            <p className="text-[11px] opacity-80 truncate mt-0.5">
               {proposalInput.region} · €{analysis.eurPerKm.toFixed(2)}/km · €{analysis.eurPerHour.toFixed(0)}/h · Recolha {proposalInput.pickupDistanceKm} km ({proposalInput.pickupTimeMin}m)
             </p>
           </div>
@@ -385,13 +444,22 @@ export const DynamicFloatingProposalCard: React.FC<{
 
         <div className="flex items-start gap-1 shrink-0">
           <div className="text-right mr-1">
-            <span className="text-[10px] uppercase tracking-wider opacity-70 block leading-none">
+            <span className="text-[10px] opacity-65 block leading-none">
               Valor bruto
             </span>
-            <span className="text-xl font-extrabold font-mono-tabular leading-tight block">
+            <motion.span
+              key={proposalInput.grossValueEur}
+              initial={prefersReducedMotion ? false : { opacity: 0.6, y: -2 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.16 }}
+              className="text-xl font-extrabold font-mono-tabular leading-tight block"
+            >
               €{proposalInput.grossValueEur.toFixed(2)}
-            </span>
-            <span className="text-[11px] font-mono-tabular opacity-85 block">
+            </motion.span>
+            <span
+              style={{ color: verdict.accentHex }}
+              className="text-[11px] font-mono-tabular font-bold block"
+            >
               Líq.: €{analysis.estimatedNetEur.toFixed(2)}
             </span>
           </div>
@@ -401,7 +469,7 @@ export const DynamicFloatingProposalCard: React.FC<{
               onClick={() => setMinimized((m) => !m)}
               aria-label={minimized ? 'Expandir cartão flutuante' : 'Compactar cartão flutuante'}
               title={minimized ? 'Modo Expandido' : 'Modo Compacto'}
-              className="p-1.5 rounded-md hover:bg-white/15"
+              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
             >
               {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
             </button>
@@ -412,7 +480,7 @@ export const DynamicFloatingProposalCard: React.FC<{
               onClick={() => onToggleQuickHidden(true)}
               aria-label="Ocultar rapidamente cartão flutuante"
               title="Ocultar rapidamente"
-              className="p-1.5 rounded-md hover:bg-white/15"
+              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
             >
               <EyeOff className="w-3.5 h-3.5" />
             </button>
@@ -422,7 +490,7 @@ export const DynamicFloatingProposalCard: React.FC<{
               type="button"
               onClick={onClose}
               aria-label="Fechar cartão flutuante"
-              className="p-1.5 rounded-md hover:bg-white/15"
+              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -434,18 +502,18 @@ export const DynamicFloatingProposalCard: React.FC<{
         {!minimized && (
           <motion.div
             key="expanded-body"
-            initial={prefersReducedMotion ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={prefersReducedMotion ? undefined : { opacity: 0 }}
-            transition={{ duration: 0.14 }}
+            initial={prefersReducedMotion ? false : { opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0, y: -4 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
             className="space-y-3"
           >
             {/* Pickup & Destination Addresses */}
-            <div className="rounded-xl bg-white/10 border border-white/10 p-2.5 space-y-1.5 text-[11px]">
+            <div className={`rounded-xl border p-2.5 space-y-1.5 text-[11px] ${subSurfaceClass}`}>
               <div className="flex items-start gap-2">
-                <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-400" />
+                <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500" />
                 <div className="min-w-0 flex-1">
-                  <span className="opacity-70 uppercase text-[10px] font-bold">Recolha: </span>
+                  <span className="opacity-70 font-bold">Recolha: </span>
                   <span className="font-semibold break-words">
                     {proposalInput.pickupAddress || proposalInput.region}
                   </span>
@@ -455,11 +523,11 @@ export const DynamicFloatingProposalCard: React.FC<{
                 </span>
               </div>
               <div className="flex items-start gap-2">
-                <Navigation className="w-3.5 h-3.5 shrink-0 mt-0.5 text-blue-400" />
+                <Navigation className="w-3.5 h-3.5 shrink-0 mt-0.5 text-blue-500" />
                 <div className="min-w-0 flex-1">
-                  <span className="opacity-70 uppercase text-[10px] font-bold">Destino: </span>
+                  <span className="opacity-70 font-bold">Destino: </span>
                   <span className="font-semibold break-words">
-                    {proposalInput.destinationAddress || 'Destino não indicado pela plataforma'}
+                    {proposalInput.destinationAddress || 'Destino indicado na recolha'}
                   </span>
                 </div>
                 <span className="font-mono-tabular opacity-85 shrink-0">
@@ -467,7 +535,7 @@ export const DynamicFloatingProposalCard: React.FC<{
                 </span>
               </div>
               {analysis.returnPassengerProbabilityPct !== undefined && (
-                <div className="pt-1 border-t border-white/10 flex items-center justify-between text-[10px] opacity-85">
+                <div className="pt-1.5 border-t border-current/10 flex items-center justify-between text-[10px] opacity-85">
                   <span>Probabilidade de retorno com passageiro:</span>
                   <span className="font-mono-tabular font-bold">
                     {analysis.returnPassengerProbabilityPct !== null
@@ -482,15 +550,19 @@ export const DynamicFloatingProposalCard: React.FC<{
             {zoneAlerts.length > 0 && (
               <div
                 data-testid="floating-card-zone-alerts"
-                className="rounded-xl bg-amber-500/20 border border-amber-400/50 p-2.5 space-y-1 text-[11px]"
+                className={`rounded-xl border p-2.5 space-y-1 text-[11px] ${
+                  renderDarkCard
+                    ? 'bg-amber-500/20 border-amber-400/50 text-amber-100'
+                    : 'bg-amber-50 border-amber-300 text-amber-950'
+                }`}
               >
                 {zoneAlerts.slice(0, 2).map((al) => {
                   const alt = al.alternatives[0];
                   return (
                     <div key={`${al.zoneId ?? al.zoneName}`} className="flex items-start gap-2">
-                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
                       <div className="min-w-0">
-                        <p className="font-bold text-amber-200">
+                        <p className="font-bold">
                           {al.zoneName} · {al.tier}
                           {al.isScheduleCurrentlyActive ? ' · ATIVO AGORA' : ''}
                         </p>
@@ -498,12 +570,12 @@ export const DynamicFloatingProposalCard: React.FC<{
                           {al.title}{al.scheduleSummary ? ` (${al.scheduleSummary})` : ''} — {al.description}
                         </p>
                         {al.isEventNotConfirmedBan && (
-                          <p className="text-[10px] text-amber-100/90 italic mt-0.5">
+                          <p className="text-[10px] opacity-80 italic mt-0.5">
                             Nota: Evento regular identificado; não confirma proibição total oficial sem sinalização no local.
                           </p>
                         )}
                         {alt && (
-                          <p className="text-emerald-200 font-semibold mt-0.5">
+                          <p className="text-emerald-600 dark:text-emerald-300 font-semibold mt-0.5">
                             Alternativa segura: {alt.label} ({alt.walkingDistanceMeters}m / ~{alt.walkingTimeMin} min a pé)
                           </p>
                         )}
@@ -521,9 +593,9 @@ export const DynamicFloatingProposalCard: React.FC<{
                 return (
                   <div
                     key={key}
-                    className="p-2 rounded-xl bg-white/10 border border-white/10"
+                    className={`p-2.5 rounded-xl border ${subSurfaceClass}`}
                   >
-                    <span className="text-[10px] uppercase tracking-wider opacity-70 block">
+                    <span className="text-[10px] opacity-70 block">
                       {item.label}
                     </span>
                     <span className="font-mono-tabular font-bold text-sm">{item.value}</span>
@@ -533,7 +605,7 @@ export const DynamicFloatingProposalCard: React.FC<{
             </div>
 
             {/* AI Recommended Action + Calibrated Confidence */}
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1 border-t border-white/10">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1.5 border-t border-current/10">
               <div className="flex items-center gap-1.5 min-w-0">
                 <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color: verdict.accentHex }} />
                 <span className="truncate font-semibold">
@@ -551,23 +623,29 @@ export const DynamicFloatingProposalCard: React.FC<{
       {(onAccept || onReject) && (
         <div className="flex flex-wrap gap-2 pt-1">
           {onAccept && (
-            <button
+            <motion.button
               type="button"
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
               onClick={onAccept}
               style={{ backgroundColor: verdict.accentHex }}
-              className={`flex-1 rounded-xl text-white font-bold hover:opacity-90 transition-opacity ${touchTargetBtnClass}`}
+              className={`flex-1 rounded-xl text-white font-bold hover:opacity-95 transition-opacity cursor-pointer ${touchTargetBtnClass}`}
             >
               Aceitar e Acompanhar Viagem
-            </button>
+            </motion.button>
           )}
           {onReject && (
-            <button
+            <motion.button
               type="button"
+              whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
               onClick={onReject}
-              className={`rounded-xl bg-white/15 hover:bg-white/25 font-semibold transition-colors ${touchTargetBtnClass}`}
+              className={`rounded-xl font-semibold transition-colors cursor-pointer ${
+                renderDarkCard
+                  ? 'bg-white/15 hover:bg-white/25 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+              } ${touchTargetBtnClass}`}
             >
               Recusar
-            </button>
+            </motion.button>
           )}
         </div>
       )}
@@ -590,6 +668,7 @@ export const GoalDonutChart: React.FC<{
   label,
   accentColor = '#1D4ED8',
 }) => {
+  const prefersReducedMotion = useReducedMotion();
   const safeTarget = Math.max(1, targetValue);
   const pct = Math.max(0, Math.min(100, Math.round((currentValue / safeTarget) * 100)));
   const radius = 42;
@@ -607,9 +686,9 @@ export const GoalDonutChart: React.FC<{
             fill="none"
             stroke="currentColor"
             strokeWidth="10"
-            className="text-slate-100 dark:text-slate-800"
+            className="text-blue-100/80 dark:text-slate-800"
           />
-          <circle
+          <motion.circle
             cx="50"
             cy="50"
             r={radius}
@@ -618,12 +697,15 @@ export const GoalDonutChart: React.FC<{
             strokeWidth="10"
             strokeLinecap="round"
             strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
-            className="transition-all duration-500"
+            initial={prefersReducedMotion ? false : { strokeDashoffset: circumference }}
+            animate={{ strokeDashoffset }}
+            transition={{ duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-base font-extrabold font-mono-tabular">{pct}%</span>
+          <span className="text-base font-extrabold font-mono-tabular text-slate-900 dark:text-white">
+            {pct}%
+          </span>
         </div>
       </div>
       <div className="min-w-0 space-y-1">
@@ -654,6 +736,7 @@ export const HorizontalBreakdownBars: React.FC<{
   onSelect?: (id: string) => void;
   emptyText?: string;
 }> = ({ items, selectedId, onSelect, emptyText = 'Sem dados registados no filtro atual.' }) => {
+  const prefersReducedMotion = useReducedMotion();
   if (items.length === 0) {
     return <p className="text-xs text-slate-500 py-4">{emptyText}</p>;
   }
@@ -664,22 +747,29 @@ export const HorizontalBreakdownBars: React.FC<{
       {items.map((item) => {
         const pct = Math.max(4, Math.round((Math.max(0, item.value) / maxVal) * 100));
         const active = selectedId === item.id;
+        const resolvedColor =
+          active
+            ? '#E11D48'
+            : item.color?.toLowerCase() === '#111827' || item.color?.toLowerCase() === '#000000'
+            ? '#2563EB'
+            : item.color ?? '#1D4ED8';
+
         return (
           <button
             key={item.id}
             type="button"
             onClick={() => onSelect?.(item.id)}
-            className={`w-full text-left space-y-1.5 rounded-lg p-2 -mx-2 transition-colors ${
+            className={`w-full text-left space-y-1.5 rounded-xl p-2.5 -mx-2 transition-colors ${
               onSelect
                 ? active
-                  ? 'bg-blue-50/90 dark:bg-blue-950/40'
-                  : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                  ? 'bg-rose-50/80 dark:bg-rose-950/30 cursor-pointer'
+                  : 'hover:bg-blue-50/60 dark:hover:bg-slate-800/50 cursor-pointer'
                 : 'cursor-default'
             }`}
           >
             <div className="flex items-center justify-between gap-2 text-xs">
               <div className="min-w-0">
-                <span className="font-semibold text-slate-900 dark:text-white">{item.label}</span>
+                <span className="font-bold text-slate-900 dark:text-white">{item.label}</span>
                 {item.sublabel && (
                   <span className="text-slate-500 dark:text-slate-400 ml-2">{item.sublabel}</span>
                 )}
@@ -689,24 +779,16 @@ export const HorizontalBreakdownBars: React.FC<{
               </span>
             </div>
             <div className="h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-              {(() => {
-                const isCharcoal = !active && item.color?.toLowerCase() === '#111827';
-                return (
-                  <div
-                    className={`h-full rounded-full transition-all duration-500 ${
-                      isCharcoal ? 'bg-slate-900 dark:bg-slate-300' : ''
-                    }`}
-                    style={
-                      isCharcoal
-                        ? { width: `${pct}%` }
-                        : {
-                            width: `${pct}%`,
-                            backgroundColor: active ? '#DC2626' : item.color ?? '#1D4ED8',
-                          }
-                    }
-                  />
-                );
-              })()}
+              <motion.div
+                className="h-full rounded-full origin-left"
+                initial={prefersReducedMotion ? false : { scaleX: 0 }}
+                animate={{ scaleX: 1 }}
+                transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+                style={{
+                  width: `${pct}%`,
+                  backgroundColor: resolvedColor,
+                }}
+              />
             </div>
           </button>
         );
@@ -722,10 +804,10 @@ export const TACHO_STATE_COLOR: Record<TachographState, string> = {
   'Trabalho sem condução': '#0EA5E9',
   Disponibilidade: '#059669',
   Espera: '#D97706',
-  Pausa: '#7C3AED',
-  Refeição: '#DB2777',
-  Descanso: '#0F766E',
-  'Fim de turno': '#DC2626',
+  Pausa: '#6366F1',
+  Refeição: '#E11D48',
+  Descanso: '#0D9488',
+  'Fim de turno': '#BE123C',
 };
 
 export const TachographTimelineStrip: React.FC<{
@@ -751,7 +833,7 @@ export const TachographTimelineStrip: React.FC<{
   return (
     <div className="space-y-3">
       <div
-        className="w-full h-9 rounded-xl overflow-hidden flex border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950"
+        className="w-full h-10 rounded-xl overflow-hidden flex border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-[#0B1324]"
         role="img"
         aria-label="Linha temporal cronológica das atividades do registo TVDE"
       >
@@ -765,7 +847,7 @@ export const TachographTimelineStrip: React.FC<{
                 width: `${widthPct}%`,
                 backgroundColor: TACHO_STATE_COLOR[act.state] ?? '#1D4ED8',
               }}
-              className="h-full border-r border-white/25 last:border-r-0 flex items-center justify-center text-[10px] font-mono-tabular font-bold text-white overflow-hidden px-1"
+              className="h-full border-r border-white/25 last:border-r-0 flex items-center justify-center text-[10px] font-mono-tabular font-bold text-white overflow-hidden px-1 transition-all duration-300"
             >
               {widthPct >= 10 ? `${act.durationMinutes}m` : ''}
             </div>
@@ -816,8 +898,8 @@ export const QrCodeVerifierCard: React.FC<{
   }, [qrText]);
 
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/70 p-4 flex flex-col sm:flex-row gap-5 items-center sm:items-start">
-      <div className="p-3 rounded-xl bg-white border border-slate-200 shadow-sm shrink-0 flex flex-col items-center gap-2">
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-blue-50/40 dark:bg-[#131F36]/70 p-4 sm:p-5 flex flex-col sm:flex-row gap-5 items-center sm:items-start">
+      <div className="p-3 rounded-2xl bg-white border border-slate-200 shadow-xs shrink-0 flex flex-col items-center gap-2">
         {dataUrl ? (
           <img
             src={dataUrl}
@@ -844,7 +926,7 @@ export const QrCodeVerifierCard: React.FC<{
             <button
               type="button"
               onClick={() => setVerifiedState('verified')}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+              className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold cursor-pointer"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Validar Estrutura QR</span>
@@ -853,7 +935,7 @@ export const QrCodeVerifierCard: React.FC<{
               <a
                 href={dataUrl}
                 download={`aivad-registo-tvde-qr-${verificationCode}.png`}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 font-medium hover:bg-white dark:hover:bg-slate-800"
+                className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0F182B] font-semibold hover:border-blue-500"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>PNG QR</span>
@@ -863,7 +945,7 @@ export const QrCodeVerifierCard: React.FC<{
         </div>
 
         {verifiedState === 'verified' && (
-          <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200">
+          <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200">
             Assinatura e esquema <strong>{String(payloadObject.v)}</strong> verificados · Condutor{' '}
             <strong>{String(payloadObject.drv)}</strong> · Condução{' '}
             <strong>{String(payloadObject.condMin)} min</strong> · Km{' '}
@@ -872,29 +954,29 @@ export const QrCodeVerifierCard: React.FC<{
         )}
 
         <div className="grid grid-cols-2 gap-2 font-mono-tabular text-[11px]">
-          <div className="p-2 rounded bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+          <div className="p-2.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-800">
             <span className="text-slate-400 block">Sessão</span>
             <span className="font-bold truncate block">{String(payloadObject.sid)}</span>
           </div>
-          <div className="p-2 rounded bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+          <div className="p-2.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-800">
             <span className="text-slate-400 block">Odómetro</span>
             <span className="font-bold">{String(payloadObject.odoIni)}→{String(payloadObject.odoFim)}</span>
           </div>
-          <div className="p-2 rounded bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+          <div className="p-2.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-800">
             <span className="text-slate-400 block">Condução / Pausas</span>
             <span className="font-bold">{String(payloadObject.condMin)}m / {String(payloadObject.pausaMin)}m</span>
           </div>
-          <div className="p-2 rounded bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+          <div className="p-2.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-800">
             <span className="text-slate-400 block">Online Consol.</span>
             <span className="font-bold">{String(payloadObject.onlMin)} min</span>
           </div>
         </div>
 
         <details className="text-[11px]">
-          <summary className="cursor-pointer text-blue-700 dark:text-blue-400 font-medium">
+          <summary className="cursor-pointer text-blue-700 dark:text-blue-400 font-semibold">
             Inspecionar payload JSON codificado no QR
           </summary>
-          <pre className="mt-2 p-2.5 rounded-lg bg-slate-900 text-slate-100 overflow-x-auto font-mono-tabular">
+          <pre className="mt-2 p-3 rounded-xl bg-slate-100 dark:bg-[#0B1324] border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 overflow-x-auto font-mono-tabular">
             {qrText}
           </pre>
         </details>

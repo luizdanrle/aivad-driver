@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { canAccessMode } from './core/rbac';
 import { EcosystemProvider, useEcosystem } from './services/EcosystemContext';
 import { PortalView } from './components/portal/PortalView';
@@ -7,13 +8,37 @@ import { AdminLayout } from './components/admin/AdminLayout';
 import { LocalizationPromptOverlay } from './components/ui/LocalizationModal';
 
 const AivadShell: React.FC = () => {
-  const { state, setMode, setDriverNav, setAdminNav, setPortalPage } = useEcosystem();
+  const prefersReducedMotion = useReducedMotion();
+  const { state, setMode, setDriverNav, setAdminNav, setPortalPage, enterDemoSandbox } = useEcosystem();
   const [portalLocOpen, setPortalLocOpen] = useState(false);
+  const autostartHandled = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const modeParam = params.get('mode');
     const navParam = params.get('nav');
+    const autostart = params.get('autostart') === '1';
+
+    if (autostart && !autostartHandled.current) {
+      autostartHandled.current = true;
+      const targetMode = modeParam === 'admin' ? 'admin' : 'driver';
+      if (canAccessMode(state.session, targetMode)) {
+        setMode(targetMode);
+        if (navParam) {
+          if (targetMode === 'admin') setAdminNav(navParam);
+          else setDriverNav(navParam);
+        }
+      } else {
+        void enterDemoSandbox(targetMode).then((res) => {
+          if (res.ok && navParam) {
+            if (targetMode === 'admin') setAdminNav(navParam);
+            else setDriverNav(navParam);
+          }
+        });
+      }
+      return;
+    }
+
     if (modeParam === 'driver' || modeParam === 'admin' || modeParam === 'portal') {
       setMode(modeParam);
     }
@@ -30,7 +55,9 @@ const AivadShell: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const title = state.cms.seoTitle || `${state.cms.brandTitle ?? 'AIVAD'} — Driver Intelligence & Management Ecosystem`;
+    const title =
+      state.cms.seoTitle ||
+      `${state.cms.brandTitle ?? 'AIVAD'} — Driver Intelligence & Management Ecosystem`;
     if (document.title !== title) {
       document.title = title;
     }
@@ -40,20 +67,51 @@ const AivadShell: React.FC = () => {
     }
   }, [state.cms.seoTitle, state.cms.seoDescription, state.cms.brandTitle]);
 
-  if (state.mode === 'driver' && canAccessMode(state.session, 'driver')) {
-    return <DriverLayout />;
-  }
-  if (state.mode === 'admin' && canAccessMode(state.session, 'admin')) {
-    return <AdminLayout />;
-  }
+  const activeShellKey =
+    state.mode === 'driver' && canAccessMode(state.session, 'driver')
+      ? 'driver'
+      : state.mode === 'admin' && canAccessMode(state.session, 'admin')
+      ? 'admin'
+      : 'portal';
+
   return (
-    <>
-      <PortalView onOpenLocationModal={() => setPortalLocOpen(true)} />
-      <LocalizationPromptOverlay
-        manualOpen={portalLocOpen}
-        onCloseManual={() => setPortalLocOpen(false)}
-      />
-    </>
+    <AnimatePresence mode="wait">
+      {activeShellKey === 'driver' ? (
+        <motion.div
+          key="shell-driver"
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+          transition={{ duration: 0.18 }}
+        >
+          <DriverLayout />
+        </motion.div>
+      ) : activeShellKey === 'admin' ? (
+        <motion.div
+          key="shell-admin"
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+          transition={{ duration: 0.18 }}
+        >
+          <AdminLayout />
+        </motion.div>
+      ) : (
+        <motion.div
+          key="shell-portal"
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={prefersReducedMotion ? undefined : { opacity: 0 }}
+          transition={{ duration: 0.18 }}
+        >
+          <PortalView onOpenLocationModal={() => setPortalLocOpen(true)} />
+          <LocalizationPromptOverlay
+            manualOpen={portalLocOpen}
+            onCloseManual={() => setPortalLocOpen(false)}
+          />
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 

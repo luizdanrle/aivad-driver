@@ -452,7 +452,7 @@ export interface AndroidOverlayConfig {
   bgColor: string;
   textColor: string;
   borderColor: string;
-  themePreset: 'AIVAD Azul Noite' | 'Alto Contraste Dia' | 'Minimalista Escuro';
+  themePreset: 'AIVAD Adaptativo' | 'AIVAD Azul Noite' | 'Alto Contraste Dia' | 'Minimalista Escuro';
   visibleMetrics: FloatingMetricKey[];
   durationSeconds: number;
   autoDismiss: boolean;

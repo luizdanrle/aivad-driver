@@ -505,7 +505,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-slate-900 dark:bg-slate-800 text-white font-mono-tabular font-bold">
+                      <span className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 font-mono-tabular font-bold">
                         {c.code}
                       </span>
                       <h3 className="text-base font-bold">{c.name} ({c.nativeName})</h3>
@@ -600,7 +600,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                     />
                     <button
                       type="submit"
-                      className="px-3 py-1.5 rounded-lg bg-slate-900 dark:bg-blue-700 text-white font-semibold whitespace-nowrap"
+                      className="px-3.5 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold whitespace-nowrap transition-colors cursor-pointer"
                     >
                       + Cidade
                     </button>
