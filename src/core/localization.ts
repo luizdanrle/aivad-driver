@@ -503,6 +503,28 @@ export function evaluateCountryChange(
   };
 }
 
+import {
+  SUPPORTED_LANGUAGES,
+  SUPPORTED_LANGUAGE_MAP,
+  isSupportedLanguageCode,
+  getLanguageMeta,
+  isRtlLanguage,
+  translateKey,
+  auditI18nCoverage,
+  I18N_DICTIONARY,
+} from './i18n';
+
+export {
+  SUPPORTED_LANGUAGES,
+  SUPPORTED_LANGUAGE_MAP,
+  isSupportedLanguageCode,
+  getLanguageMeta,
+  isRtlLanguage,
+  translateKey,
+  auditI18nCoverage,
+  I18N_DICTIONARY,
+};
+
 export function confirmLocalMarketAdaptation(
   profile: LocalizationProfile,
   targetCountryCode: string,
@@ -512,97 +534,15 @@ export function confirmLocalMarketAdaptation(
   return {
     ...profile,
     selectedMarketCode: targetCountryCode,
-    languageCode: market?.languageCode ?? profile.languageCode,
+    // Idioma da interface permanece independente do país, moeda, residência e impostos
+    languageCode: profile.languageCode,
     unitSystem: market?.unitSystem ?? profile.unitSystem,
     firstOpenConfirmed: true,
     pendingCountryChangePrompt: null,
   };
 }
 
-const I18N_DICT: Record<string, Record<string, string>> = {
-  'pt-PT': {
-    nav_home: 'Início',
-    nav_ops: 'Operação',
-    nav_tacho: 'Tacógrafo',
-    nav_reports: 'Relatórios',
-    nav_profile: 'Perfil',
-    welcome_title: 'Bem-vindo ao AIVAD!',
-    market_preparing: 'Estamos a preparar a sua experiência para este mercado.',
-    confirm_market: 'Confirmar localização',
-    correct_market: 'Alterar país / cidade',
-    gross_earnings: 'Ganhos Brutos',
-    net_estimated: 'Líquido Estimado',
-    tachograph_title: 'Tacógrafo TVDE Auditável',
-  },
-  'pt-BR': {
-    nav_home: 'Início',
-    nav_ops: 'Operação',
-    nav_tacho: 'Tacógrafo',
-    nav_reports: 'Relatórios',
-    nav_profile: 'Perfil',
-    welcome_title: 'Bem-vindo ao AIVAD!',
-    market_preparing: 'Estamos preparando sua experiência para este mercado.',
-    confirm_market: 'Confirmar localização',
-    correct_market: 'Alterar país / cidade',
-    gross_earnings: 'Ganhos Brutos',
-    net_estimated: 'Líquido Estimado',
-    tachograph_title: 'Tacógrafo Digital de Jornada',
-  },
-  'en-GB': {
-    nav_home: 'Home',
-    nav_ops: 'Operations',
-    nav_tacho: 'Tachograph',
-    nav_reports: 'Reports',
-    nav_profile: 'Profile',
-    welcome_title: 'Welcome to AIVAD!',
-    market_preparing: 'Preparing your local compliance, currency and market rules.',
-    confirm_market: 'Confirm location',
-    correct_market: 'Change country / city',
-    gross_earnings: 'Gross Earnings',
-    net_estimated: 'Estimated Net',
-    tachograph_title: 'Auditable Driver Tachograph',
-  },
-  'es-ES': {
-    nav_home: 'Inicio',
-    nav_ops: 'Operación',
-    nav_tacho: 'Tacógrafo',
-    nav_reports: 'Informes',
-    nav_profile: 'Perfil',
-    welcome_title: '¡Bienvenido a AIVAD!',
-    market_preparing: 'Estamos preparando tu experiencia para este mercado.',
-    confirm_market: 'Confirmar ubicación',
-    correct_market: 'Cambiar país / ciudad',
-    gross_earnings: 'Ingresos Brutos',
-    net_estimated: 'Neto Estimado',
-    tachograph_title: 'Tacógrafo Digital VTC',
-  },
-  'fr-FR': {
-    nav_home: 'Accueil',
-    nav_ops: 'Opération',
-    nav_tacho: 'Tachygraphe',
-    nav_reports: 'Rapports',
-    nav_profile: 'Profil',
-    welcome_title: 'Bienvenue sur AIVAD !',
-    market_preparing: 'Préparation de votre expérience locale et devise.',
-    confirm_market: 'Confirmer la position',
-    correct_market: 'Changer de pays / ville',
-    gross_earnings: 'Revenus Bruts',
-    net_estimated: 'Net Estimé',
-    tachograph_title: 'Tachygraphe Numérique VTC',
-  },
-};
-
 export function translateUi(languageCode: string, key: string): string {
-  const exact = I18N_DICT[languageCode]?.[key];
-  if (exact) return exact;
-  const prefix = languageCode.split('-')[0];
-  const fallbackLang =
-    prefix === 'en'
-      ? 'en-GB'
-      : prefix === 'es'
-      ? 'es-ES'
-      : prefix === 'fr'
-      ? 'fr-FR'
-      : 'pt-PT';
-  return I18N_DICT[fallbackLang]?.[key] ?? I18N_DICT['pt-PT'][key] ?? key;
+  return translateKey(languageCode, key);
 }
+

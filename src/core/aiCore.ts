@@ -69,7 +69,7 @@ export const AI_CORE_AGENTS: AiCoreAgentDefinition[] = [
   {
     id: 'conformidade',
     name: 'Agente de Conformidade e Atividade',
-    roleTitle: 'Registo TVDE 10h/24h & Documentos',
+    roleTitle: 'TACÓGRAFO 10h/24h & Documentos',
     scope: 'Monitoriza janela deslizante de 24h, pausas obrigatórias e validade documental.',
   },
   {
@@ -387,24 +387,145 @@ export function evaluateSemiAutoAdjustment(params: {
   };
 }
 
+export interface AiCalibrationSummary {
+  driverId: string;
+  calibratedCount: number;
+  pendingCount: number;
+  isPreliminary: boolean;
+  preliminaryNotice: string;
+  maeNetEur: number | null;
+  maeDurationMin: number | null;
+  maeDistanceKm: number | null;
+  classificationMatchRatePct: number | null;
+}
+
 export function reconcilePredictionOutcome(
   prediction: AiPredictionRecord,
-  actualTrip: TripRecord
+  actualTrip: TripRecord,
+  thresholds?: { minEurPerKm: number; minEurPerHour: number }
 ): AiPredictionRecord {
-  const deltaNetEur = round2(actualTrip.netEur - prediction.predictedNetEur);
-  const deltaDurationMin = Math.round(actualTrip.durationMin - prediction.predictedDurationMin);
+  const confirmedAdjEur = (actualTrip.fareAdjustments ?? [])
+    .filter((a) => a.status === 'Confirmado pela plataforma')
+    .reduce((acc, a) => acc + a.amountEur, 0);
+  const confirmedActualNetEur = round2(actualTrip.netEur + confirmedAdjEur);
+  const actualDurationMin =
+    actualTrip.postAcceptanceActual?.hasObservedActuals &&
+    actualTrip.postAcceptanceActual.totalTimeMin
+      ? Math.round(actualTrip.postAcceptanceActual.totalTimeMin)
+      : actualTrip.durationMin;
+  const actualDistanceKm = round2(
+    actualTrip.postAcceptanceActual?.hasObservedActuals &&
+      actualTrip.postAcceptanceActual.totalDistanceKm
+      ? actualTrip.postAcceptanceActual.totalDistanceKm
+      : actualTrip.pickupDistanceKm + actualTrip.tripDistanceKm
+  );
+  const predictedDistanceKm =
+    prediction.predictedDistanceKm ??
+    actualTrip.preAcceptanceEstimate?.totalDistanceKm ??
+    actualTrip.preDecisionSnapshot?.predictedDistanceKm;
+
+  const deltaNetEur = round2(confirmedActualNetEur - prediction.predictedNetEur);
+  const deltaDurationMin = Math.round(actualDurationMin - prediction.predictedDurationMin);
+  const deltaDistanceKm =
+    predictedDistanceKm !== undefined ? round2(actualDistanceKm - predictedDistanceKm) : undefined;
+
+  const observedEurPerKm = actualDistanceKm > 0 ? confirmedActualNetEur / actualDistanceKm : 0;
+  const observedEurPerHour =
+    actualDurationMin > 0 ? (confirmedActualNetEur / actualDurationMin) * 60 : 0;
+  const minKm = thresholds?.minEurPerKm ?? 0.9;
+  const minHour = thresholds?.minEurPerHour ?? 18;
+  const observedClassification: AiPredictionRecord['observedClassification'] =
+    observedEurPerKm >= minKm && observedEurPerHour >= minHour
+      ? 'verde'
+      : observedEurPerKm >= minKm * 0.78 || observedEurPerHour >= minHour * 0.78
+      ? 'amarelo'
+      : 'vermelho';
+
+  const predictedCls =
+    prediction.predictedClassification ?? actualTrip.preDecisionSnapshot?.predictedClassification;
+  const classificationMatched =
+    predictedCls !== undefined ? predictedCls === observedClassification : undefined;
+
   const signNet = deltaNetEur >= 0 ? '+' : '';
   const signMin = deltaDurationMin >= 0 ? '+' : '';
+  const distNote =
+    deltaDistanceKm !== undefined
+      ? ` e ${deltaDistanceKm >= 0 ? '+' : ''}${deltaDistanceKm.toFixed(1)} km`
+      : '';
   return {
     ...prediction,
     tripId: actualTrip.id,
-    actualNetEur: actualTrip.netEur,
-    actualDurationMin: actualTrip.durationMin,
+    predictedDistanceKm,
+    predictedClassification: predictedCls,
+    actualNetEur: confirmedActualNetEur,
+    actualDurationMin,
+    actualDistanceKm,
+    observedClassification,
+    classificationMatched,
     deltaNetEur,
     deltaDurationMin,
+    deltaDistanceKm,
     status: 'Calibrado',
-    learningNote: `Desvio observado: ${signNet}€${deltaNetEur.toFixed(2)} líquidos e ${signMin}${deltaDurationMin} min face ao previsto. Pesos locais do motorista atualizados sem mistura entre utilizadores.`,
+    learningNote: `Desvio observado: ${signNet}€${deltaNetEur.toFixed(2)} líquidos confirmados, ${signMin}${deltaDurationMin} min${distNote} face ao previsto. Registo isolado deste motorista.`,
     epistemicTag: 'Informação confirmada',
+  };
+}
+
+export function computeAiCalibrationSummary(
+  predictions: AiPredictionRecord[],
+  driverId: string
+): AiCalibrationSummary {
+  const mine = predictions.filter((p) => p.driverId === driverId);
+  const calibrated = mine.filter((p) => p.status === 'Calibrado');
+  const pendingCount = mine.filter((p) => p.status !== 'Calibrado').length;
+
+  if (calibrated.length === 0) {
+    return {
+      driverId,
+      calibratedCount: 0,
+      pendingCount,
+      isPreliminary: true,
+      preliminaryNotice:
+        'Avaliação preliminar — ainda não existem viagens concluídas reconciliadas com previsões para calibrar desvios.',
+      maeNetEur: null,
+      maeDurationMin: null,
+      maeDistanceKm: null,
+      classificationMatchRatePct: null,
+    };
+  }
+
+  const maeNetEur = round2(
+    calibrated.reduce((acc, p) => acc + Math.abs(p.deltaNetEur ?? 0), 0) / calibrated.length
+  );
+  const maeDurationMin = round2(
+    calibrated.reduce((acc, p) => acc + Math.abs(p.deltaDurationMin ?? 0), 0) / calibrated.length
+  );
+  const withDist = calibrated.filter((p) => p.deltaDistanceKm !== undefined);
+  const maeDistanceKm =
+    withDist.length > 0
+      ? round2(withDist.reduce((acc, p) => acc + Math.abs(p.deltaDistanceKm ?? 0), 0) / withDist.length)
+      : null;
+  const withCls = calibrated.filter((p) => p.classificationMatched !== undefined);
+  const classificationMatchRatePct =
+    withCls.length > 0
+      ? Math.round(
+          (withCls.filter((p) => p.classificationMatched).length / withCls.length) * 100
+        )
+      : null;
+
+  const isPreliminary = calibrated.length < 3;
+  return {
+    driverId,
+    calibratedCount: calibrated.length,
+    pendingCount,
+    isPreliminary,
+    preliminaryNotice: isPreliminary
+      ? `Avaliação preliminar (${calibrated.length}/3 amostras reais) — são necessárias pelo menos 3 viagens reconciliadas para calibração estatística fiável.`
+      : `Calibração baseada em ${calibrated.length} viagens reconciliadas deste motorista (sem aprendizagem cruzada entre contas).`,
+    maeNetEur,
+    maeDurationMin,
+    maeDistanceKm,
+    classificationMatchRatePct,
   };
 }
 
@@ -608,7 +729,7 @@ export function answerAiCoreQuery(
     return {
       agentName: 'Agente de Conformidade e Atividade',
       answer: `Nas últimas 24 horas registou ${Math.floor(rolling24h.rolling24hWorkMinutes / 60)}h ${rolling24h.rolling24hWorkMinutes % 60}m de atividade consolidada multi-plataforma (teto legal: 10h / 600 min). Restam ${rolling24h.remainingLegalMinutes} min disponíveis e acumulou ${rolling24h.rolling24hBreakMinutes} min de pausa/refeição. Estado: ${rolling24h.alertLevel}.`,
-      sources: ['Registo de atividade TVDE (Portaria n.º 7/2022)', 'Intervalos multi-plataforma'],
+      sources: ['TACÓGRAFO (Portaria n.º 7/2022)', 'Intervalos multi-plataforma'],
       epistemicTag: 'Informação confirmada',
       confidencePct: cal.confidencePct,
       confidenceStatus: cal.confidenceStatus,
@@ -685,7 +806,7 @@ export function answerAiCoreQuery(
   return {
     agentName: 'AIVAD AI CORE (Coordenação Multi-Agente)',
     answer: `Resumo operacional atual: ${fin.tripCount} viagens concluídas (€${fin.totalRevenue.toFixed(2)} brutos, €${fin.netEstimated.toFixed(2)} líquidos estimados), ${fin.cancelledOrLostCount} não concluídas excluídas dos ganhos, e ${rolling24h.remainingLegalMinutes} min restantes no teto diário TVDE de 10h.`,
-    sources: ['Financeiro', 'Corridas', 'Registo TVDE'],
+    sources: ['Financeiro', 'Corridas', 'TACÓGRAFO'],
     epistemicTag: fin.tripCount > 0 ? 'Estimativa' : 'Informação indisponível',
     confidencePct: cal.confidencePct,
     confidenceStatus: cal.confidenceStatus,

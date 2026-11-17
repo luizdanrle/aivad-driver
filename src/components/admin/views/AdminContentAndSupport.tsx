@@ -299,7 +299,7 @@ export const AdminContentAndSupport: React.FC<{ activeTab: string }> = ({ active
           <StatusLabel tone="info" text={cmsNotice} />
         )}
 
-        <Card className="p-5 space-y-5 text-xs">
+        <Card className="p-5 space-y-5 text-xs" data-guide-target="admin-cms-editor">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold flex items-center gap-2">
               <Palette className="w-4 h-4 text-blue-700 dark:text-blue-400" />

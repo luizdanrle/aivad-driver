@@ -32,6 +32,8 @@ import {
 } from 'lucide-react';
 import { PLATFORM_ADAPTERS } from '../../adapters/platformAdapters';
 import { analyzeProposalWithAiCore } from '../../core/aiCore';
+import { SUPPORTED_LANGUAGES } from '../../core/i18n';
+import { translateUi } from '../../core/localization';
 import {
   getPlatformOperationInLocation,
   getValidatedPlatformsForLocation,
@@ -51,6 +53,7 @@ import {
   StatusLabel,
   ThemeToggleButton,
 } from '../ui/DesignSystem';
+import { InteractiveAssistantOverlay } from '../ui/InteractiveAssistantOverlay';
 import { LocationPillButton } from '../ui/LocalizationModal';
 
 const PORTAL_PAGES = [
@@ -188,7 +191,7 @@ const INTERACTIVE_SHOWCASE_ITEMS: InteractiveShowcaseItem[] = [
   {
     id: 'tacografo',
     number: '06',
-    label: 'Tacógrafo TVDE',
+    label: 'TACÓGRAFO',
     title: 'Controlo legal de 10h em janela deslizante de 24h entre múltiplas plataformas',
     userGoal: 'Cumprir a Portaria n.º 7/2022 e Lei 45/2018 somando condução e trabalho entre Uber, Bolt e outras apps.',
     howItWorks:
@@ -260,7 +263,11 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
     logoutSession,
     clearRbacDenied,
     setPortalPage,
+    setLanguageCode,
     toggleTheme,
+    startInteractiveAssistant,
+    markPortalSimulatorTested,
+    markPortalComparisonViewed,
   } = useEcosystem();
 
   const page = state.activePortalPage;
@@ -288,7 +295,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
   ];
 
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [portalLang, setPortalLang] = useState<string>('pt-PT');
+  const portalLang = state.localization.languageCode || 'pt-PT';
   const [heroScenario, setHeroScenario] = useState<'verde' | 'amarelo' | 'vermelho'>('verde');
   const [activeShowcaseId, setActiveShowcaseId] = useState<ShowcaseModuleId>('propostas');
   const [openFaqId, setOpenFaqId] = useState<string | null>(null);
@@ -458,10 +465,19 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
   const benefitsList = cms.benefits ?? [];
   const faqList = cms.faqs ?? [];
   const localized = cms.localizedContent?.[portalLang];
-  const effectiveHeroTitle = localized?.heroTitle || cms.heroTitle;
-  const effectiveHeroSubtitle = localized?.heroSubtitle || cms.heroSubtitle;
+  const isDefaultPortuguese = portalLang === 'pt-PT' || portalLang === 'pt-BR';
+  const effectiveHeroTitle =
+    localized?.heroTitle ||
+    (isDefaultPortuguese
+      ? cms.heroTitle
+      : `${translateUi(portalLang, 'welcome_title')} — ${translateUi(portalLang, 'app_brand_tagline')}`);
+  const effectiveHeroSubtitle =
+    localized?.heroSubtitle ||
+    (isDefaultPortuguese ? cms.heroSubtitle : translateUi(portalLang, 'market_preparing'));
   const effectiveBrandTagline =
-    localized?.brandTagline || cms.brandTagline || 'Inteligência Operacional para Mobilidade TVDE';
+    localized?.brandTagline ||
+    (isDefaultPortuguese ? cms.brandTagline : null) ||
+    translateUi(portalLang, 'app_brand_tagline');
   const effectiveAnnouncement = localized?.announcementBanner || cms.announcementBanner;
   const activeNavMenus =
     cms.navigationMenus && cms.navigationMenus.length > 0
@@ -514,15 +530,25 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
             ))}
           </nav>
 
-          {/* Zone 3: Primary Action (+ Mobile Menu Button on <lg) */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          {/* Zone 3: Primary Action (+ Interactive Guide + Mobile Menu Button on <lg) */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => startInteractiveAssistant('portal-tour')}
+              className="hidden sm:inline-flex min-h-[40px] items-center gap-1.5 px-3 py-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-bold hover:border-indigo-500 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Guia Interativo</span>
+            </button>
             <button
               type="button"
               onClick={handleEnterDriver}
               style={{ backgroundColor: primaryColor }}
               className="min-h-[40px] px-4 py-2 rounded-xl hover:opacity-95 text-white text-xs sm:text-sm font-bold transition-opacity whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
             >
-              {cms.heroCtaDriverLabel || 'Entrar como Motorista'}
+              {isDefaultPortuguese
+                ? cms.heroCtaDriverLabel || translateUi(portalLang, 'portal_enter_driver')
+                : translateUi(portalLang, 'portal_enter_driver')}
             </button>
             <button
               type="button"
@@ -595,6 +621,17 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                   <ThemeToggleButton theme={state.theme} onToggle={toggleTheme} />
                   {onOpenLocationModal && <LocationPillButton onClick={onOpenLocationModal} />}
                 </div>
+                <Button
+                  variant="ai"
+                  className="w-full"
+                  icon={<Sparkles className="w-4 h-4" />}
+                  onClick={() => {
+                    setMobileDrawerOpen(false);
+                    startInteractiveAssistant('portal-tour');
+                  }}
+                >
+                  Guia Interativo do Portal
+                </Button>
                 <Button
                   variant="primary"
                   className="w-full"
@@ -687,12 +724,12 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
             <select
               aria-label="Idioma do portal público"
               value={portalLang}
-              onChange={(e) => setPortalLang(e.target.value)}
-              className="min-h-[34px] px-2.5 py-1 rounded-xl bg-white dark:bg-[#131F36] border border-slate-200 dark:border-slate-700 text-xs font-mono-tabular font-semibold cursor-pointer"
+              onChange={(e) => setLanguageCode(e.target.value)}
+              className="min-h-[34px] max-w-[180px] px-2.5 py-1 rounded-xl bg-white dark:bg-[#131F36] border border-slate-200 dark:border-slate-700 text-xs font-semibold cursor-pointer"
             >
-              {(cms.supportedLanguages ?? ['pt-PT', 'en-GB', 'es-ES']).map((lng) => (
-                <option key={lng} value={lng}>
-                  {lng.toUpperCase()}
+              {SUPPORTED_LANGUAGES.map((lng) => (
+                <option key={lng.code} value={lng.code}>
+                  {lng.nativeName} ({lng.code})
                 </option>
               ))}
             </select>
@@ -830,9 +867,11 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                               size="lg"
                               onClick={handleEnterDriver}
                               style={{ backgroundColor: primaryColor }}
-                              rightIcon={<ArrowRight className="w-4 h-4" />}
+                              rightIcon={<ArrowRight className="w-4 h-4 rtl-flip" />}
                             >
-                              {cms.heroCtaDriverLabel || 'Entrar no AIVAD Driver'}
+                              {isDefaultPortuguese
+                                ? cms.heroCtaDriverLabel || translateUi(portalLang, 'portal_enter_driver')
+                                : translateUi(portalLang, 'portal_enter_driver')}
                             </Button>
 
                             <Button
@@ -875,7 +914,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                         </div>
 
                         {/* Live Interactive Product Preview Card */}
-                        <div className="lg:col-span-6 flex">
+                        <div className="lg:col-span-6 flex" data-guide-target="portal-simulator">
                           <Card
                             variant="elevated"
                             className="w-full p-4 sm:p-6 flex flex-col justify-between gap-4 bg-gradient-to-br from-blue-50/90 via-white to-indigo-50/70 dark:from-[#0F182B] dark:via-[#131F36] dark:to-[#172540]"
@@ -891,7 +930,10 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                               </div>
                               <SegmentedFilter
                                 value={heroScenario}
-                                onChange={(v) => setHeroScenario(v as 'verde' | 'amarelo' | 'vermelho')}
+                                onChange={(v) => {
+                                  setHeroScenario(v as 'verde' | 'amarelo' | 'vermelho');
+                                  markPortalSimulatorTested();
+                                }}
                                 options={[
                                   { id: 'verde', label: 'Verde · €18,40' },
                                   { id: 'amarelo', label: 'Amarelo · €9,40' },
@@ -1061,7 +1103,11 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                       </section>
 
                       {/* 3. AIVAD DRIVER vs AIVAD MANAGEMENT ARCHITECTURE SPLIT */}
-                      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <section
+                        data-guide-target="portal-access-cards"
+                        onClick={() => markPortalComparisonViewed()}
+                        className="grid grid-cols-1 lg:grid-cols-2 gap-6"
+                      >
                         <Card variant="tinted-blue" className="p-6 sm:p-7 flex flex-col justify-between gap-5">
                           <div className="space-y-3">
                             <span className="text-xs font-bold text-blue-700 dark:text-blue-400">
@@ -1163,7 +1209,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
 
                 if (secId === 'platforms') {
                   return (
-                    <section key="platforms" className="space-y-4">
+                    <section key="platforms" data-guide-target="portal-platforms" className="space-y-4">
                       <div className="flex flex-wrap items-end justify-between gap-2">
                         <div className="space-y-1">
                           <h2 className="text-xl sm:text-2xl font-display font-extrabold">
@@ -1614,6 +1660,7 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           {page === 'plataformas' && (
             <motion.div
               key="portal-plataformas"
+              data-guide-target="portal-platforms"
               initial={prefersReducedMotion ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={prefersReducedMotion ? undefined : { opacity: 0 }}
@@ -1818,8 +1865,8 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
                     Selecione a sua cidade e viatura ativa para que tarifas elétricas/combustível e apps validadas fiquem calibradas.
                   </div>
                   <div className="p-3.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200/80 dark:border-slate-800">
-                    <strong className="block text-blue-700 dark:text-blue-400 mb-1">2. Iniciar Registo TVDE 10h/24h</strong>
-                    Introduza o odómetro inicial no Tacógrafo e acompanhe a margem legal entre todas as aplicações.
+                    <strong className="block text-blue-700 dark:text-blue-400 mb-1">2. Iniciar TACÓGRAFO (10h/24h)</strong>
+                    Introduza o odómetro inicial no TACÓGRAFO e acompanhe os dois relógios independentes e a margem legal entre todas as aplicações.
                   </div>
                   <div className="p-3.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200/80 dark:border-slate-800">
                     <strong className="block text-blue-700 dark:text-blue-400 mb-1">3. Personalizar Cartão &amp; AutoPilot</strong>
@@ -2287,6 +2334,8 @@ export const PortalView: React.FC<{ onOpenLocationModal?: () => void }> = ({
           </div>
         </div>
       </footer>
+
+      <InteractiveAssistantOverlay scope="portal" />
     </div>
   );
 };

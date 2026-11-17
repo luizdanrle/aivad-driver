@@ -6,6 +6,7 @@ import type {
   CountryMarketConfig,
   OrganizationRecord,
   OrganizationType,
+  PersistedTachographAuditRecord,
   PlatformRecord,
   UserRole,
 } from '../models/types';
@@ -1411,6 +1412,135 @@ ${query}`,
         reason: `Falha temporária no proxy Gemini (${err instanceof Error ? err.message : 'erro de rede'}) — usado fallback determinístico local.`,
       });
     }
+  });
+
+  function computeTachographAuditHmac(rec: Omit<PersistedTachographAuditRecord, 'hmacSignature' | 'updatedAtIso'>): string {
+    const canonical = [
+      rec.sessionId,
+      rec.verificationCode,
+      rec.date,
+      rec.startIso,
+      rec.endIso ?? '',
+      String(rec.odometerStartKm),
+      String(rec.odometerEndKm),
+      String(rec.distanceKm),
+      String(rec.drivingMinutes),
+      String(rec.effectiveWorkMinutes),
+      String(rec.breakMinutes),
+      rec.currentState,
+      rec.status,
+    ].join('|');
+    return crypto.createHmac('sha256', sessionSecret).update(canonical).digest('hex');
+  }
+
+  router.post('/api/tachograph/audit', (req: AuthedRequest, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+    const verificationCode = typeof body.verificationCode === 'string' ? body.verificationCode.trim() : '';
+    if (!sessionId || !verificationCode) {
+      res.status(400).json({ ok: false, error: 'sessionId e verificationCode são obrigatórios.' });
+      return;
+    }
+
+    const baseRecord: Omit<PersistedTachographAuditRecord, 'hmacSignature' | 'updatedAtIso'> = {
+      sessionId,
+      verificationCode,
+      driverAlias: typeof body.driverAlias === 'string' ? body.driverAlias.slice(0, 80) : 'Motorista AIVAD',
+      vehicleLabel: typeof body.vehicleLabel === 'string' ? body.vehicleLabel.slice(0, 80) : 'Viatura TVDE',
+      operatorName: typeof body.operatorName === 'string' ? body.operatorName.slice(0, 100) : 'Operador TVDE',
+      date: typeof body.date === 'string' ? body.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      startIso: typeof body.startIso === 'string' ? body.startIso : new Date().toISOString(),
+      endIso: typeof body.endIso === 'string' ? body.endIso : null,
+      odometerStartKm: Number(body.odometerStartKm) || 0,
+      odometerEndKm: Number(body.odometerEndKm) || 0,
+      distanceKm: Math.max(0, Number(body.distanceKm) || 0),
+      drivingMinutes: Math.max(0, Math.round(Number(body.drivingMinutes) || 0)),
+      effectiveWorkMinutes: Math.max(0, Math.round(Number(body.effectiveWorkMinutes) || 0)),
+      breakMinutes: Math.max(0, Math.round(Number(body.breakMinutes) || 0)),
+      currentState: typeof body.currentState === 'string' ? body.currentState : 'Em curso',
+      status: typeof body.status === 'string' ? body.status : 'Em curso',
+      countryCode: typeof body.countryCode === 'string' ? body.countryCode : 'PT',
+      city: typeof body.city === 'string' ? body.city : 'Lisboa',
+    };
+
+    const hmacSignature = computeTachographAuditHmac(baseRecord);
+    const fullRecord: PersistedTachographAuditRecord = {
+      ...baseRecord,
+      hmacSignature,
+      updatedAtIso: new Date().toISOString(),
+    };
+
+    const store = repo.loadStore();
+    store.tachographAudits[sessionId] = fullRecord;
+    repo.saveStore(store);
+
+    res.json({
+      ok: true,
+      sessionId,
+      verificationCode,
+      verificationPath: `/?mode=tacho-audit&sid=${encodeURIComponent(sessionId)}&code=${encodeURIComponent(verificationCode)}`,
+      integrityStatus: 'VALID',
+    });
+  });
+
+  router.get('/api/tachograph/audit/:sid', (req: Request, res: Response) => {
+    const sid = String(req.params.sid || '').trim();
+    const providedCode = typeof req.query?.code === 'string' ? req.query.code.trim() : '';
+    const store = repo.loadStore();
+    const record = store.tachographAudits[sid];
+
+    if (!record) {
+      res.status(404).json({
+        ok: false,
+        integrityStatus: 'NOT_FOUND',
+        error: 'Registo de auditoria não encontrado neste servidor para o identificador fornecido.',
+      });
+      return;
+    }
+
+    const expectedHmac = computeTachographAuditHmac(record);
+    const a = Buffer.from(record.hmacSignature || '', 'utf8');
+    const b = Buffer.from(expectedHmac, 'utf8');
+    const hmacValid = a.length === b.length && crypto.timingSafeEqual(a, b);
+    const codeMatches = !providedCode || providedCode === record.verificationCode;
+
+    if (!hmacValid || !codeMatches) {
+      res.status(200).json({
+        ok: false,
+        integrityStatus: 'TAMPERED',
+        error: !codeMatches
+          ? 'Código de verificação não corresponde ao registo emitido.'
+          : 'Falha de integridade criptográfica (assinatura HMAC divergente).',
+        summary: null,
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      integrityStatus: 'VALID',
+      summary: {
+        sessionId: record.sessionId,
+        verificationCode: record.verificationCode,
+        driverAlias: record.driverAlias,
+        vehicleLabel: record.vehicleLabel,
+        operatorName: record.operatorName,
+        date: record.date,
+        startIso: record.startIso,
+        endIso: record.endIso,
+        odometerStartKm: record.odometerStartKm,
+        odometerEndKm: record.odometerEndKm,
+        distanceKm: record.distanceKm,
+        drivingMinutes: record.drivingMinutes,
+        effectiveWorkMinutes: record.effectiveWorkMinutes,
+        breakMinutes: record.breakMinutes,
+        currentState: record.currentState,
+        status: record.status,
+        countryCode: record.countryCode,
+        city: record.city,
+        updatedAtIso: record.updatedAtIso,
+      },
+    });
   });
 
   return {

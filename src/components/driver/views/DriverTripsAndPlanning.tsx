@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Award,
@@ -28,12 +28,19 @@ import {
   formatMoney,
   getTodayIso,
 } from '../../../core/localization';
+import {
+  buildWazeNavigationLaunch,
+  computeTripEstimateVsActualComparison,
+  summarizeTripAdjustments,
+} from '../../../core/tripAnalysis';
+import { TIER_OPERATIONAL_MEANINGS } from '../../../core/floatingCard';
 import type {
   CancellationBy,
   CaptureSource,
   MapZoneRecord,
   SavedPlace,
   StrategyMode,
+  TripFareAdjustmentRecord,
   TripRecord,
   TripStatus,
 } from '../../../models/types';
@@ -74,6 +81,9 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     activeDriverTrips,
     completeTrip,
     updateTripStatus,
+    updateTripPostAcceptanceActual,
+    addTripFareAdjustment,
+    resolveTripFareAdjustmentStatus,
     addCampaign,
     addShift,
     updateShiftNotes,
@@ -114,6 +124,40 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     () => state.trips.find((t) => t.id === selectedTripId) ?? state.trips[0] ?? null,
     [state.trips, selectedTripId]
   );
+
+  const [actualObsForm, setActualObsForm] = useState({
+    pickupDistanceKm: 1.4,
+    tripDistanceKm: 9.8,
+    pickupTimeMin: 6,
+    tripTimeMin: 21,
+    navigationTrafficTimeMin: 27,
+    navigationAppUsed: 'Waze' as 'Waze' | 'Google Maps' | 'Outro' | 'Nenhum',
+  });
+  const [newAdjForm, setNewAdjForm] = useState<{
+    amountEur: number;
+    reason: string;
+    status: TripFareAdjustmentRecord['status'];
+    evidenceNote: string;
+  }>({
+    amountEur: 2.2,
+    reason: 'Tempo adicional por trânsito intenso / atraso recolha',
+    status: 'Pendente de confirmação',
+    evidenceNote: 'Aguarda extrato oficial da plataforma',
+  });
+
+  useEffect(() => {
+    if (!selectedTrip) return;
+    const cmp = computeTripEstimateVsActualComparison(selectedTrip);
+    setActualObsForm({
+      pickupDistanceKm: cmp.actual.pickupDistanceKm ?? cmp.estimate.pickupDistanceKm,
+      tripDistanceKm: cmp.actual.tripDistanceKm ?? cmp.estimate.tripDistanceKm,
+      pickupTimeMin: cmp.actual.pickupTimeMin ?? cmp.estimate.pickupTimeMin,
+      tripTimeMin: cmp.actual.tripTimeMin ?? cmp.estimate.tripTimeMin,
+      navigationTrafficTimeMin:
+        cmp.trafficEstTimeMin ?? (cmp.estimate.totalTimeMin + 4),
+      navigationAppUsed: cmp.actual.navigationAppUsed ?? 'Waze',
+    });
+  }, [selectedTrip]);
 
   const [selectedConsolidatedPlatId, setSelectedConsolidatedPlatId] = useState<string | null>(null);
 
@@ -213,13 +257,51 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
   const [editingNotes, setEditingNotes] = useState('');
 
   // Smart Planner State
-  const [plannerInput, setPlannerInput] = useState({
+  const userTouchedPlatformsRef = useRef(false);
+  const [plannerInput, setPlannerInput] = useState<{
+    targetNetEur: number;
+    targetGrossEur: number;
+    availableDays: number;
+    hoursPerDay: number;
+    breakMinutesPerDay: number;
+    startTime: string;
+    endTime: string;
+    flexibleDuration: boolean;
+    selectedPlatformIds: string[];
+    avgGrossPerTripEur: number;
+    needsChargingStops: boolean;
+  }>({
     targetNetEur: state.routinePreferences.dailyNetTargetEur * 5 || 750,
+    targetGrossEur: 0,
     availableDays: 5,
     hoursPerDay: 8.5,
     breakMinutesPerDay: 45,
+    startTime: '08:00',
+    endTime: '17:30',
+    flexibleDuration: true,
+    selectedPlatformIds: visibleDriverPlatforms.slice(0, 2).map((p) => p.id),
+    avgGrossPerTripEur: 9.8,
     needsChargingStops: activeVehicle.fuelType === 'Elétrico',
   });
+
+  useEffect(() => {
+    if (
+      !userTouchedPlatformsRef.current &&
+      plannerInput.selectedPlatformIds.length === 0 &&
+      visibleDriverPlatforms.length > 0
+    ) {
+      setPlannerInput((prev) => ({
+        ...prev,
+        selectedPlatformIds: visibleDriverPlatforms.slice(0, 2).map((p) => p.id),
+      }));
+    }
+  }, [visibleDriverPlatforms, plannerInput.selectedPlatformIds.length]);
+
+  const avgPlannerCommissionPct = useMemo(() => {
+    const selected = state.platforms.filter((p) => plannerInput.selectedPlatformIds.includes(p.id));
+    if (selected.length === 0) return 22;
+    return round2(selected.reduce((s, p) => s + p.commissionPct, 0) / selected.length);
+  }, [state.platforms, plannerInput.selectedPlatformIds]);
 
   const completedActiveTrips = useMemo(
     () => activeDriverTrips.filter((t) => isCompletedTripStatus(t.status)),
@@ -241,11 +323,14 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     () =>
       calculateSmartPlan({
         ...plannerInput,
+        targetGrossEur: plannerInput.targetGrossEur > 0 ? plannerInput.targetGrossEur : undefined,
+        selectedPlatformIds: plannerInput.selectedPlatformIds as import('../../../models/types').PlatformId[],
+        avgCommissionPct: avgPlannerCommissionPct,
         vehicle: activeVehicle,
         historicalAvgGrossPerHour: historicalAvgRate,
         currentEarnedNetEur: earnedSoFar,
       }),
-    [plannerInput, activeVehicle, historicalAvgRate, earnedSoFar]
+    [plannerInput, avgPlannerCommissionPct, activeVehicle, historicalAvgRate, earnedSoFar]
   );
 
   // Campaign Add Form
@@ -357,7 +442,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
         </Card>
 
         <Card className="p-5 space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3" data-guide-target="autopilot-modes">
             <h2 className="text-base font-bold flex items-center gap-2">
               <Sliders className="w-4 h-4 text-blue-700 dark:text-blue-400" />
               Modo de Estratégia Ativo: {activeStratMode}
@@ -374,7 +459,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
           </div>
 
           {/* Authorized Execution Channel vs Assisted Action */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
+          <div data-guide-target="autopilot-auth-badge" className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <span className="font-bold block text-slate-800 dark:text-slate-100">
@@ -412,7 +497,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
           </div>
 
           {/* Primary & Extended Configurable Rules (§2) */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
+          <div data-guide-target="autopilot-thresholds" className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 text-xs">
             <div>
               <label htmlFor="st-min-val" className="block font-medium mb-1">
                 Valor Mín. ({symbol})
@@ -756,7 +841,7 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
 
         {/* Presets + Adjustment Audit History */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-xs">
-          <Card className="p-5 space-y-3">
+          <Card className="p-5 space-y-3" data-guide-target="autopilot-presets">
             <h3 className="text-sm font-bold">Presets Guardados ({ap.savedPresets?.length ?? 0})</h3>
             <form
               onSubmit={(e) => {
@@ -1478,6 +1563,369 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                     </span>
                   </div>
                 )}
+
+                {/* Pré-Aceitação vs Percurso Efetivo + 4 Camadas de Tempo */}
+                {(() => {
+                  const cmp = computeTripEstimateVsActualComparison(selectedTrip);
+                  const adjSummary = summarizeTripAdjustments(selectedTrip);
+                  const navLaunch = buildWazeNavigationLaunch(
+                    destDisplay ?? pickupDisplay ?? selectedTrip.pickupZone,
+                    'Waze'
+                  );
+                  const tripSym = selectedTrip.currency === 'BRL' ? 'R$' : selectedTrip.currency === 'USD' ? '$' : '€';
+                  return (
+                    <div className="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900 dark:text-white">
+                          Estimativa Antes da Aceitação vs. Percurso Efetivo
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            cmp.actual.hasObservedActuals
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                              : 'bg-slate-100 text-slate-600 border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                          }`}
+                        >
+                          {cmp.actual.hasObservedActuals ? 'Percurso efetivo registado' : 'Sem dados reais observados'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                        <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1">
+                          <p className="font-bold text-slate-700 dark:text-slate-200 uppercase text-[10px]">
+                            1. Estimativa Antes da Aceitação
+                          </p>
+                          <p className="font-mono-tabular">
+                            Recolha: {cmp.estimate.pickupDistanceKm.toFixed(1)} km · {cmp.estimate.pickupTimeMin} min
+                          </p>
+                          <p className="font-mono-tabular">
+                            Viagem: {cmp.estimate.tripDistanceKm.toFixed(1)} km · {cmp.estimate.tripTimeMin} min
+                          </p>
+                          <p className="font-mono-tabular font-semibold">
+                            Total est.: {cmp.estimate.totalDistanceKm.toFixed(1)} km · {cmp.estimate.totalTimeMin} min
+                          </p>
+                          <p className="font-mono-tabular">
+                            Bruto oferta: {tripSym}{cmp.estimate.grossEur.toFixed(2)} · Líq. est.: {tripSym}{cmp.estimate.estimatedNetEur.toFixed(2)}
+                          </p>
+                          <p className="font-mono-tabular text-slate-600 dark:text-slate-300">
+                            {tripSym}{cmp.estimate.eurPerKm.toFixed(2)}/km · {tripSym}{cmp.estimate.eurPerHour.toFixed(2)}/h
+                          </p>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 space-y-1">
+                          <p className="font-bold text-blue-800 dark:text-blue-300 uppercase text-[10px]">
+                            2. Percurso Efetivo Após Aceitação
+                          </p>
+                          <p className="font-mono-tabular">
+                            Recolha real:{' '}
+                            {cmp.actual.pickupDistanceKm != null ? `${cmp.actual.pickupDistanceKm.toFixed(1)} km` : 'Indisponível'} ·{' '}
+                            {cmp.actual.pickupTimeMin != null ? `${cmp.actual.pickupTimeMin} min` : 'Indisponível'}
+                          </p>
+                          <p className="font-mono-tabular">
+                            Viagem real:{' '}
+                            {cmp.actual.tripDistanceKm != null ? `${cmp.actual.tripDistanceKm.toFixed(1)} km` : 'Indisponível'} ·{' '}
+                            {cmp.actual.tripTimeMin != null ? `${cmp.actual.tripTimeMin} min` : 'Indisponível'}
+                          </p>
+                          <p className="font-mono-tabular font-semibold">
+                            Total efetivo:{' '}
+                            {cmp.actual.totalDistanceKm != null ? `${cmp.actual.totalDistanceKm.toFixed(1)} km` : 'Sem dados reais'} ·{' '}
+                            {cmp.actual.totalTimeMin != null ? `${cmp.actual.totalTimeMin} min` : 'Sem dados reais'}
+                          </p>
+                          <p className="font-mono-tabular">
+                            Desvio:{' '}
+                            {cmp.distanceDeltaKm !== null ? `${cmp.distanceDeltaKm >= 0 ? '+' : ''}${cmp.distanceDeltaKm.toFixed(1)} km` : '—'} ·{' '}
+                            {cmp.timeDeltaMin !== null ? `${cmp.timeDeltaMin >= 0 ? '+' : ''}${cmp.timeDeltaMin} min` : '—'}
+                          </p>
+                          <p className="font-mono-tabular font-semibold text-blue-700 dark:text-blue-300">
+                            Efetivo:{' '}
+                            {cmp.actualEurPerKm !== null ? `${tripSym}${cmp.actualEurPerKm.toFixed(2)}/km` : 'Indisponível'} ·{' '}
+                            {cmp.actualEurPerHour !== null ? `${tripSym}${cmp.actualEurPerHour.toFixed(2)}/h` : 'Indisponível'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* 4 Camadas de Tempo */}
+                      <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-1.5">
+                        <p className="font-bold text-[10px] uppercase text-slate-500">
+                          4 Camadas de Tempo (Sem presumir compensação de tarifa)
+                        </p>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono-tabular">
+                          <div>
+                            <span className="block text-[10px] text-slate-500">Plataforma Est.</span>
+                            <strong>{cmp.estimate.totalTimeMin} min</strong>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] text-slate-500">ETA Trânsito ({cmp.actual.navigationAppUsed ?? 'Nav'})</span>
+                            <strong>{cmp.trafficEstTimeMin !== null ? `${cmp.trafficEstTimeMin} min` : 'Indisponível'}</strong>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] text-slate-500">Recolha Real</span>
+                            <strong>{cmp.actual.pickupTimeMin != null ? `${cmp.actual.pickupTimeMin} min` : 'Sem dados'}</strong>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] text-slate-500">Viagem Real</span>
+                            <strong>{cmp.actual.tripTimeMin != null ? `${cmp.actual.tripTimeMin} min` : 'Sem dados'}</strong>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          {cmp.delayImpactSummary}
+                        </p>
+                        <p className="text-[10px] text-slate-500">{navLaunch.honestyNote}</p>
+                      </div>
+
+                      {/* Registar / Atualizar percurso efetivo & ETA Waze/Maps */}
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const totalDist = round2(actualObsForm.pickupDistanceKm + actualObsForm.tripDistanceKm);
+                          const totalTime = Math.round(actualObsForm.pickupTimeMin + actualObsForm.tripTimeMin);
+                          updateTripPostAcceptanceActual(selectedTrip.id, {
+                            hasObservedActuals: true,
+                            pickupDistanceKm: actualObsForm.pickupDistanceKm,
+                            tripDistanceKm: actualObsForm.tripDistanceKm,
+                            totalDistanceKm: totalDist,
+                            pickupTimeMin: actualObsForm.pickupTimeMin,
+                            tripTimeMin: actualObsForm.tripTimeMin,
+                            totalTimeMin: totalTime,
+                            navigationTrafficTimeMin: actualObsForm.navigationTrafficTimeMin,
+                            navigationAppUsed: actualObsForm.navigationAppUsed,
+                            observationSource: 'Registo manual do motorista',
+                          });
+                        }}
+                        className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950/60 space-y-2 text-[11px]"
+                      >
+                        <p className="font-bold text-slate-800 dark:text-slate-200">
+                          Registar / Corrigir Percurso Efetivo &amp; ETA Trânsito
+                        </p>
+                        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">Recolha km</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={actualObsForm.pickupDistanceKm}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({ ...f, pickupDistanceKm: Number(e.target.value) }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">Viagem km</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              value={actualObsForm.tripDistanceKm}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({ ...f, tripDistanceKm: Number(e.target.value) }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">Recolha min</span>
+                            <input
+                              type="number"
+                              value={actualObsForm.pickupTimeMin}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({ ...f, pickupTimeMin: Number(e.target.value) }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">Viagem min</span>
+                            <input
+                              type="number"
+                              value={actualObsForm.tripTimeMin}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({ ...f, tripTimeMin: Number(e.target.value) }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">ETA Trânsito</span>
+                            <input
+                              type="number"
+                              value={actualObsForm.navigationTrafficTimeMin}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({ ...f, navigationTrafficTimeMin: Number(e.target.value) }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-slate-500">Nav App</span>
+                            <select
+                              value={actualObsForm.navigationAppUsed}
+                              onChange={(e) =>
+                                setActualObsForm((f) => ({
+                                  ...f,
+                                  navigationAppUsed: e.target.value as 'Waze' | 'Google Maps' | 'Nenhum',
+                                }))
+                              }
+                              className="w-full px-1.5 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                            >
+                              <option value="Waze">Waze</option>
+                              <option value="Google Maps">Google Maps</option>
+                              <option value="Nenhum">Manual</option>
+                            </select>
+                          </label>
+                        </div>
+                        <button
+                          type="submit"
+                          className="px-2.5 py-1 rounded bg-blue-700 hover:bg-blue-800 text-white font-semibold text-[11px]"
+                        >
+                          Guardar Percurso Efetivo
+                        </button>
+                      </form>
+
+                      {/* Ajustes por atraso / tempo adicional — Confirmado vs Pendente vs Rejeitado */}
+                      <div className="p-2.5 rounded-xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/50 dark:bg-amber-950/20 space-y-2 text-[11px]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-bold text-slate-900 dark:text-white">
+                            Ajustes por Atraso / Tempo Adicional
+                          </span>
+                          <span className="font-mono-tabular font-semibold text-emerald-700 dark:text-emerald-300">
+                            Bruto Final Confirmado: {tripSym}{adjSummary.confirmedFinalGrossEur.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 font-mono-tabular text-[11px]">
+                          <div className="p-1.5 rounded bg-white/80 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-700">
+                            <span className="block text-[10px] text-slate-500">Inicial Oferta</span>
+                            <strong>{tripSym}{adjSummary.initialPresentedGrossEur.toFixed(2)}</strong>
+                          </div>
+                          <div className="p-1.5 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                            <span className="block text-[10px] text-emerald-700 dark:text-emerald-300">Confirmado</span>
+                            <strong>
+                              {adjSummary.confirmedAdjustmentsTotalEur >= 0 ? '+' : ''}
+                              {tripSym}{adjSummary.confirmedAdjustmentsTotalEur.toFixed(2)}
+                            </strong>
+                          </div>
+                          <div className="p-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800">
+                            <span className="block text-[10px] text-amber-800 dark:text-amber-300">Pendente (Fora Ganhos)</span>
+                            <strong>
+                              {adjSummary.pendingAdjustmentsTotalEur >= 0 ? '+' : ''}
+                              {tripSym}{adjSummary.pendingAdjustmentsTotalEur.toFixed(2)}
+                            </strong>
+                          </div>
+                        </div>
+
+                        {(selectedTrip.fareAdjustments ?? []).length > 0 && (
+                          <div className="space-y-1.5">
+                            {(selectedTrip.fareAdjustments ?? []).map((adj) => (
+                              <div
+                                key={adj.id}
+                                className="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2"
+                              >
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-mono-tabular font-bold">
+                                      {adj.amountEur >= 0 ? '+' : ''}{tripSym}{adj.amountEur.toFixed(2)}
+                                    </span>
+                                    <StatusLabel
+                                      tone={
+                                        adj.status === 'Confirmado pela plataforma'
+                                          ? 'success'
+                                          : adj.status === 'Pendente de confirmação'
+                                          ? 'warning'
+                                          : 'danger'
+                                      }
+                                      text={adj.status}
+                                    />
+                                  </div>
+                                  <p className="text-[10px] text-slate-600 dark:text-slate-300">{adj.reason}</p>
+                                </div>
+                                {adj.status === 'Pendente de confirmação' && (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        resolveTripFareAdjustmentStatus(
+                                          selectedTrip.id,
+                                          adj.id,
+                                          'Confirmado pela plataforma'
+                                        )
+                                      }
+                                      className="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-[10px]"
+                                    >
+                                      Confirmar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        resolveTripFareAdjustmentStatus(selectedTrip.id, adj.id, 'Rejeitado')
+                                      }
+                                      className="px-2 py-0.5 rounded border border-red-300 text-red-700 dark:text-red-300 font-semibold text-[10px]"
+                                    >
+                                      Rejeitar
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            if (!newAdjForm.reason.trim()) return;
+                            addTripFareAdjustment(selectedTrip.id, {
+                              amountEur: newAdjForm.amountEur,
+                              reason: newAdjForm.reason.trim(),
+                              status: newAdjForm.status,
+                              evidenceNote: newAdjForm.evidenceNote.trim() || undefined,
+                            });
+                          }}
+                          className="grid grid-cols-1 sm:grid-cols-4 gap-1.5 pt-1"
+                        >
+                          <input
+                            type="number"
+                            step="0.1"
+                            aria-label="Valor ajuste"
+                            value={newAdjForm.amountEur}
+                            onChange={(e) =>
+                              setNewAdjForm((f) => ({ ...f, amountEur: Number(e.target.value) }))
+                            }
+                            className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                          <input
+                            type="text"
+                            aria-label="Motivo ajuste"
+                            placeholder="Motivo (ex. atraso trânsito)"
+                            value={newAdjForm.reason}
+                            onChange={(e) =>
+                              setNewAdjForm((f) => ({ ...f, reason: e.target.value }))
+                            }
+                            className="sm:col-span-2 px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                          />
+                          <select
+                            aria-label="Estado do ajuste"
+                            value={newAdjForm.status}
+                            onChange={(e) =>
+                              setNewAdjForm((f) => ({
+                                ...f,
+                                status: e.target.value as TripFareAdjustmentRecord['status'],
+                              }))
+                            }
+                            className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                          >
+                            <option value="Pendente de confirmação">Pendente</option>
+                            <option value="Confirmado pela plataforma">Confirmado</option>
+                          </select>
+                          <button
+                            type="submit"
+                            className="sm:col-span-4 px-2.5 py-1 rounded border border-amber-400 bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 font-semibold text-[11px]"
+                          >
+                            + Registar Ajuste por Atraso / Tempo Adicional
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {(selectedTrip.cancellationReason || selectedTrip.cancellationBy || !isCompletedTripStatus(selectedTrip.status)) && (
                   <div className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 text-red-800 dark:text-red-200 space-y-1">
@@ -2744,33 +3192,98 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
     );
   }
 
-  // PLANEADOR INTELIGENTE
+  // PLANEADOR INTELIGENTE DE TURNOS E METAS
+  const rangeRatioPct = Math.min(
+    140,
+    Math.round((planResult.batteryOrRangeRequiredKm / Math.max(1, planResult.vehicleRealRangeKm)) * 100)
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="planeador-panel">
       <ContextualHelpBanner
-        title="Planeador Inteligente com Recálculo Dinâmico"
-        description="Ajuste meta líquida, dias, horas, pausas e necessidades de carregamento. O plano recalcula automaticamente com base no histórico concluído real."
+        title="Planeador de Turnos e Metas com Recálculo Dinâmico"
+        description="Configure horário, modo flexível, meta líquida e bruta opcional, plataformas ativas, custos operacionais e autonomia real do veículo para avaliar exequibilidade antes de sair."
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <Card className="lg:col-span-5 p-5 space-y-4 text-xs">
-          <h2 className="text-base font-bold flex items-center gap-2">
-            <Compass className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            Parâmetros do Objetivo ({currency})
-          </h2>
-          <div>
-            <label htmlFor="pl-target" className="block font-medium mb-1">Meta Líquida ({symbol})</label>
-            <input
-              id="pl-target"
-              type="number"
-              value={plannerInput.targetNetEur}
-              onChange={(e) => setPlannerInput((p) => ({ ...p, targetNetEur: Number(e.target.value) }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold flex items-center gap-2">
+              <Compass className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+              Parâmetros do Turno &amp; Meta ({currency})
+            </h2>
+            <StatusLabel
+              tone={
+                planResult.feasibilityStatus === 'Realista'
+                  ? 'success'
+                  : planResult.feasibilityStatus === 'Exigente'
+                    ? 'warning'
+                    : 'danger'
+              }
+              text={planResult.feasibilityStatus}
             />
           </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="pl-days" className="block font-medium mb-1">Dias disponíveis</label>
+              <label htmlFor="pl-target" className="block font-medium mb-1">Meta Líquida ({symbol})</label>
+              <input
+                id="pl-target"
+                type="number"
+                value={plannerInput.targetNetEur}
+                onChange={(e) => setPlannerInput((p) => ({ ...p, targetNetEur: Number(e.target.value) }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="pl-gross-opt" className="block font-medium mb-1">Meta Bruta opcional ({symbol})</label>
+              <input
+                id="pl-gross-opt"
+                type="number"
+                min={0}
+                placeholder="Auto"
+                value={plannerInput.targetGrossEur || ''}
+                onChange={(e) => setPlannerInput((p) => ({ ...p, targetGrossEur: Number(e.target.value) || 0 }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor="pl-start-time" className="block font-medium mb-1">Hora de início</label>
+              <input
+                id="pl-start-time"
+                type="time"
+                value={plannerInput.startTime}
+                onChange={(e) => setPlannerInput((p) => ({ ...p, startTime: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="pl-end-time" className="block font-medium mb-1">Hora de fim</label>
+              <input
+                id="pl-end-time"
+                type="time"
+                value={plannerInput.endTime}
+                onChange={(e) => setPlannerInput((p) => ({ ...p, endTime: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 cursor-pointer font-medium">
+            <input
+              type="checkbox"
+              checked={plannerInput.flexibleDuration}
+              onChange={(e) => setPlannerInput((p) => ({ ...p, flexibleDuration: e.target.checked }))}
+            />
+            <span>Duração flexível (usar Horas/dia manuais em vez da janela fixa)</span>
+          </label>
+
+          <div className="grid grid-cols-3 gap-2.5">
+            <div>
+              <label htmlFor="pl-days" className="block font-medium mb-1">Dias</label>
               <input
                 id="pl-days"
                 type="number"
@@ -2778,34 +3291,73 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
                 max={31}
                 value={plannerInput.availableDays}
                 onChange={(e) => setPlannerInput((p) => ({ ...p, availableDays: Number(e.target.value) }))}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
             <div>
-              <label htmlFor="pl-hrs" className="block font-medium mb-1">Horas por dia</label>
+              <label htmlFor="pl-hrs" className="block font-medium mb-1">Horas/dia</label>
               <input
                 id="pl-hrs"
                 type="number"
                 step="0.5"
                 min={1}
-                max={14}
+                max={16}
+                disabled={!plannerInput.flexibleDuration}
                 value={plannerInput.hoursPerDay}
                 onChange={(e) => setPlannerInput((p) => ({ ...p, hoursPerDay: Number(e.target.value) }))}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label htmlFor="pl-brk" className="block font-medium mb-1">Pausas (min/dia)</label>
+              <input
+                id="pl-brk"
+                type="number"
+                min={0}
+                value={plannerInput.breakMinutesPerDay}
+                onChange={(e) => setPlannerInput((p) => ({ ...p, breakMinutesPerDay: Number(e.target.value) }))}
+                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
               />
             </div>
           </div>
-          <div>
-            <label htmlFor="pl-brk" className="block font-medium mb-1">Pausas por dia (min)</label>
-            <input
-              id="pl-brk"
-              type="number"
-              value={plannerInput.breakMinutesPerDay}
-              onChange={(e) => setPlannerInput((p) => ({ ...p, breakMinutesPerDay: Number(e.target.value) }))}
-              className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
-            />
+
+          <div className="space-y-1.5">
+            <span className="block font-medium">
+              Plataformas selecionadas (comissão média ponderada: {avgPlannerCommissionPct}%)
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {visibleDriverPlatforms.map((plat) => {
+                const checked = plannerInput.selectedPlatformIds.includes(plat.id);
+                return (
+                  <label
+                    key={plat.id}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border cursor-pointer ${
+                      checked
+                        ? 'border-blue-400 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-800'
+                        : 'border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        userTouchedPlatformsRef.current = true;
+                        setPlannerInput((p) => ({
+                          ...p,
+                          selectedPlatformIds: checked
+                            ? p.selectedPlatformIds.filter((id) => id !== plat.id)
+                            : [...p.selectedPlatformIds, plat.id],
+                        }));
+                      }}
+                    />
+                    <span className="font-medium">{plat.name} ({plat.commissionPct}%)</span>
+                  </label>
+                );
+              })}
+            </div>
           </div>
-          <label className="flex items-center gap-2 pt-1">
+
+          <label className="flex items-center gap-2 pt-1 cursor-pointer">
             <input
               type="checkbox"
               checked={plannerInput.needsChargingStops}
@@ -2819,30 +3371,76 @@ export const DriverTripsAndPlanning: React.FC<{ activeTab: string }> = ({ active
         </Card>
 
         <div className="lg:col-span-7 space-y-4">
+          {planResult.feasibilityWarnings.length > 0 && (
+            <Card
+              data-testid="planeador-warnings"
+              className={`p-4 space-y-1.5 text-xs ${
+                planResult.feasibilityStatus === 'Irrealista'
+                  ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30'
+                  : 'border-amber-300 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <strong className="text-sm flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-600" />
+                  Análise de Exequibilidade: {planResult.feasibilityStatus}
+                </strong>
+                <StatusLabel
+                  tone={planResult.feasibilityStatus === 'Irrealista' ? 'danger' : 'warning'}
+                  text={`${planResult.feasibilityWarnings.length} alerta(s)`}
+                />
+              </div>
+              {planResult.feasibilityWarnings.map((w, idx) => (
+                <p key={idx} className="text-slate-800 dark:text-slate-200">• {w}</p>
+              ))}
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <MetricCard
-              label="Em Falta para Meta"
-              value={formatMoney(planResult.remainingNetEur, currency)}
-              subtext={`Já acumulado: ${formatMoney(earnedSoFar, currency)}`}
-              explanation="Diferença entre a meta líquida pretendida e o valor líquido concluído."
-              formula="Meta Líquida - Líquido Acumulado"
+              label="Em Falta & Corridas Est."
+              value={`${formatMoney(planResult.remainingNetEur, currency)} · ~${planResult.estimatedRidesNeeded} viagens`}
+              subtext={`Bruto necessário: ${formatMoney(planResult.requiredGrossTotalEur, currency)} (acum. ${formatMoney(earnedSoFar, currency)})`}
+              explanation="Receita líquida restante, volume bruto equivalente e número estimado de viagens consoante tarifa média."
+              formula="(Meta Restante + Energia) ÷ (1 - Comissão)"
               accent="blue"
             />
             <MetricCard
               label="Média Bruta Exigida"
               value={`${formatMoney(planResult.requiredGrossPerHour, currency)}/h`}
-              subtext={`Em ${planResult.totalProductiveHours}h produtivas`}
-              explanation="Faturação horária bruta média necessária para cobrir custos e atingir a meta."
-              formula="(Meta Restante + Custos Est.) ÷ Horas Produtivas"
+              subtext={`Em ${planResult.totalProductiveHours}h produtivas (~${formatDistance(planResult.estimatedKmNeeded, unitSystem)})`}
+              explanation="Faturação horária bruta média necessária para cobrir comissões e custos do veículo."
+              formula="Bruto Exigido ÷ Horas Produtivas"
             />
             <MetricCard
-              label="Carregamentos & Custos"
-              value={`${planResult.chargingStopsRecommended} paragens`}
-              subtext={`${formatMoney(planResult.estimatedEnergyOrFuelCostEur, currency)} energia/manutenção`}
-              explanation="Paragens recomendadas consoante autonomia real e consumo do veículo ativo."
-              formula="Distância Estimada ÷ (75% Autonomia)"
+              label="Custos & Paragens EV"
+              value={`${formatMoney(planResult.estimatedCostsTotalEur, currency)}`}
+              subtext={`${planResult.chargingStopsRecommended} paragens (${planResult.chargingMinutesTotal}m) · Energia: ${formatMoney(planResult.estimatedEnergyOrFuelCostEur, currency)}`}
+              explanation="Inclui energia/combustível, manutenção e comissões médias das plataformas selecionadas."
+              formula="Energia/Manutenção + Comissões Apps"
             />
           </div>
+
+          <Card className="p-4 space-y-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold">Autonomia Diária Exigida vs Veículo Ativo ({activeVehicle.brand} {activeVehicle.model})</span>
+              <span className="font-mono-tabular font-semibold">
+                ~{planResult.batteryOrRangeRequiredKm} km/dia vs {planResult.vehicleRealRangeKm} km autonomia real
+              </span>
+            </div>
+            <div className="w-full h-2.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                className={`h-full rounded-full ${
+                  planResult.batteryOrRangeRequiredKm > planResult.vehicleRealRangeKm
+                    ? 'bg-red-600'
+                    : rangeRatioPct > 82
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-600'
+                }`}
+                style={{ width: `${Math.min(100, rangeRatioPct)}%` }}
+              />
+            </div>
+          </Card>
 
           <Card className="p-5 space-y-3">
             <h3 className="text-sm font-bold">

@@ -25,10 +25,12 @@ import {
   Server,
   ShieldCheck,
   Sliders,
+  Sparkles,
   Tags,
   Users,
   X,
 } from 'lucide-react';
+import { canAccessAdminTab } from '../../core/rbac';
 import type { AdminRole } from '../../models/types';
 import { useEcosystem } from '../../services/EcosystemContext';
 import {
@@ -36,42 +38,70 @@ import {
   PhoenixLogo,
   ThemeToggleButton,
 } from '../ui/DesignSystem';
+import { InteractiveAssistantOverlay } from '../ui/InteractiveAssistantOverlay';
 import { AdminCoreOps } from './views/AdminCoreOps';
 import { AdminCatalogAndCompliance } from './views/AdminCatalogAndCompliance';
 import { AdminContentAndSupport } from './views/AdminContentAndSupport';
 import { AdminTechAndSecurity } from './views/AdminTechAndSecurity';
 
+export type AdminMenuCategory =
+  | 'Dashboard administrativo'
+  | 'Organizações'
+  | 'Motoristas e equipas'
+  | 'Veículos'
+  | 'Mercados e países'
+  | 'Plataformas'
+  | 'Relatórios'
+  | 'CMS e portal'
+  | 'Configurações'
+  | 'Segurança e auditoria';
+
+export const ADMIN_MENU_CATEGORIES: AdminMenuCategory[] = [
+  'Dashboard administrativo',
+  'Organizações',
+  'Motoristas e equipas',
+  'Veículos',
+  'Mercados e países',
+  'Plataformas',
+  'Relatórios',
+  'CMS e portal',
+  'Configurações',
+  'Segurança e auditoria',
+];
+
 export const ADMIN_MENU: Array<{
   id: string;
   label: string;
+  subtitle: string;
+  category: AdminMenuCategory;
   icon: React.ComponentType<{ className?: string }>;
 }> = [
-  { id: 'overview', label: '1. Overview', icon: LayoutDashboard },
-  { id: 'utilizadores', label: '2. Utilizadores', icon: Users },
-  { id: 'organizacoes', label: '3. Organizações', icon: Building2 },
-  { id: 'planos', label: '4. Planos', icon: Tags },
-  { id: 'assinaturas', label: '5. Assinaturas', icon: CreditCard },
-  { id: 'pagamentos', label: '6. Pagamentos', icon: Banknote },
-  { id: 'funcionalidades', label: '7. Funcionalidades', icon: Layers },
-  { id: 'plataformas', label: '8. Plataformas', icon: Plug },
-  { id: 'paises', label: '9. Países e mercados', icon: Globe },
-  { id: 'veiculos-eleg', label: '10. Veículos e elegibilidade', icon: Car },
-  { id: 'legislacao', label: '11. Legislação', icon: Scale },
-  { id: 'notificacoes', label: '12. Notificações', icon: Bell },
-  { id: 'comunicacao', label: '13. Comunicação', icon: Megaphone },
-  { id: 'tickets', label: '14. Tickets', icon: Inbox },
-  { id: 'publicacoes', label: '15. Publicações', icon: Newspaper },
-  { id: 'gestao-visual', label: '16. Gestão visual', icon: Palette },
-  { id: 'editor-paginas', label: '17. Editor de páginas', icon: FileText },
-  { id: 'versoes', label: '18. Versões', icon: PackageCheck },
-  { id: 'releases', label: '19. Releases', icon: Activity },
-  { id: 'config-remotas', label: '20. Config. remotas', icon: Sliders },
-  { id: 'integracoes', label: '21. Integrações', icon: Plug },
-  { id: 'monitorizacao', label: '22. Monitorização técnica', icon: Server },
-  { id: 'relatorios-admin', label: '23. Relatórios admin', icon: FileText },
-  { id: 'seguranca', label: '24. Segurança & RBAC', icon: Lock },
-  { id: 'auditoria', label: '25. Auditoria', icon: ShieldCheck },
-  { id: 'recuperacao', label: '26. Histórico e recuperação', icon: History },
+  { id: 'overview', label: 'Overview Executivo', subtitle: 'Estado global & KPIs', category: 'Dashboard administrativo', icon: LayoutDashboard },
+  { id: 'organizacoes', label: 'Organizações & Frotas', subtitle: 'Operadores & strict_tenant', category: 'Organizações', icon: Building2 },
+  { id: 'utilizadores', label: 'Motoristas & Equipas', subtitle: 'Contas, perfis & RGPD', category: 'Motoristas e equipas', icon: Users },
+  { id: 'veiculos-eleg', label: 'Veículos & Elegibilidade', subtitle: 'Regras TVDE & catálogo', category: 'Veículos', icon: Car },
+  { id: 'paises', label: 'Mercados & Países', subtitle: 'Cidades, moedas & estados', category: 'Mercados e países', icon: Globe },
+  { id: 'plataformas', label: 'Plataformas & Matriz', subtitle: 'Operação real por país', category: 'Plataformas', icon: Plug },
+  { id: 'relatorios-admin', label: 'Relatórios Admin', subtitle: 'Operação & auditoria global', category: 'Relatórios', icon: FileText },
+  { id: 'planos', label: 'Planos SaaS', subtitle: 'Tarifário & limites', category: 'Relatórios', icon: Tags },
+  { id: 'assinaturas', label: 'Assinaturas', subtitle: 'Renovações & estados', category: 'Relatórios', icon: CreditCard },
+  { id: 'pagamentos', label: 'Pagamentos', subtitle: 'Cobranças & conciliação', category: 'Relatórios', icon: Banknote },
+  { id: 'funcionalidades', label: 'Funcionalidades', subtitle: 'Matriz por plano', category: 'Relatórios', icon: Layers },
+  { id: 'gestao-visual', label: 'Gestão Visual & CMS', subtitle: 'Cores, hero & portal', category: 'CMS e portal', icon: Palette },
+  { id: 'editor-paginas', label: 'Editor de Páginas', subtitle: 'Textos & traduções', category: 'CMS e portal', icon: FileText },
+  { id: 'publicacoes', label: 'Publicações', subtitle: 'FAQ & avisos públicos', category: 'CMS e portal', icon: Newspaper },
+  { id: 'notificacoes', label: 'Notificações', subtitle: 'Alertas segmentados', category: 'CMS e portal', icon: Bell },
+  { id: 'comunicacao', label: 'Comunicação', subtitle: 'Mensagens & campanhas', category: 'CMS e portal', icon: Megaphone },
+  { id: 'tickets', label: 'Tickets de Suporte', subtitle: 'Triagem & respostas', category: 'CMS e portal', icon: Inbox },
+  { id: 'config-remotas', label: 'Configurações Remotas', subtitle: 'Parâmetros & feature flags', category: 'Configurações', icon: Sliders },
+  { id: 'integracoes', label: 'Integrações & APIs', subtitle: 'Cofre OAuth & bridges', category: 'Configurações', icon: Plug },
+  { id: 'versoes', label: 'Versões', subtitle: 'Web, PWA, Android & iOS', category: 'Configurações', icon: PackageCheck },
+  { id: 'releases', label: 'Releases', subtitle: 'Notas & rollout gradual', category: 'Configurações', icon: Activity },
+  { id: 'legislacao', label: 'Legislação TVDE', subtitle: 'Normas & conformidade', category: 'Segurança e auditoria', icon: Scale },
+  { id: 'monitorizacao', label: 'Monitorização Técnica', subtitle: 'Latência & saúde do servidor', category: 'Segurança e auditoria', icon: Server },
+  { id: 'seguranca', label: 'Segurança & RBAC', subtitle: 'Permissões & sessões', category: 'Segurança e auditoria', icon: Lock },
+  { id: 'auditoria', label: 'Auditoria Imutável', subtitle: 'Registo de alterações', category: 'Segurança e auditoria', icon: ShieldCheck },
+  { id: 'recuperacao', label: 'Histórico & Recuperação', subtitle: 'Snapshots & reposição', category: 'Segurança e auditoria', icon: History },
 ];
 
 const ADMIN_ROLES: AdminRole[] = [
@@ -86,15 +116,94 @@ const ADMIN_ROLES: AdminRole[] = [
 
 export const AdminLayout: React.FC = () => {
   const prefersReducedMotion = useReducedMotion();
-  const { state, availableMarketsForPortal, setAdminNav, setAdminRole, setMode, toggleTheme, syncNowToServer } =
-    useEcosystem();
+  const {
+    state,
+    availableMarketsForPortal,
+    setAdminNav,
+    setAdminRole,
+    setMode,
+    toggleTheme,
+    syncNowToServer,
+    openAssistantHub,
+  } = useEcosystem();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  const accessibleMenu = ADMIN_MENU.filter((m) =>
+    canAccessAdminTab(state.activeAdminRole, m.id)
+  );
   const currentItem =
-    ADMIN_MENU.find((m) => m.id === state.activeAdminNav) ?? ADMIN_MENU[0];
+    ADMIN_MENU.find((m) => m.id === state.activeAdminNav) ?? accessibleMenu[0] ?? ADMIN_MENU[0];
+  const hasCurrentTabAccess = canAccessAdminTab(state.activeAdminRole, state.activeAdminNav);
+
+  const renderGroupedMenu = (isMobile: boolean) =>
+    ADMIN_MENU_CATEGORIES.map((category) => {
+      const items = accessibleMenu.filter((item) => item.category === category);
+      if (items.length === 0) return null;
+      return (
+        <div key={category} className="space-y-0.5 pt-2 first:pt-0">
+          <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            {category}
+          </p>
+          {items.map((item) => {
+            const Icon = item.icon;
+            const active = state.activeAdminNav === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setAdminNav(item.id);
+                  if (isMobile) setMobileMenuOpen(false);
+                }}
+                className={`w-full min-h-[40px] flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-left transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-gradient-to-r from-rose-600 to-red-600 text-white shadow-xs'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#131F36]'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-semibold leading-tight">
+                    {item.label}
+                  </span>
+                  <span
+                    className={`block truncate text-[10px] leading-tight ${
+                      active ? 'text-rose-100' : 'text-slate-400 dark:text-slate-500'
+                    }`}
+                  >
+                    {item.subtitle}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      );
+    });
 
   const renderView = () => {
     const nav = state.activeAdminNav;
+    if (!hasCurrentTabAccess) {
+      return (
+        <div className="rounded-2xl border border-rose-200 dark:border-rose-800/70 bg-white dark:bg-[#0F182B] p-6 space-y-3 max-w-xl">
+          <div className="flex items-center gap-2 text-rose-700 dark:text-rose-400">
+            <Lock className="w-5 h-5" />
+            <h2 className="text-base font-display font-bold">Acesso Restrito por RBAC</h2>
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+            O perfil ativo <strong>{state.activeAdminRole}</strong> não tem permissão para aceder ao módulo{' '}
+            <strong>{currentItem.label}</strong>. Esta proteção é aplicada na consola e na API do servidor.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAdminNav('overview')}
+            className="min-h-[40px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+          >
+            Voltar ao Overview Executivo
+          </button>
+        </div>
+      );
+    }
     if (
       [
         'overview',
@@ -133,7 +242,7 @@ export const AdminLayout: React.FC = () => {
   return (
     <div className="min-h-screen aivad-canvas-bg text-slate-900 dark:text-slate-100 flex">
       {/* Desktop Structured Governance Sidebar */}
-      <aside className="hidden lg:flex lg:w-68 lg:flex-col border-r border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shrink-0">
+      <aside className="hidden lg:flex lg:w-72 lg:flex-col border-r border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shrink-0">
         <div className="h-16 px-4 border-b border-slate-200/90 dark:border-[#1E2D4A] flex items-center justify-between gap-2">
           <button
             type="button"
@@ -148,37 +257,30 @@ export const AdminLayout: React.FC = () => {
           </span>
         </div>
 
-        <nav aria-label="Menu Administrativo" className="flex-1 overflow-y-auto p-2.5 space-y-0.5">
-          {ADMIN_MENU.map((item) => {
-            const Icon = item.icon;
-            const active = state.activeAdminNav === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setAdminNav(item.id)}
-                className={`w-full min-h-[38px] flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors text-left cursor-pointer ${
-                  active
-                    ? 'bg-gradient-to-r from-rose-600 to-red-600 text-white shadow-xs'
-                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-[#131F36]'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span className="truncate">{item.label}</span>
-              </button>
-            );
-          })}
+        <nav aria-label="Menu Administrativo" className="flex-1 overflow-y-auto p-2.5 space-y-2">
+          {renderGroupedMenu(false)}
         </nav>
 
-        <div className="p-3 border-t border-slate-200/90 dark:border-[#1E2D4A] space-y-1.5 text-xs">
-          <label htmlFor="admin-role-sel" className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-            {state.session.isDemoSession ? 'Perfil Sandbox (Demo)' : 'Perfil RBAC Autenticado'}
-          </label>
+        <div className="p-3 border-t border-slate-200/90 dark:border-[#1E2D4A] space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <label htmlFor="admin-role-sel" className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              {state.session.isDemoSession ? 'Perfil Sandbox (Demo)' : 'Perfil RBAC Autenticado'}
+            </label>
+            <span className="text-[10px] font-mono-tabular text-slate-400">
+              {accessibleMenu.length}/{ADMIN_MENU.length} módulos
+            </span>
+          </div>
           {state.session.isDemoSession ? (
             <select
               id="admin-role-sel"
               value={state.activeAdminRole}
-              onChange={(e) => setAdminRole(e.target.value as AdminRole)}
+              onChange={(e) => {
+                const nextRole = e.target.value as AdminRole;
+                setAdminRole(nextRole);
+                if (!canAccessAdminTab(nextRole, state.activeAdminNav)) {
+                  setAdminNav('overview');
+                }
+              }}
               className="w-full px-2.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B1324] text-xs font-semibold"
             >
               {ADMIN_ROLES.map((r) => (
@@ -226,27 +328,8 @@ export const AdminLayout: React.FC = () => {
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
-                {ADMIN_MENU.map((item) => {
-                  const Icon = item.icon;
-                  const active = state.activeAdminNav === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => {
-                        setAdminNav(item.id);
-                        setMobileMenuOpen(false);
-                      }}
-                      className={`w-full min-h-[44px] flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-semibold text-left ${
-                        active ? 'bg-rose-600 text-white' : 'text-slate-700 dark:text-slate-300'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4 shrink-0" />
-                      <span className="truncate">{item.label}</span>
-                    </button>
-                  );
-                })}
+              <nav className="flex-1 overflow-y-auto p-2.5 space-y-2">
+                {renderGroupedMenu(true)}
               </nav>
             </motion.aside>
           </div>
@@ -291,6 +374,14 @@ export const AdminLayout: React.FC = () => {
               <RefreshCw className="w-3.5 h-3.5 text-emerald-600" />
               <span className="hidden sm:inline capitalize">{state.syncStatus}</span>
             </button>
+            <button
+              type="button"
+              onClick={openAssistantHub}
+              className="min-h-[38px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-bold hover:border-indigo-500 whitespace-nowrap cursor-pointer"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Assistentes</span>
+            </button>
             <ThemeToggleButton theme={state.theme} onToggle={toggleTheme} />
             <button
               type="button"
@@ -324,6 +415,7 @@ export const AdminLayout: React.FC = () => {
         </main>
       </div>
 
+      <InteractiveAssistantOverlay scope="admin" />
       <OfflineIndicator />
     </div>
   );

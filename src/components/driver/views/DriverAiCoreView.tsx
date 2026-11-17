@@ -12,7 +12,8 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
-import { AI_CORE_AGENTS, answerAiCoreQuery } from '../../../core/aiCore';
+import { AI_CORE_AGENTS, answerAiCoreQuery, computeAiCalibrationSummary } from '../../../core/aiCore';
+import { TIER_OPERATIONAL_MEANINGS } from '../../../core/floatingCard';
 import type { EpistemicTag } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { Button, Card } from '../../ui/DesignSystem';
@@ -373,61 +374,135 @@ export const DriverAiCoreView: React.FC = () => {
         )}
       </Card>
 
-      {/* Isolated Driver Learning Ledger: Prediction vs Real */}
-      <Card className="p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-base font-display font-bold flex items-center gap-2 text-slate-900 dark:text-white">
-              <Activity className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-              Aprendizagem Operacional Isolada (Previsto vs Real)
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Compara o líquido e duração previstos pré-decisão com o resultado real observado na conclusão.
-            </p>
-          </div>
-          <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
-            <Lock className="w-3.5 h-3.5" />
-            Isolado para {activeDriver.name} ({activeDriver.id})
-          </span>
-        </div>
-
-        <div className="space-y-2.5">
-          {driverPredictions.map((pr) => (
-            <div
-              key={pr.id}
-              className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-            >
-              <div className="space-y-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono-tabular font-bold">{pr.tripId ?? pr.proposalId ?? pr.id}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded border text-[10px] font-bold ${EPISTEMIC_STYLE[pr.epistemicTag]}`}
-                  >
-                    {pr.epistemicTag}
-                  </span>
-                  <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">
-                    {pr.status}
-                  </span>
-                </div>
-                <p className="text-slate-600 dark:text-slate-300">{pr.learningNote}</p>
-              </div>
-              <div className="font-mono-tabular text-right shrink-0 space-y-0.5">
-                <p>
-                  Prev: €{pr.predictedNetEur.toFixed(2)} ({pr.predictedDurationMin}m)
+      {/* Isolated Driver Learning Ledger: Prediction vs Real (4 Dimensions + Preliminary Honesty) */}
+      {(() => {
+        const calibration = computeAiCalibrationSummary(state.aiPredictions, activeDriver.id);
+        return (
+          <Card className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-base font-display font-bold flex items-center gap-2 text-slate-900 dark:text-white">
+                  <Activity className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                  Aprendizagem Operacional 4 Dimensões (Previsto vs Real)
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Compara tempo, distância, líquido confirmado e classificação inicial vs observada após conclusão.
                 </p>
-                {pr.actualNetEur !== undefined ? (
-                  <p className="font-bold text-slate-900 dark:text-white">
-                    Real: €{pr.actualNetEur.toFixed(2)} ({pr.actualDurationMin}m) · Desvio{' '}
-                    {(pr.deltaNetEur ?? 0) >= 0 ? '+' : ''}€{(pr.deltaNetEur ?? 0).toFixed(2)}
-                  </p>
-                ) : (
-                  <p className="text-slate-400">Aguarda conclusão da viagem</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {calibration.isPreliminary && (
+                  <span className="px-2.5 py-0.5 rounded-md border text-[11px] font-bold bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-700">
+                    Avaliação preliminar
+                  </span>
                 )}
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                  <Lock className="w-3.5 h-3.5" />
+                  Isolado para {activeDriver.name} ({activeDriver.id})
+                </span>
               </div>
             </div>
-          ))}
-        </div>
-      </Card>
+
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70">
+                <span className="text-[11px] text-slate-500 block">Amostras calibradas</span>
+                <strong className="font-mono-tabular text-sm text-slate-900 dark:text-white">
+                  {calibration.calibratedCount} ({calibration.pendingCount} pend.)
+                </strong>
+              </div>
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70">
+                <span className="text-[11px] text-slate-500 block">MAE Tempo</span>
+                <strong className="font-mono-tabular text-sm text-slate-900 dark:text-white">
+                  {calibration.maeDurationMin !== null ? `±${calibration.maeDurationMin.toFixed(1)} min` : 'Indisponível'}
+                </strong>
+              </div>
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70">
+                <span className="text-[11px] text-slate-500 block">MAE Distância</span>
+                <strong className="font-mono-tabular text-sm text-slate-900 dark:text-white">
+                  {calibration.maeDistanceKm !== null ? `±${calibration.maeDistanceKm.toFixed(1)} km` : 'Indisponível'}
+                </strong>
+              </div>
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70">
+                <span className="text-[11px] text-slate-500 block">MAE Líquido</span>
+                <strong className="font-mono-tabular text-sm text-slate-900 dark:text-white">
+                  {calibration.maeNetEur !== null ? `±€${calibration.maeNetEur.toFixed(2)}` : 'Indisponível'}
+                </strong>
+              </div>
+              <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70">
+                <span className="text-[11px] text-slate-500 block">Acerto Classif.</span>
+                <strong className="font-mono-tabular text-sm text-slate-900 dark:text-white">
+                  {calibration.classificationMatchRatePct !== null ? `${calibration.classificationMatchRatePct}%` : 'Indisponível'}
+                </strong>
+              </div>
+            </div>
+
+            <div
+              className={`p-3 rounded-xl border text-xs ${
+                calibration.isPreliminary
+                  ? 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
+                  : 'bg-emerald-50/80 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+              }`}
+            >
+              {calibration.preliminaryNotice}
+            </div>
+
+            <div className="space-y-2.5">
+              {driverPredictions.map((pr) => (
+                <div
+                  key={pr.id}
+                  className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#131F36]/70 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono-tabular font-bold">{pr.tripId ?? pr.proposalId ?? pr.id}</span>
+                      <span
+                        className={`px-2 py-0.5 rounded border text-[10px] font-bold ${EPISTEMIC_STYLE[pr.epistemicTag]}`}
+                      >
+                        {pr.epistemicTag}
+                      </span>
+                      <span className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">
+                        {pr.status}
+                      </span>
+                      {pr.classificationMatched !== undefined && (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            pr.classificationMatched
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                              : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
+                          }`}
+                        >
+                          Classificação {pr.classificationMatched ? 'Coincidente' : 'Divergente'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-300">{pr.learningNote}</p>
+                    <p className="text-[11px] font-mono-tabular text-slate-500 dark:text-slate-400">
+                      Classificação:{' '}
+                      {pr.predictedClassification ? TIER_OPERATIONAL_MEANINGS[pr.predictedClassification] : 'Indisponível'}{' '}
+                      → Observada:{' '}
+                      {pr.observedClassification ? TIER_OPERATIONAL_MEANINGS[pr.observedClassification] : 'Aguarda viagem'}
+                    </p>
+                  </div>
+                  <div className="font-mono-tabular text-left lg:text-right shrink-0 space-y-0.5">
+                    <p>
+                      Prev: €{pr.predictedNetEur.toFixed(2)} · {pr.predictedDurationMin}m
+                      {pr.predictedDistanceKm !== undefined ? ` · ${pr.predictedDistanceKm.toFixed(1)} km` : ''}
+                    </p>
+                    {pr.actualNetEur !== undefined ? (
+                      <p className="font-bold text-slate-900 dark:text-white">
+                        Real: €{pr.actualNetEur.toFixed(2)} · {pr.actualDurationMin}m
+                        {pr.actualDistanceKm !== undefined ? ` · ${pr.actualDistanceKm.toFixed(1)} km` : ''} · Δ{' '}
+                        {(pr.deltaNetEur ?? 0) >= 0 ? '+' : ''}€{(pr.deltaNetEur ?? 0).toFixed(2)}
+                      </p>
+                    ) : (
+                      <p className="text-slate-400">Aguarda conclusão da viagem</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })()}
     </div>
   );
 };

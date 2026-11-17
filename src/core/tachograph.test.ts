@@ -205,7 +205,8 @@ test('Offline queue deduplicates repeated keys, resolves conflicts, and builds v
     synced.store.sessions
   );
   const qr = buildTachographQrPayload(synced.store.sessions[0], summary, 'Tiago Ferreira', 'Tesla Model 3');
-  assert.ok(qr.qrText.includes('AIVAD-TAC-1.0'));
+  assert.equal(qr.payloadObject.v, 'AIVAD-TAC-1.0');
+  assert.ok(qr.qrText.includes('mode=tacho-audit'));
   assert.ok(qr.verificationCode.startsWith('AIVAD-'));
   assert.ok(TACHOGRAPH_LEGAL_DISCLAIMER.includes('homologado'));
 });

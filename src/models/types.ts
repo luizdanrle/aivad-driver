@@ -59,6 +59,7 @@ export interface PlatformCountryOperation {
   licensingNote?: string;
   validationSource: string;
   verifiedAt: string;
+  nextReviewAt?: string;
   history: Array<{
     date: string;
     status: PlatformCountryOperationalStatus;
@@ -88,7 +89,6 @@ export type PlatformId =
   | 'bolt'
   | 'pop'
   | 'vloz'
-  | 'frenalty'
   | 'cabify'
   | 'freenow'
   | string;
@@ -103,6 +103,9 @@ export type IntegrationAvailability =
 export type PlatformDriverLifecycleState =
   | 'Ativa e operacional'
   | 'Desativada pelo motorista'
+  | 'Não operacional no mercado'
+  | 'Ainda não validada'
+  | 'Verificação desatualizada'
   | 'Suspensa/Indisponível por administração'
   | 'Integração não configurada'
   | 'Integração com erro';
@@ -284,8 +287,17 @@ export interface ProposalInput {
   destinationAddress?: string;
   notes?: string;
   vehicleCostPerKmEur: number;
+  commissionPct?: number;
   calculationBasis?: 'total_distance' | 'trip_distance_only';
   mode: AnalysisMode;
+  unavailableFields?: Array<
+    | 'pickupDistanceKm'
+    | 'pickupTimeMin'
+    | 'tripDistanceKm'
+    | 'tripTimeMin'
+    | 'commissionPct'
+    | 'vehicleCostPerKmEur'
+  >;
 }
 
 export interface ProposalThresholds {
@@ -321,8 +333,11 @@ export interface ProposalAnalysis {
   eurPerKm: number;
   eurPerHour: number;
   eurPerMin: number;
+  commissionPctApplied?: number;
+  commissionEur?: number;
   operatingCostEur: number;
   estimatedNetEur: number;
+  profitabilityPct?: number;
   emptyReturnRisk: 'Baixo' | 'Médio' | 'Alto';
   returnPassengerProbabilityPct?: number | null;
   returnProbabilityEpistemicTag?: EpistemicTag;
@@ -434,26 +449,91 @@ export type FloatingMetricKey =
   | 'eurPerKm'
   | 'eurPerHour'
   | 'eurPerMin'
-  | 'estimatedNet'
   | 'emptyReturnRisk'
+  | 'pickupDistanceKm'
+  | 'pickupTimeMin'
+  | 'tripDistanceKm'
+  | 'tripTimeMin'
+  | 'totalDistanceKm'
   | 'totalTime'
-  | 'score';
+  | 'grossValueEur'
+  | 'estimatedNet'
+  | 'commissionEur'
+  | 'operatingCostEur'
+  | 'score'
+  | 'profitabilityPct';
 
-export type FloatingCardProfileId = 'Urbano' | 'Aeroporto' | 'Noturno' | 'Alto Contraste';
+export type FloatingCardProfileId = 'Urbano' | 'Aeroporto' | 'Noturno' | 'Alto Contraste' | 'Personalizado';
+
+export type FloatingCardOperationalMeaning = 'Favorável' | 'Atenção' | 'Evitar';
+
+export type FloatingCardPosition =
+  | 'Centro superior'
+  | 'Centro inferior'
+  | 'Lateral esquerda'
+  | 'Lateral direita'
+  | 'Topo esquerdo'
+  | 'Topo direito'
+  | 'Inferior esquerdo'
+  | 'Inferior direito'
+  | 'Centro'
+  | 'Topo'
+  | 'Fundo';
+
+export interface FloatingCardTierStyleConfig {
+  tierKey: ProposalClassification;
+  operationalMeaning: FloatingCardOperationalMeaning;
+  customLabel: string;
+  bgColor: string;
+  textColor: string;
+  borderColor: string;
+  badgeBgColor: string;
+  badgeTextColor: string;
+  borderWidthPx: number;
+  opacityPercent: number;
+  brightnessAdjust: number; // -40 (escurecer) .. +40 (clarear)
+  colorIntensityPct: number; // 20 .. 180
+  fontFamily: 'Sans' | 'Display' | 'Mono';
+  fontSizePx: number;
+  widthPercent: number;
+  cardMinHeightPx?: number;
+  paddingPx?: number;
+  layoutMode: 'compacto' | 'expandido';
+  position: FloatingCardPosition;
+  marginOffsetPx: number;
+  visibleMetrics: FloatingMetricKey[];
+}
+
+export interface FloatingDockConfig {
+  enabled: boolean;
+  position: 'Inferior direito' | 'Inferior esquerdo';
+  themeTone: 'azul' | 'vermelho' | 'indigo' | 'esmeralda' | 'personalizado';
+  bgColor: string;
+  textColor: string;
+  borderColor: string;
+  marginBottomPx?: number;
+  marginSidePx?: number;
+}
 
 export interface AndroidOverlayConfig {
-  position: 'Topo' | 'Centro' | 'Fundo';
+  position: FloatingCardPosition;
+  marginOffsetPx?: number;
   layoutMode?: 'compacto' | 'expandido';
   captureProfile?: FloatingCardProfileId;
   widthPercent: number;
   opacityPercent: number;
+  brightnessAdjust?: number;
+  colorIntensityPct?: number;
   fontSizePx: number;
   fontFamily?: 'Sans' | 'Display' | 'Mono';
   bgColor: string;
   textColor: string;
   borderColor: string;
+  borderWidthPx?: number;
+  useCustomColors?: boolean;
   themePreset: 'AIVAD Adaptativo' | 'AIVAD Azul Noite' | 'Alto Contraste Dia' | 'Minimalista Escuro';
   visibleMetrics: FloatingMetricKey[];
+  classificationProfiles?: Record<ProposalClassification, FloatingCardTierStyleConfig>;
   durationSeconds: number;
   autoDismiss: boolean;
   allowManualClose?: boolean;
@@ -461,6 +541,21 @@ export interface AndroidOverlayConfig {
   highContrastAccessibility?: boolean;
   largeTouchTargets?: boolean;
   showHistoryFloatingButton: boolean;
+}
+
+export interface ProposalGalleryExample {
+  id: string;
+  qualityTier: 'Boa' | 'Razoável' | 'Má';
+  expectedClassification: ProposalClassification;
+  platformId: 'uber' | 'bolt';
+  title: string;
+  sourceNotice: string;
+  anonymizedPassengerAlias: string;
+  anonymizedPickupLabel: string;
+  anonymizedDestinationLabel: string;
+  commissionPctAssumption: number;
+  input: ProposalInput;
+  decisionExplanation: string;
 }
 
 export type CaptureSource =
@@ -604,6 +699,47 @@ export interface PlatformCancellationRule {
   notes: string;
 }
 
+export interface TripPreAcceptanceEstimate {
+  pickupDistanceKm: number;
+  pickupTimeMin: number;
+  tripDistanceKm: number;
+  tripTimeMin: number;
+  totalDistanceKm: number;
+  totalTimeMin: number;
+  grossEur: number;
+  estimatedNetEur: number;
+  eurPerKm: number;
+  eurPerHour: number;
+}
+
+export interface TripPostAcceptanceActual {
+  hasObservedActuals: boolean;
+  pickupTimeMin?: number | null;
+  pickupDistanceKm?: number | null;
+  tripTimeMin?: number | null;
+  tripDistanceKm?: number | null;
+  totalTimeMin?: number | null;
+  totalDistanceKm?: number | null;
+  navigationTrafficTimeMin?: number | null;
+  navigationAppUsed?: 'Waze' | 'Google Maps' | 'Outro' | 'Nenhum';
+  navigationStartedAtIso?: string;
+  observationSource:
+    | 'Sem dados reais observados'
+    | 'Registo manual do motorista'
+    | 'Cronómetro AIVAD + motorista'
+    | 'Conector navegação autorizado';
+}
+
+export interface TripFareAdjustmentRecord {
+  id: string;
+  amountEur: number; // positivo ou negativo
+  reason: string;
+  status: 'Pendente de confirmação' | 'Confirmado pela plataforma' | 'Rejeitado';
+  recordedAtIso: string;
+  confirmedAtIso?: string;
+  evidenceNote?: string;
+}
+
 export interface ActiveTripSession {
   id: string;
   proposalId?: string;
@@ -632,6 +768,14 @@ export interface ActiveTripSession {
   destinationAddress?: string;
   grossEstimatedEur: number;
   netEstimatedEur: number;
+  predictedClassification?: ProposalClassification;
+  navigationAppUsed?: 'Waze' | 'Google Maps' | 'Outro' | 'Nenhum';
+  navigationStartedAtIso?: string;
+  navigationTrafficEstTotalMin?: number | null;
+  observedPickupKm?: number | null;
+  observedPickupMin?: number | null;
+  observedTripKm?: number | null;
+  observedTripMin?: number | null;
   ruleApplied: PlatformCancellationRule;
   cancellationBy?: CancellationBy;
   cancellationReason?: string;
@@ -708,9 +852,15 @@ export interface TripRecord {
   preDecisionSnapshot?: {
     predictedNetEur: number;
     predictedDurationMin: number;
+    predictedDistanceKm?: number;
     predictedClassification: ProposalClassification;
     recommendedAction: string;
   };
+  initialPresentedGrossEur?: number;
+  confirmedFinalGrossEur?: number | null;
+  preAcceptanceEstimate?: TripPreAcceptanceEstimate;
+  postAcceptanceActual?: TripPostAcceptanceActual;
+  fareAdjustments?: TripFareAdjustmentRecord[];
   source: CaptureSource;
   proposalId?: string;
   isDemo: boolean;
@@ -973,11 +1123,17 @@ export interface AiPredictionRecord {
   agentId: AiCoreAgentId;
   predictedNetEur: number;
   predictedDurationMin: number;
+  predictedDistanceKm?: number;
   predictedEurPerHour: number;
+  predictedClassification?: ProposalClassification;
   actualNetEur?: number;
   actualDurationMin?: number;
+  actualDistanceKm?: number;
+  observedClassification?: ProposalClassification;
+  classificationMatched?: boolean;
   deltaNetEur?: number;
   deltaDurationMin?: number;
+  deltaDistanceKm?: number;
   status: 'Pendente resultado' | 'Calibrado';
   learningNote: string;
   epistemicTag: EpistemicTag;
@@ -1390,6 +1546,7 @@ export interface CountryMarketConfig {
   catalogTier?: CountryCatalogTier;
   validationSource?: string;
   verifiedAt?: string;
+  nextReviewAt?: string;
   notes?: string;
 }
 
@@ -1554,4 +1711,76 @@ export interface PersistedVehicleCatalogFilters {
   sortBy: VehicleSortOption;
 }
 
+export type CostFrequency = 'diária' | 'semanal' | 'mensal' | 'anual';
+export type CostBehaviorType = 'fixo' | 'variável';
+export type TaxRegimeType =
+  | 'ENI / Recibos Verdes'
+  | 'Unipessoal / Empresa'
+  | 'Parceiro Frota / Cooperativa'
+  | 'Isento / Outro';
 
+export interface OperatorCostItem {
+  id: string;
+  name: string;
+  amount: number;
+  costType: CostBehaviorType;
+  frequency: CostFrequency;
+  enabled: boolean;
+  notes?: string;
+}
+
+export interface CostsCalculatorConfig {
+  targetMonthlyNetIncome: number;
+  workDaysPerMonth: number;
+  hoursPerDay: number;
+  avgKmPerDay: number;
+  averagePlatformCommissionPct: number;
+  taxRegime: TaxRegimeType;
+  applyTaxes: boolean;
+  vatPct: number;
+  ircOrIrsPct: number;
+  socialSecurityPct: number;
+  operatorCosts: OperatorCostItem[];
+  vehicleEnergyMode: 'electric' | 'combustion' | 'hybrid';
+  vehicleLeaseOrInstallmentMonthly: number;
+  vehicleKwhPer100Km: number;
+  vehicleEurPerKwh: number;
+  vehicleLitersPer100Km: number;
+  vehicleEurPerLiter: number;
+  vehicleInsuranceAmount: number;
+  vehicleInsuranceFrequency: 'mensal' | 'anual';
+  vehicleMaintenanceMonthly: number;
+  vehicleTiresMonthly: number;
+  vehicleIucAnnual: number;
+  vehicleOtherMonthly: number;
+  operationalParkingMonthly: number;
+  operationalTollsMonthly: number;
+  operationalOtherMonthly: number;
+  personalMealsDaily: number;
+  personalPhoneMonthly: number;
+  personalOtherMonthly: number;
+  includePersonalInTargetGross: boolean;
+}
+
+export interface PersistedTachographAuditRecord {
+  sessionId: string;
+  verificationCode: string;
+  hmacSignature: string;
+  driverAlias: string;
+  vehicleLabel: string;
+  operatorName: string;
+  date: string;
+  startIso: string;
+  endIso?: string | null;
+  odometerStartKm: number;
+  odometerEndKm: number;
+  distanceKm: number;
+  drivingMinutes: number;
+  effectiveWorkMinutes: number;
+  breakMinutes: number;
+  currentState: string;
+  status: string;
+  countryCode: string;
+  city: string;
+  updatedAtIso: string;
+}

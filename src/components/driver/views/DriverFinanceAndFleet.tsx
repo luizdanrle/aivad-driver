@@ -1,17 +1,28 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
+  Calculator,
   Car,
+  CheckCircle2,
   Download,
   FileSpreadsheet,
   GitCompare,
   HelpCircle,
+  Plus,
+  RotateCcw,
   Search,
   SlidersHorizontal,
+  Trash2,
   TrendingDown,
   TrendingUp,
   Wallet,
   X,
 } from 'lucide-react';
+import {
+  calculateCostsProfitability,
+  createDefaultCostsCalculatorConfig,
+  normalizeAmountToMonthly,
+} from '../../../core/costsCalculator';
 import {
   exportPrintablePdfReport,
   exportReportAsPng,
@@ -34,12 +45,17 @@ import {
   formatHistoricalMoney,
   formatMoney,
   getTodayIso,
+  translateUi,
 } from '../../../core/localization';
 import type {
+  CostBehaviorType,
+  CostFrequency,
   DataScopeFilter,
   DateRangePreset,
   ExpenseRecord,
   FuelType,
+  OperatorCostItem,
+  TaxRegimeType,
   TripRecord,
   VehicleRecord,
   VehicleSortOption,
@@ -51,6 +67,7 @@ import {
   Card,
   ContextualHelpBanner,
   MetricCard,
+  SegmentedFilter,
   StatusLabel,
 } from '../../ui/DesignSystem';
 
@@ -92,12 +109,16 @@ const REPORT_SUBTABS: Array<{ id: ReportSubTab; label: string }> = [
 export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeTab }) => {
   const {
     state,
+    activeVehicle,
     activeMarket,
     activeDriverTrips,
     financialSummary,
     comprehensiveReports,
+    setDriverNav,
     updateReportFilters,
     updateFinancialCostConfig,
+    updateCostsCalculator,
+    resetCostsCalculator,
     addExpense,
     addVehicle,
     updateVehicle,
@@ -112,6 +133,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   const currency = activeMarket.currency;
   const symbol = activeMarket.currencySymbol;
   const unitSystem = state.localization.unitSystem;
+  const langCode = state.localization.languageCode;
 
   // Calculation Explanation Modal state ("Como foi calculado?")
   const [activeExplanation, setActiveExplanation] =
@@ -140,6 +162,21 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
 
   // Persisted Vehicle Catalog Filters (§11) + Resale Estimator Odometers + Add Form
   const vehFilters = state.vehicleCatalogFilters;
+  const [veiculosSubTab, setVeiculosSubTab] = useState<'catalogo' | 'meus-custos'>('catalogo');
+  const [newOpCost, setNewOpCost] = useState<{
+    name: string;
+    amount: number;
+    costType: CostBehaviorType;
+    frequency: CostFrequency;
+    notes: string;
+  }>({
+    name: 'Taxa Administrativa Extra',
+    amount: 25,
+    costType: 'fixo',
+    frequency: 'mensal',
+    notes: '',
+  });
+  const [costsImportFeedback, setCostsImportFeedback] = useState<string | null>(null);
   const [resaleOdometers, setResaleOdometers] = useState<Record<string, number>>({});
   const [vehForm, setVehForm] = useState({
     brand: 'Kia',
@@ -158,6 +195,12 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
     insuranceAnnualEur: 1350,
     city: state.localization.currentLocation.city || 'Lisboa',
   });
+
+  const costsCfg = useMemo(
+    () => state.costsCalculator ?? createDefaultCostsCalculatorConfig(activeVehicle),
+    [state.costsCalculator, activeVehicle]
+  );
+  const costsResult = useMemo(() => calculateCostsProfitability(costsCfg), [costsCfg]);
 
   // Vehicle Comparator selection
   const [compareIds, setCompareIds] = useState<string[]>(
@@ -1397,6 +1440,28 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
           </Card>
         </div>
 
+        <Card className="p-4 flex flex-wrap items-center justify-between gap-3 bg-blue-50/60 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900">
+          <div className="text-xs">
+            <p className="font-bold text-slate-900 dark:text-white">
+              Quer calcular a rentabilidade mensal exata com impostos condicionais, custos do operador e 3 cenários?
+            </p>
+            <p className="text-slate-600 dark:text-slate-300">
+              Abra a calculadora completa &ldquo;{translateUi(langCode, 'my_costs_tab')}&rdquo; no módulo de Veículos &amp; Energia.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setVeiculosSubTab('meus-custos');
+              setDriverNav('veiculos');
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold cursor-pointer"
+          >
+            <Calculator className="w-4 h-4" />
+            <span>Abrir {translateUi(langCode, 'my_costs_tab')}</span>
+          </button>
+        </Card>
+
         <CalculationExplanationModal
           explanation={activeExplanation}
           onClose={() => setActiveExplanation(null)}
@@ -1406,7 +1471,7 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
   }
 
   // ==========================================================
-  // VEÍCULOS (Filtros Avançados, Cor, Validade Mercado, Revenda, Autonomia & TCO)
+  // VEÍCULOS (Catálogo Técnico + Meus Custos Rentabilidade Real)
   // ==========================================================
   if (activeTab === 'veiculos') {
     const filteredVehicles = filterVehiclesCatalog(state.vehicles, vehFilters, state.platforms);
@@ -1414,8 +1479,805 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
       new Set(state.platforms.filter((p) => p.status === 'Ativa').flatMap((p) => p.categories))
     );
 
+    const handleImportActiveVehicleToCosts = () => {
+      const isEv = activeVehicle.fuelType === 'Elétrico';
+      const isHybrid = activeVehicle.fuelType === 'Híbrido' || activeVehicle.fuelType === 'Plug-in';
+      const unitPrice = getEnergyUnitPriceByTariff(
+        activeVehicle.energyTariffProfile,
+        activeVehicle.energyCostPerUnitEur
+      );
+      updateCostsCalculator({
+        vehicleEnergyMode: isEv ? 'electric' : isHybrid ? 'hybrid' : 'combustion',
+        vehicleLeaseOrInstallmentMonthly: activeVehicle.monthlyLeaseOrFinanceEur,
+        vehicleInsuranceAmount: activeVehicle.insuranceAnnualEur,
+        vehicleInsuranceFrequency: 'anual',
+        vehicleIucAnnual: isEv ? 0 : costsCfg.vehicleIucAnnual || 160,
+        ...(activeVehicle.consumptionUnit === 'kWh'
+          ? { vehicleKwhPer100Km: activeVehicle.consumptionPer100Km, vehicleEurPerKwh: unitPrice }
+          : { vehicleLitersPer100Km: activeVehicle.consumptionPer100Km, vehicleEurPerLiter: unitPrice }),
+      });
+      setCostsImportFeedback(
+        `Valores importados de ${activeVehicle.brand} ${activeVehicle.model} (${activeVehicle.year}).`
+      );
+    };
+
+    const handleAddOperatorCost = (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!newOpCost.name.trim()) return;
+      const item: OperatorCostItem = {
+        id: `op-${Date.now()}`,
+        name: newOpCost.name.trim(),
+        amount: Math.max(0, Number(newOpCost.amount) || 0),
+        costType: newOpCost.costType,
+        frequency: newOpCost.frequency,
+        enabled: true,
+        notes: newOpCost.notes.trim() || undefined,
+      };
+      updateCostsCalculator({
+        operatorCosts: [...costsCfg.operatorCosts, item],
+      });
+      setNewOpCost((prev) => ({ ...prev, name: '', amount: 25, notes: '' }));
+    };
+
     return (
       <div className="space-y-6">
+        <Card className="p-3.5 flex flex-wrap items-center justify-between gap-3">
+          <SegmentedFilter
+            value={veiculosSubTab}
+            onChange={(val) => setVeiculosSubTab(val)}
+            options={[
+              { id: 'catalogo', label: 'Catálogo & Elegibilidade Técnica' },
+              { id: 'meus-custos', label: `${translateUi(langCode, 'my_costs_tab')} (Rentabilidade Real)` },
+            ]}
+          />
+          <span className="text-xs text-slate-500">
+            Veículo ativo: <strong>{activeVehicle.brand} {activeVehicle.model}</strong> ({activeVehicle.fuelType})
+          </span>
+        </Card>
+
+        {veiculosSubTab === 'meus-custos' ? (
+          <div className="space-y-6" data-testid="meus-custos-panel">
+            <ContextualHelpBanner
+              title={`${translateUi(langCode, 'my_costs_tab')} — Simulador Completo de Rentabilidade Real, Impostos Condicionais & 3 Cenários`}
+              description="Modele o faturamento bruto mínimo exigido, valores reais €/km e €/h, custos do operador (diário/semanal/mensal/anual), custos do veículo e separação rigorosa entre despesas operacionais e pessoais."
+            />
+
+            <Card className="p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleImportActiveVehicleToCosts}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold cursor-pointer"
+                >
+                  <Car className="w-3.5 h-3.5" />
+                  <span>Importar do Veículo Ativo ({activeVehicle.brand} {activeVehicle.model})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetCostsCalculator();
+                    setCostsImportFeedback('Configuração reposta para os valores padrão do veículo ativo.');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 font-semibold cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Repor Padrão</span>
+                </button>
+              </div>
+              {costsImportFeedback && (
+                <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-semibold">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {costsImportFeedback}
+                </span>
+              )}
+            </Card>
+
+            {costsResult.validationWarnings.length > 0 && (
+              <Card className="p-4 border-amber-300 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30 space-y-1.5 text-xs">
+                {costsResult.validationWarnings.map((w, idx) => (
+                  <p key={idx} className="flex items-start gap-2 text-amber-900 dark:text-amber-200 font-medium">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                    <span>{w}</span>
+                  </p>
+                ))}
+              </Card>
+            )}
+
+            {/* Primary Result KPIs */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4" data-testid="meus-custos-kpis">
+              <MetricCard
+                label="Faturamento Bruto Necessário"
+                value={`${formatMoney(costsResult.requiredGrossMonthly, currency)}/mês`}
+                subtext={`${formatMoney(costsResult.requiredGrossDaily, currency)}/dia · após comissão: ${formatMoney(costsResult.receivedAfterCommissionsMonthly, currency)}`}
+                accent="blue"
+                explanation="Volume bruto mensal que as apps devem faturar para cobrir comissões, custos operacionais, impostos ativos e atingir a meta líquida."
+                formula="((Meta Líq. ÷ (1 - Imp.)) + Custos Op.) ÷ (1 - Comissão)"
+              />
+              <MetricCard
+                label="Mínimo Exigido (€/km e €/h)"
+                value={`${formatDistanceRate(costsResult.minRequiredEurPerKm, currency, unitSystem)}`}
+                subtext={`${formatMoney(costsResult.minRequiredEurPerHour, currency)}/h · Custo real: ${formatDistanceRate(costsResult.costPerKm, currency, unitSystem)}`}
+                accent="emerald"
+                explanation="Valor bruto mínimo por distância e por hora produtiva para não perder margem face ao objetivo definido."
+                formula="Bruto Necessário ÷ Km Mensais | Horas Mensais"
+              />
+              <MetricCard
+                label="Custos Operacionais Totais"
+                value={`${formatMoney(costsResult.costPerMonth, currency)}/mês`}
+                subtext={`${formatMoney(costsResult.costPerDay, currency)}/dia · ${formatMoney(costsResult.costPerWeek, currency)}/sem · ${formatMoney(costsResult.costPerHour, currency)}/h`}
+                explanation="Soma de operador, energia/combustível, prestação, seguro, IUC, manutenção, pneus, portagens e estacionamento."
+                formula="Operador + Veículo + Extras Operacionais"
+              />
+              <MetricCard
+                label="Líquido Final Disponível"
+                value={`${formatMoney(costsResult.finalNetDisposableMonthly, currency)}/mês`}
+                subtext={`Lucro Op.: ${formatMoney(costsResult.operatingProfitMonthly, currency)} · Pessoais: -${formatMoney(costsResult.personalExpensesMonthly, currency)}`}
+                accent={costsResult.finalNetDisposableMonthly >= costsCfg.targetMonthlyNetIncome * 0.9 ? 'blue' : 'amber'}
+                explanation="Saldo pessoal disponível depois de deduzir impostos e despesas pessoais separadas ao lucro operacional."
+                formula="Lucro Operacional - Despesas Pessoais"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: Inputs */}
+              <div className="lg:col-span-7 space-y-5">
+                {/* Objetivo & Rotina */}
+                <Card className="p-5 space-y-4 text-xs">
+                  <h2 className="text-sm font-bold flex items-center gap-2">
+                    <Wallet className="w-4 h-4 text-blue-700 dark:text-blue-400" />
+                    1. Objetivo Líquido &amp; Rotina de Trabalho
+                  </h2>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                    <div>
+                      <label htmlFor="mc-target-net" className="block font-medium mb-1">Meta Líq. ({symbol}/mês)</label>
+                      <input
+                        id="mc-target-net"
+                        type="number"
+                        min={0}
+                        step={50}
+                        value={costsCfg.targetMonthlyNetIncome}
+                        onChange={(e) => updateCostsCalculator({ targetMonthlyNetIncome: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-days" className="block font-medium mb-1">Dias/mês</label>
+                      <input
+                        id="mc-days"
+                        type="number"
+                        min={1}
+                        max={31}
+                        value={costsCfg.workDaysPerMonth}
+                        onChange={(e) => updateCostsCalculator({ workDaysPerMonth: Math.max(1, Math.min(31, Number(e.target.value))) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-hours" className="block font-medium mb-1">Horas/dia</label>
+                      <input
+                        id="mc-hours"
+                        type="number"
+                        min={1}
+                        max={16}
+                        step="0.5"
+                        value={costsCfg.hoursPerDay}
+                        onChange={(e) => updateCostsCalculator({ hoursPerDay: Math.max(1, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-km" className="block font-medium mb-1">Km médios/dia</label>
+                      <input
+                        id="mc-km"
+                        type="number"
+                        min={10}
+                        step={5}
+                        value={costsCfg.avgKmPerDay}
+                        onChange={(e) => updateCostsCalculator({ avgKmPerDay: Math.max(1, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-comm" className="block font-medium mb-1">Comissão apps %</label>
+                      <input
+                        id="mc-comm"
+                        type="number"
+                        min={0}
+                        max={55}
+                        step="0.5"
+                        value={costsCfg.averagePlatformCommissionPct}
+                        onChange={(e) => updateCostsCalculator({ averagePlatformCommissionPct: Math.max(0, Math.min(60, Number(e.target.value))) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Impostos Condicionais */}
+                <Card className="p-5 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-sm font-bold">2. Enquadramento Fiscal (Impostos Condicionais)</h2>
+                    <label className="inline-flex items-center gap-2 font-semibold cursor-pointer">
+                      <input
+                        id="mc-apply-taxes"
+                        type="checkbox"
+                        checked={costsCfg.applyTaxes}
+                        onChange={(e) => updateCostsCalculator({ applyTaxes: e.target.checked })}
+                      />
+                      <span>Aplicar Impostos no Cálculo</span>
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label htmlFor="mc-regime" className="block font-medium mb-1">Regime Fiscal</label>
+                      <select
+                        id="mc-regime"
+                        value={costsCfg.taxRegime}
+                        onChange={(e) => updateCostsCalculator({ taxRegime: e.target.value as TaxRegimeType })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      >
+                        <option value="ENI / Recibos Verdes">ENI / Recibos Verdes</option>
+                        <option value="Unipessoal / Lda">Unipessoal / Lda</option>
+                        <option value="Isento / Simplificado">Isento / Simplificado</option>
+                        <option value="Personalizado">Personalizado</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="mc-vat" className="block font-medium mb-1">IVA %</label>
+                      <input
+                        id="mc-vat"
+                        type="number"
+                        step="0.5"
+                        min={0}
+                        max={35}
+                        disabled={!costsCfg.applyTaxes}
+                        value={costsCfg.vatPct}
+                        onChange={(e) => updateCostsCalculator({ vatPct: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-irs" className="block font-medium mb-1">IRS / IRC %</label>
+                      <input
+                        id="mc-irs"
+                        type="number"
+                        step="0.5"
+                        min={0}
+                        max={50}
+                        disabled={!costsCfg.applyTaxes}
+                        value={costsCfg.ircOrIrsPct}
+                        onChange={(e) => updateCostsCalculator({ ircOrIrsPct: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-ss" className="block font-medium mb-1">Seg. Social %</label>
+                      <input
+                        id="mc-ss"
+                        type="number"
+                        step="0.5"
+                        min={0}
+                        max={40}
+                        disabled={!costsCfg.applyTaxes}
+                        value={costsCfg.socialSecurityPct}
+                        onChange={(e) => updateCostsCalculator({ socialSecurityPct: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {costsCfg.applyTaxes
+                      ? `Taxa efetiva combinada sobre lucro antes de imposto: ${costsResult.effectiveCombinedTaxPct}% (${formatMoney(costsResult.estimatedTaxesMonthly, currency)}/mês).`
+                      : 'Modo sem impostos ativo: imposto estimado = €0,00.'}
+                  </p>
+                </Card>
+
+                {/* Custos do Operador (Dinâmico) */}
+                <Card className="p-5 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-sm font-bold">3. Custos do Operador (Multi-Frequência)</h2>
+                    <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                      Total: {formatMoney(costsResult.operatorCostsMonthly, currency)}/mês
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {costsCfg.operatorCosts.map((item) => (
+                      <div
+                        key={item.id}
+                        className="p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center"
+                      >
+                        <div className="sm:col-span-4 flex items-center gap-2 min-w-0">
+                          <input
+                            type="checkbox"
+                            aria-label={`Ativar ${item.name}`}
+                            checked={item.enabled}
+                            onChange={(e) =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.map((c) =>
+                                  c.id === item.id ? { ...c, enabled: e.target.checked } : c
+                                ),
+                              })
+                            }
+                          />
+                          <input
+                            type="text"
+                            aria-label="Nome do custo do operador"
+                            value={item.name}
+                            onChange={(e) =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.map((c) =>
+                                  c.id === item.id ? { ...c, name: e.target.value } : c
+                                ),
+                              })
+                            }
+                            className="w-full min-w-0 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-medium"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <input
+                            type="number"
+                            min={0}
+                            step="1"
+                            aria-label={`Valor de ${item.name}`}
+                            value={item.amount}
+                            onChange={(e) =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.map((c) =>
+                                  c.id === item.id ? { ...c, amount: Math.max(0, Number(e.target.value)) } : c
+                                ),
+                              })
+                            }
+                            className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <select
+                            aria-label={`Tipo de ${item.name}`}
+                            value={item.costType}
+                            onChange={(e) =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.map((c) =>
+                                  c.id === item.id ? { ...c, costType: e.target.value as CostBehaviorType } : c
+                                ),
+                              })
+                            }
+                            className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                          >
+                            <option value="fixo">fixo</option>
+                            <option value="variável">variável</option>
+                          </select>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <select
+                            aria-label={`Frequência de ${item.name}`}
+                            value={item.frequency}
+                            onChange={(e) =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.map((c) =>
+                                  c.id === item.id ? { ...c, frequency: e.target.value as CostFrequency } : c
+                                ),
+                              })
+                            }
+                            className="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                          >
+                            <option value="diária">diária</option>
+                            <option value="semanal">semanal</option>
+                            <option value="mensal">mensal</option>
+                            <option value="anual">anual</option>
+                          </select>
+                        </div>
+                        <div className="sm:col-span-2 flex items-center justify-end gap-1.5 whitespace-nowrap">
+                          <span className="text-[11px] font-mono-tabular text-slate-600 dark:text-slate-300">
+                            {formatMoney(normalizeAmountToMonthly(item.amount, item.frequency, costsCfg.workDaysPerMonth), currency)}
+                          </span>
+                          <button
+                            type="button"
+                            aria-label={`Remover ${item.name}`}
+                            onClick={() =>
+                              updateCostsCalculator({
+                                operatorCosts: costsCfg.operatorCosts.filter((c) => c.id !== item.id),
+                              })
+                            }
+                            className="p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 rounded cursor-pointer shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <form onSubmit={handleAddOperatorCost} className="pt-2 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-12 gap-2">
+                    <input
+                      type="text"
+                      aria-label="Novo custo do operador"
+                      placeholder="Ex: Taxa slot extra / Contabilidade"
+                      value={newOpCost.name}
+                      onChange={(e) => setNewOpCost((p) => ({ ...p, name: e.target.value }))}
+                      className="sm:col-span-4 px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.5"
+                      aria-label="Valor do novo custo"
+                      value={newOpCost.amount}
+                      onChange={(e) => setNewOpCost((p) => ({ ...p, amount: Number(e.target.value) }))}
+                      className="sm:col-span-2 px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                    />
+                    <select
+                      aria-label="Comportamento novo custo"
+                      value={newOpCost.costType}
+                      onChange={(e) => setNewOpCost((p) => ({ ...p, costType: e.target.value as CostBehaviorType }))}
+                      className="sm:col-span-2 px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="fixo">fixo</option>
+                      <option value="variável">variável</option>
+                    </select>
+                    <select
+                      aria-label="Frequência novo custo"
+                      value={newOpCost.frequency}
+                      onChange={(e) => setNewOpCost((p) => ({ ...p, frequency: e.target.value as CostFrequency }))}
+                      className="sm:col-span-2 px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                    >
+                      <option value="diária">diária</option>
+                      <option value="semanal">semanal</option>
+                      <option value="mensal">mensal</option>
+                      <option value="anual">anual</option>
+                    </select>
+                    <button
+                      type="submit"
+                      className="sm:col-span-2 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded bg-blue-700 hover:bg-blue-800 text-white font-semibold cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Adicionar
+                    </button>
+                  </form>
+                </Card>
+
+                {/* Custos do Veículo */}
+                <Card className="p-5 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-sm font-bold">4. Custos do Veículo</h2>
+                    <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
+                      Total: {formatMoney(costsResult.vehicleTotalMonthly, currency)}/mês
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <label htmlFor="mc-v-mode" className="block font-medium mb-1">Motorização</label>
+                      <select
+                        id="mc-v-mode"
+                        value={costsCfg.vehicleEnergyMode}
+                        onChange={(e) =>
+                          updateCostsCalculator({
+                            vehicleEnergyMode: e.target.value as 'electric' | 'combustion' | 'hybrid',
+                          })
+                        }
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                      >
+                        <option value="electric">Elétrico (kWh)</option>
+                        <option value="combustion">Combustão (L)</option>
+                        <option value="hybrid">Híbrido (kWh + L)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="mc-v-lease" className="block font-medium mb-1">Prestação/Aluguer (mês)</label>
+                      <input
+                        id="mc-v-lease"
+                        type="number"
+                        min={0}
+                        value={costsCfg.vehicleLeaseOrInstallmentMonthly}
+                        onChange={(e) => updateCostsCalculator({ vehicleLeaseOrInstallmentMonthly: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-v-ins" className="block font-medium mb-1">Seguro ({costsCfg.vehicleInsuranceFrequency})</label>
+                      <div className="flex gap-1">
+                        <input
+                          id="mc-v-ins"
+                          type="number"
+                          min={0}
+                          value={costsCfg.vehicleInsuranceAmount}
+                          onChange={(e) => updateCostsCalculator({ vehicleInsuranceAmount: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                        <select
+                          aria-label="Frequência seguro"
+                          value={costsCfg.vehicleInsuranceFrequency}
+                          onChange={(e) => updateCostsCalculator({ vehicleInsuranceFrequency: e.target.value as 'mensal' | 'anual' })}
+                          className="px-1.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                        >
+                          <option value="anual">/ano</option>
+                          <option value="mensal">/mês</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label htmlFor="mc-v-iuc" className="block font-medium mb-1">IUC anual</label>
+                      <input
+                        id="mc-v-iuc"
+                        type="number"
+                        min={0}
+                        value={costsCfg.vehicleIucAnnual}
+                        onChange={(e) => updateCostsCalculator({ vehicleIucAnnual: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    {(costsCfg.vehicleEnergyMode === 'electric' || costsCfg.vehicleEnergyMode === 'hybrid') && (
+                      <>
+                        <div>
+                          <label htmlFor="mc-v-kwh" className="block font-medium mb-1">Consumo kWh/100km</label>
+                          <input
+                            id="mc-v-kwh"
+                            type="number"
+                            step="0.5"
+                            min={0}
+                            value={costsCfg.vehicleKwhPer100Km}
+                            onChange={(e) => updateCostsCalculator({ vehicleKwhPer100Km: Math.max(0, Number(e.target.value)) })}
+                            className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="mc-v-ekwh" className="block font-medium mb-1">Preço {symbol}/kWh</label>
+                          <input
+                            id="mc-v-ekwh"
+                            type="number"
+                            step="0.01"
+                            min={0}
+                            value={costsCfg.vehicleEurPerKwh}
+                            onChange={(e) => updateCostsCalculator({ vehicleEurPerKwh: Math.max(0, Number(e.target.value)) })}
+                            className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                        </div>
+                      </>
+                    )}
+                    {(costsCfg.vehicleEnergyMode === 'combustion' || costsCfg.vehicleEnergyMode === 'hybrid') && (
+                      <>
+                        <div>
+                          <label htmlFor="mc-v-liters" className="block font-medium mb-1">Consumo L/100km</label>
+                          <input
+                            id="mc-v-liters"
+                            type="number"
+                            step="0.2"
+                            min={0}
+                            value={costsCfg.vehicleLitersPer100Km}
+                            onChange={(e) => updateCostsCalculator({ vehicleLitersPer100Km: Math.max(0, Number(e.target.value)) })}
+                            className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="mc-v-eliter" className="block font-medium mb-1">Preço {symbol}/L</label>
+                          <input
+                            id="mc-v-eliter"
+                            type="number"
+                            step="0.02"
+                            min={0}
+                            value={costsCfg.vehicleEurPerLiter}
+                            onChange={(e) => updateCostsCalculator({ vehicleEurPerLiter: Math.max(0, Number(e.target.value)) })}
+                            className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      <label htmlFor="mc-v-maint" className="block font-medium mb-1">Manutenção/mês</label>
+                      <input
+                        id="mc-v-maint"
+                        type="number"
+                        min={0}
+                        value={costsCfg.vehicleMaintenanceMonthly}
+                        onChange={(e) => updateCostsCalculator({ vehicleMaintenanceMonthly: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="mc-v-tires" className="block font-medium mb-1">Pneus/mês</label>
+                      <input
+                        id="mc-v-tires"
+                        type="number"
+                        min={0}
+                        value={costsCfg.vehicleTiresMonthly}
+                        onChange={(e) => updateCostsCalculator({ vehicleTiresMonthly: Math.max(0, Number(e.target.value)) })}
+                        className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                      />
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Separação rigorosa Operacionais Extras vs Pessoais */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <Card className="p-4 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold">5A. Despesas Operacionais Extras</h3>
+                      <span className="font-mono-tabular font-semibold">{formatMoney(costsResult.operationalExtrasMonthly, currency)}/mês</span>
+                    </div>
+                    <div className="space-y-2">
+                      <div>
+                        <label htmlFor="mc-op-park" className="block text-[11px] font-medium mb-0.5">Estacionamento (mês)</label>
+                        <input
+                          id="mc-op-park"
+                          type="number"
+                          min={0}
+                          value={costsCfg.operationalParkingMonthly}
+                          onChange={(e) => updateCostsCalculator({ operationalParkingMonthly: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="mc-op-tolls" className="block text-[11px] font-medium mb-0.5">Portagens (mês)</label>
+                        <input
+                          id="mc-op-tolls"
+                          type="number"
+                          min={0}
+                          value={costsCfg.operationalTollsMonthly}
+                          onChange={(e) => updateCostsCalculator({ operationalTollsMonthly: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="mc-op-other" className="block text-[11px] font-medium mb-0.5">Lavagens &amp; Outros Op. (mês)</label>
+                        <input
+                          id="mc-op-other"
+                          type="number"
+                          min={0}
+                          value={costsCfg.operationalOtherMonthly}
+                          onChange={(e) => updateCostsCalculator({ operationalOtherMonthly: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                    </div>
+                  </Card>
+
+                  <Card className="p-4 space-y-2.5 border-violet-200 dark:border-violet-900">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-violet-800 dark:text-violet-300">5B. Despesas Pessoais Separadas</h3>
+                      <span className="font-mono-tabular font-semibold text-violet-700 dark:text-violet-300">
+                        {formatMoney(costsResult.personalExpensesMonthly, currency)}/mês
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      <div>
+                        <label htmlFor="mc-per-meals" className="block text-[11px] font-medium mb-0.5">Refeições ({symbol}/dia trabalho)</label>
+                        <input
+                          id="mc-per-meals"
+                          type="number"
+                          min={0}
+                          step="0.5"
+                          value={costsCfg.personalMealsDaily}
+                          onChange={(e) => updateCostsCalculator({ personalMealsDaily: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="mc-per-phone" className="block text-[11px] font-medium mb-0.5">Telemóvel &amp; Dados (mês)</label>
+                        <input
+                          id="mc-per-phone"
+                          type="number"
+                          min={0}
+                          value={costsCfg.personalPhoneMonthly}
+                          onChange={(e) => updateCostsCalculator({ personalPhoneMonthly: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="mc-per-other" className="block text-[11px] font-medium mb-0.5">Outras pessoais (mês)</label>
+                        <input
+                          id="mc-per-other"
+                          type="number"
+                          min={0}
+                          value={costsCfg.personalOtherMonthly}
+                          onChange={(e) => updateCostsCalculator({ personalOtherMonthly: Math.max(0, Number(e.target.value)) })}
+                          className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                        />
+                      </div>
+                      <label className="inline-flex items-center gap-2 pt-1 cursor-pointer text-[11px] font-semibold">
+                        <input
+                          type="checkbox"
+                          checked={costsCfg.includePersonalInTargetGross}
+                          onChange={(e) => updateCostsCalculator({ includePersonalInTargetGross: e.target.checked })}
+                        />
+                        <span>Contabilizar despesas pessoais na meta bruta</span>
+                      </label>
+                    </div>
+                  </Card>
+                </div>
+              </div>
+
+              {/* Right Column: Financial Breakdown & 3 Scenarios */}
+              <div className="lg:col-span-5 space-y-5">
+                <Card className="p-5 space-y-3 text-xs">
+                  <h2 className="text-sm font-bold">Resumo Financeiro Detalhado ({costsResult.monthlyKm} km · {costsResult.monthlyHours}h/mês)</h2>
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <div className="py-1.5 flex justify-between">
+                      <span>Faturamento Bruto Necessário</span>
+                      <strong className="font-mono-tabular">{formatMoney(costsResult.requiredGrossMonthly, currency)}</strong>
+                    </div>
+                    <div className="py-1.5 flex justify-between">
+                      <span>Comissões Médias ({costsCfg.averagePlatformCommissionPct}%)</span>
+                      <span className="font-mono-tabular text-red-600">
+                        -{formatMoney(round2(costsResult.requiredGrossMonthly - costsResult.receivedAfterCommissionsMonthly), currency)}
+                      </span>
+                    </div>
+                    <div className="py-1.5 flex justify-between font-semibold">
+                      <span>Recebido após Comissões</span>
+                      <span className="font-mono-tabular">{formatMoney(costsResult.receivedAfterCommissionsMonthly, currency)}</span>
+                    </div>
+                    <div className="py-1.5 flex justify-between">
+                      <span>Custos Operador + Extras Op.</span>
+                      <span className="font-mono-tabular">
+                        -{formatMoney(costsResult.operatorCostsMonthly + costsResult.operationalExtrasMonthly, currency)}
+                      </span>
+                    </div>
+                    <div className="py-1.5 flex justify-between">
+                      <span>Veículo (Fixo + Energia + Manut.)</span>
+                      <span className="font-mono-tabular">-{formatMoney(costsResult.vehicleTotalMonthly, currency)}</span>
+                    </div>
+                    <div className="py-1.5 flex justify-between">
+                      <span>Impostos Estimados ({costsCfg.applyTaxes ? `${costsResult.effectiveCombinedTaxPct}%` : 'Desativado'})</span>
+                      <span className="font-mono-tabular">-{formatMoney(costsResult.estimatedTaxesMonthly, currency)}</span>
+                    </div>
+                    <div className="py-1.5 flex justify-between font-bold text-blue-700 dark:text-blue-400">
+                      <span>Lucro Operacional Líquido</span>
+                      <span className="font-mono-tabular">{formatMoney(costsResult.operatingProfitMonthly, currency)}</span>
+                    </div>
+                    <div className="py-1.5 flex justify-between">
+                      <span>Despesas Pessoais Separadas</span>
+                      <span className="font-mono-tabular text-violet-700 dark:text-violet-400">
+                        -{formatMoney(costsResult.personalExpensesMonthly, currency)}
+                      </span>
+                    </div>
+                    <div className="pt-2 flex justify-between text-sm font-extrabold text-emerald-700 dark:text-emerald-400">
+                      <span>Líquido Final Disponível</span>
+                      <span className="font-mono-tabular">{formatMoney(costsResult.finalNetDisposableMonthly, currency)}</span>
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="p-5 space-y-3 text-xs" data-testid="meus-custos-scenarios">
+                  <h2 className="text-sm font-bold">3 Cenários de Rentabilidade Real</h2>
+                  <div className="space-y-3">
+                    {costsResult.scenarios.map((sc) => (
+                      <div
+                        key={sc.id}
+                        className={`p-3.5 rounded-xl border ${
+                          sc.id === 'normal'
+                            ? 'border-blue-300 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900'
+                        } space-y-1.5`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold">{sc.label}</span>
+                          <StatusLabel
+                            tone={sc.id === 'conservador' ? 'warning' : sc.id === 'otimista' ? 'success' : 'info'}
+                            text={`${formatDistanceRate(sc.minRequiredEurPerKm, currency, unitSystem)} · ${formatMoney(sc.minRequiredEurPerHour, currency)}/h`}
+                          />
+                        </div>
+                        <p className="text-[11px] text-slate-500">{sc.assumptionsNote}</p>
+                        <div className="grid grid-cols-3 gap-2 pt-1 font-mono-tabular text-[11px]">
+                          <div>
+                            <span className="text-slate-500 block">Bruto Req.</span>
+                            <strong>{formatMoney(sc.requiredGrossMonthly, currency)}</strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 block">Custos + Imp.</span>
+                            <strong>{formatMoney(round2(sc.operatingCostsMonthly + sc.estimatedTaxesMonthly), currency)}</strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 block">Líquido Disp.</span>
+                            <strong className="text-emerald-700 dark:text-emerald-400">
+                              {formatMoney(sc.finalNetDisposableMonthly, currency)}
+                            </strong>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
+            </div>
+          </div>
+        ) : (
+        <div className="space-y-6">
         <ContextualHelpBanner
           title="Base Técnica de Veículos — Elegibilidade, Cor, Autonomia Real & Estimador de Revenda"
           description="Filtra por país, plataforma, categoria comercial, lugares, bagageira, autonomia real e cor. Distingue estimativa algorítmica de revenda de preço anunciado ou transação real."
@@ -1937,6 +2799,8 @@ export const DriverFinanceAndFleet: React.FC<{ activeTab: string }> = ({ activeT
             </div>
           </form>
         </Card>
+        </div>
+        )}
       </div>
     );
   }

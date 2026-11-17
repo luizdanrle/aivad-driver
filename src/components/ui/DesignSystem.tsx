@@ -27,7 +27,7 @@ import type {
   OnboardingStepDefinition,
   ProgressiveOnboardingState,
 } from '../../core/moduleGuides';
-import type { EpistemicTag, ThemeMode } from '../../models/types';
+import type { EpistemicTag, FloatingDockConfig, ThemeMode } from '../../models/types';
 
 export const PhoenixLogo: React.FC<{ size?: number; className?: string }> = ({
   size = 32,
@@ -160,6 +160,7 @@ export const FloatingActionButton: React.FC<{
   onClick?: () => void;
   badgeText?: string;
   actions?: QuickActionItem[];
+  dockConfig?: FloatingDockConfig;
   className?: string;
 }> = ({
   label,
@@ -169,10 +170,29 @@ export const FloatingActionButton: React.FC<{
   onClick,
   badgeText,
   actions,
+  dockConfig,
   className = '',
 }) => {
   const prefersReducedMotion = useReducedMotion();
   const [open, setOpen] = useState(false);
+
+  if (dockConfig && dockConfig.enabled === false) {
+    return null;
+  }
+
+  const effectiveVariant: NonNullable<typeof variant> =
+    dockConfig?.themeTone === 'vermelho'
+      ? 'accent'
+      : dockConfig?.themeTone === 'indigo'
+      ? 'ai'
+      : dockConfig?.themeTone === 'esmeralda'
+      ? 'success'
+      : dockConfig?.themeTone === 'azul'
+      ? 'primary'
+      : variant;
+
+  const isCustomDock = dockConfig?.themeTone === 'personalizado';
+  const dockLeft = dockConfig?.position === 'Inferior esquerdo';
 
   const fabTone: Record<NonNullable<typeof variant>, string> = {
     primary:
@@ -209,7 +229,20 @@ export const FloatingActionButton: React.FC<{
   return (
     <div
       data-testid="aivad-floating-action-dock"
-      className={`fixed bottom-[66px] lg:bottom-6 right-3 sm:right-6 z-40 flex flex-col items-end gap-2.5 no-print ${className}`}
+      data-dock-position={dockConfig?.position ?? 'Inferior direito'}
+      data-dock-theme={dockConfig?.themeTone ?? effectiveVariant}
+      style={
+        dockConfig
+          ? {
+              ...(dockLeft
+                ? { left: `${Math.max(12, dockConfig.marginSidePx ?? 24)}px` }
+                : { right: `${Math.max(12, dockConfig.marginSidePx ?? 24)}px` }),
+            }
+          : undefined
+      }
+      className={`fixed bottom-[66px] lg:bottom-6 ${
+        dockLeft ? 'left-3 sm:left-6 items-start' : 'right-3 sm:right-6 items-end'
+      } z-40 flex flex-col gap-2.5 no-print ${className}`}
     >
       <AnimatePresence>
         {open && actions && actions.length > 0 && (
@@ -271,7 +304,20 @@ export const FloatingActionButton: React.FC<{
         whileHover={prefersReducedMotion ? undefined : { y: -2 }}
         whileTap={prefersReducedMotion ? undefined : { scale: 0.96 }}
         transition={{ duration: 0.14 }}
-        className={`min-h-[44px] sm:min-h-[48px] px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-full inline-flex items-center gap-2 text-xs sm:text-sm font-bold transition-colors cursor-pointer ${fabTone[variant]}`}
+        style={
+          isCustomDock && dockConfig
+            ? {
+                backgroundColor: dockConfig.bgColor,
+                color: dockConfig.textColor,
+                borderColor: dockConfig.borderColor,
+                borderWidth: '2px',
+                borderStyle: 'solid',
+              }
+            : undefined
+        }
+        className={`min-h-[44px] sm:min-h-[48px] px-3.5 sm:px-4 py-2 sm:py-2.5 rounded-full inline-flex items-center gap-2 text-xs sm:text-sm font-bold transition-colors cursor-pointer shadow-lg ${
+          isCustomDock ? '' : fabTone[effectiveVariant]
+        }`}
       >
         <span className="shrink-0 flex items-center">{open ? <X className="w-4 h-4" /> : icon}</span>
         <span className="whitespace-nowrap">{open ? 'Fechar Atalhos' : label}</span>
@@ -285,11 +331,13 @@ export const FloatingActionButton: React.FC<{
   );
 };
 
-export const Card: React.FC<{
-  children: React.ReactNode;
-  className?: string;
-  variant?: 'default' | 'elevated' | 'tinted-blue' | 'tinted-ai';
-}> = ({ children, className = '', variant = 'default' }) => {
+export const Card: React.FC<
+  React.HTMLAttributes<HTMLDivElement> & {
+    children: React.ReactNode;
+    className?: string;
+    variant?: 'default' | 'elevated' | 'tinted-blue' | 'tinted-ai';
+  }
+> = ({ children, className = '', variant = 'default', ...rest }) => {
   const variantStyles = {
     default:
       'border border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shadow-[var(--aivad-shadow-soft)]',
@@ -301,7 +349,11 @@ export const Card: React.FC<{
       'border border-indigo-200/90 dark:border-indigo-800/70 bg-gradient-to-br from-indigo-50/80 via-white to-blue-50/50 dark:from-indigo-950/40 dark:via-[#0F182B] dark:to-blue-950/30',
   }[variant];
 
-  return <div className={`rounded-2xl ${variantStyles} ${className}`}>{children}</div>;
+  return (
+    <div {...rest} className={`rounded-2xl ${variantStyles} ${className}`}>
+      {children}
+    </div>
+  );
 };
 
 export const Badge: React.FC<{
@@ -643,7 +695,9 @@ const OPERATIONAL_STATUS_TONE: Record<
 export const ModuleGuideBanner: React.FC<{
   guide: DriverModuleGuide;
   onNavigate?: (targetNav: string) => void;
-}> = ({ guide, onNavigate }) => {
+  onStartInteractiveGuide?: () => void;
+  onOpenGuideHub?: () => void;
+}> = ({ guide, onNavigate, onStartInteractiveGuide, onOpenGuideHub }) => {
   const prefersReducedMotion = useReducedMotion();
   const [expanded, setExpanded] = useState(false);
   const statusCfg = OPERATIONAL_STATUS_TONE[guide.operationalStatus];
@@ -669,6 +723,17 @@ export const ModuleGuideBanner: React.FC<{
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onStartInteractiveGuide && (
+            <Button
+              variant="ai"
+              size="sm"
+              onClick={onStartInteractiveGuide}
+              icon={<Sparkles className="w-3.5 h-3.5" />}
+            >
+              Assistente passo a passo
+            </Button>
+          )}
+
           <Button
             variant="secondary"
             size="sm"
@@ -681,8 +746,19 @@ export const ModuleGuideBanner: React.FC<{
               />
             }
           >
-            {expanded ? 'Ocultar Guia do Módulo' : 'Como funciona este módulo?'}
+            {expanded ? 'Ocultar Guia do Módulo' : 'Como funciona?'}
           </Button>
+
+          {onOpenGuideHub && (
+            <Button
+              variant="neutral"
+              size="sm"
+              onClick={onOpenGuideHub}
+              icon={<Compass className="w-3.5 h-3.5" />}
+            >
+              Todos os Guias
+            </Button>
+          )}
 
           {guide.primaryAction?.targetNav && onNavigate && (
             <Button

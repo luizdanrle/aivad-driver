@@ -10,23 +10,42 @@ import {
   CheckCircle2,
   Clock,
   Database,
+  ExternalLink,
+  Eye,
   Gauge,
+  HelpCircle,
   History,
   Layers,
   MapPin,
+  Monitor,
+  Navigation,
   Play,
   Radio,
   RotateCcw,
   Save,
   ShieldCheck,
+  Sliders,
   Smartphone,
   Sparkles,
   Target,
+  X,
 } from 'lucide-react';
 import { analyzeProposalWithAiCore, type ProposalAiDecisionPackage } from '../../../core/aiCore';
+import {
+  ALL_FLOATING_METRICS,
+  createDefaultClassificationProfiles,
+  evaluateFloatingMetricCell,
+  FLOATING_METRIC_DEFINITIONS,
+  PROPOSAL_GALLERY_EXAMPLES,
+  resolveFloatingTierConfig,
+  TIER_MEANING_DESCRIPTIONS,
+  TIER_OPERATIONAL_MEANINGS,
+} from '../../../core/floatingCard';
 import { isCompletedTripStatus, round2 } from '../../../core/intelligence';
 import { computeTripTimersSnapshot } from '../../../core/lifecycle';
-import { formatDistance, formatDistanceRate, formatMoney, getTodayIso } from '../../../core/localization';
+import { formatDistance, formatDistanceRate, formatMoney, getTodayIso, translateUi } from '../../../core/localization';
+import { normalizeFloatingCardPosition } from '../../../core/marketCatalog';
+import { buildWazeNavigationLaunch } from '../../../core/tripAnalysis';
 import { evaluateProposalZoneAlerts } from '../../../core/zones';
 import type {
   AnalysisMode,
@@ -35,13 +54,18 @@ import type {
   AutoPilotMode,
   CancellationBy,
   CaptureSource,
+  FloatingCardPosition,
   FloatingCardProfileId,
+  FloatingCardTierStyleConfig,
+  FloatingDockConfig,
   FloatingMetricKey,
+  ProposalClassification,
+  ProposalGalleryExample,
   ProposalInput,
   ProposalLifecycleState,
   SmartCaptureRecord,
 } from '../../../models/types';
-import { SEED_OVERLAY_CONFIG } from '../../../data/seedData';
+import { SEED_FLOATING_DOCK_CONFIG, SEED_OVERLAY_CONFIG } from '../../../data/seedData';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import {
   DynamicFloatingProposalCard,
@@ -49,7 +73,9 @@ import {
   FLOATING_METRIC_LABELS,
   GoalDonutChart,
   HorizontalBreakdownBars,
+  isDarkHexColor,
   PlatformBadge,
+  PlatformLogo,
   TACHO_STATE_COLOR,
 } from '../../ui/ChartsAndVisuals';
 import {
@@ -60,16 +86,6 @@ import {
   SegmentedFilter,
   StatusLabel,
 } from '../../ui/DesignSystem';
-
-const ALL_FLOATING_METRICS: FloatingMetricKey[] = [
-  'eurPerKm',
-  'eurPerHour',
-  'eurPerMin',
-  'estimatedNet',
-  'emptyReturnRisk',
-  'totalTime',
-  'score',
-];
 
 function formatMmSs(totalSec: number): string {
   const s = Math.max(0, Math.floor(totalSec));
@@ -96,10 +112,14 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     markActiveTripArrived,
     startActiveTripWait,
     startActiveTripInProgress,
+    recordActiveTripNavigation,
     completeActiveTripAction,
     cancelActiveTripAction,
     updateAutoPilotConfig,
     updateOverlayConfig,
+    resetFloatingTierConfigs,
+    updateFloatingDockConfig,
+    markFloatingPreviewOpened,
     captureExternalEvent,
     confirmPendingCapture,
     parseAndImportSmartCaptures,
@@ -227,6 +247,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     vehicleCostPerKmEur:
       (activeVehicle.consumptionPer100Km / 100) * activeVehicle.energyCostPerUnitEur +
       activeVehicle.maintenancePerKmEur,
+    commissionPct: visibleDriverPlatforms[0]?.commissionPct ?? 25,
     calculationBasis: 'total_distance',
     mode: 'Equilibrado',
   });
@@ -257,17 +278,87 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   );
   const liveAnalysis = liveAiPackage.analysis;
 
-  // Dynamic Floating Card Configurator State (Draft + Sandboxed Simulation)
+  // Dynamic Floating Card Configurator State (3 Independent Classification Profiles + Contextual Showcase Stage)
   const [overlayDraft, setOverlayDraft] = useState<AndroidOverlayConfig>(state.overlayConfig);
+  const [editingTier, setEditingTier] = useState<ProposalClassification>('verde');
+  const [explainedMetricKey, setExplainedMetricKey] = useState<FloatingMetricKey | null>(null);
+  const [galleryFilterPlatform, setGalleryFilterPlatform] = useState<'ALL' | 'uber' | 'bolt'>('ALL');
+  const [galleryFilterQuality, setGalleryFilterQuality] = useState<'ALL' | 'Boa' | 'Razoável' | 'Má'>('ALL');
+  const [activeGalleryExampleId, setActiveGalleryExampleId] = useState<string | null>(null);
+  const [dockDraft, setDockDraft] = useState<FloatingDockConfig>(state.floatingDockConfig);
   const [overlaySavedBanner, setOverlaySavedBanner] = useState<string | null>(null);
-  const [previewSurface, setPreviewSurface] = useState<'web' | 'inapp' | 'android'>('web');
+  const [previewSurface, setPreviewSurface] = useState<'web' | 'inapp' | 'android' | 'ios'>('web');
+  const [previewStageTheme, setPreviewStageTheme] = useState<'light' | 'dark'>(state.theme);
+  const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [sandboxPreset, setSandboxPreset] = useState<'verde' | 'amarelo' | 'vermelho'>('verde');
   const [sandboxActionFeedback, setSandboxActionFeedback] = useState<string | null>(null);
   const [sandboxCardClosed, setSandboxCardClosed] = useState(false);
 
+  // Active Trip Navigation / Traffic / Completion Inputs
+  const [navTrafficInput, setNavTrafficInput] = useState<string>('');
+  const [obsPickupKmInput, setObsPickupKmInput] = useState<string>('');
+  const [obsPickupMinInput, setObsPickupMinInput] = useState<string>('');
+  const [obsTripKmInput, setObsTripKmInput] = useState<string>('');
+  const [obsTripMinInput, setObsTripMinInput] = useState<string>('');
+  const [completePanelOpen, setCompletePanelOpen] = useState(false);
+  const [completeGrossInput, setCompleteGrossInput] = useState<string>('');
+  const [completePendingAdjInput, setCompletePendingAdjInput] = useState<string>('0');
+  const [completePendingAdjReason, setCompletePendingAdjReason] = useState<string>(
+    'Suplemento por atraso em trânsito (aguarda confirmação da plataforma)'
+  );
+
+  useEffect(() => {
+    setOverlayDraft(state.overlayConfig);
+  }, [state.overlayConfig]);
+
+  useEffect(() => {
+    setDockDraft(state.floatingDockConfig);
+  }, [state.floatingDockConfig]);
+
+  useEffect(() => {
+    setPreviewStageTheme(state.theme);
+  }, [state.theme]);
+
+  useEffect(() => {
+    if (!state.activeTrip) {
+      setCompletePanelOpen(false);
+      return;
+    }
+    setCompleteGrossInput(String(state.activeTrip.grossEstimatedEur));
+    setNavTrafficInput(
+      state.activeTrip.navigationTrafficEstTotalMin != null
+        ? String(state.activeTrip.navigationTrafficEstTotalMin)
+        : ''
+    );
+    setObsPickupKmInput(
+      state.activeTrip.observedPickupKm != null ? String(state.activeTrip.observedPickupKm) : ''
+    );
+    setObsPickupMinInput(
+      state.activeTrip.observedPickupMin != null ? String(state.activeTrip.observedPickupMin) : ''
+    );
+    setObsTripKmInput(
+      state.activeTrip.observedTripKm != null ? String(state.activeTrip.observedTripKm) : ''
+    );
+    setObsTripMinInput(
+      state.activeTrip.observedTripMin != null ? String(state.activeTrip.observedTripMin) : ''
+    );
+  }, [state.activeTrip?.id]);
+
+  const selectedGalleryExample: ProposalGalleryExample | null = useMemo(
+    () =>
+      activeGalleryExampleId
+        ? PROPOSAL_GALLERY_EXAMPLES.find((g) => g.id === activeGalleryExampleId) ?? null
+        : null,
+    [activeGalleryExampleId]
+  );
+
   const sandboxInput = useMemo<ProposalInput>(() => {
+    if (selectedGalleryExample) {
+      return selectedGalleryExample.input;
+    }
     const basePlat = visibleDriverPlatforms[0]?.id ?? 'uber';
     const baseCat = visibleDriverPlatforms[0]?.categories[0] ?? 'UberX';
+    const baseComm = visibleDriverPlatforms[0]?.commissionPct ?? 25;
     const th = state.autoPilot.thresholds;
 
     if (sandboxPreset === 'verde') {
@@ -276,10 +367,10 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
       const totalKm = pickupKm + tripKm;
       const totalMin = 20;
       const minGross = Math.max(
-        th.minValueEur + 4,
-        totalKm * th.minEurPerKm * 1.35,
-        (totalMin / 60) * th.minEurPerHour * 1.35,
-        18.5
+        th.minValueEur + 6,
+        totalKm * th.minEurPerKm * 1.85,
+        (totalMin / 60) * th.minEurPerHour * 1.85,
+        21.5
       );
       return {
         platformId: basePlat,
@@ -298,18 +389,22 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             : activeMarket.regions[0]?.cities[0] ?? 'Lisboa'
         } → Aeroporto`,
         vehicleCostPerKmEur: 0.12,
+        commissionPct: baseComm,
         calculationBasis: 'total_distance',
         mode: 'Equilibrado',
       };
     }
 
     if (sandboxPreset === 'amarelo') {
-      // Target ~0.90x minEurPerKm (single threshold breach) while passing €/hora, minValue and maxPickupKm
-      const gross = Number(Math.max(th.minValueEur + 1.5, 9.6).toFixed(2));
+      const gross = Number(Math.max(th.minValueEur + 2.5, 11.4).toFixed(2));
       const pickupKm = Number(Math.min(1.6, Math.max(0.6, th.maxPickupKm * 0.55)).toFixed(1));
-      const targetTotalKm = gross / Math.max(0.4, th.minEurPerKm * 0.9);
+      const netApprox = gross * (1 - baseComm / 100) - 1.1;
+      const targetTotalKm = Math.max(6, netApprox / Math.max(0.4, th.minEurPerKm * 0.9));
       const tripKm = Number(Math.max(2.5, targetTotalKm - pickupKm).toFixed(1));
-      const targetTotalMin = Math.max(12, Math.min(th.maxTotalTimeMin - 5, Math.round((gross / Math.max(8, th.minEurPerHour * 1.15)) * 60)));
+      const targetTotalMin = Math.max(
+        12,
+        Math.min(th.maxTotalTimeMin - 5, Math.round((netApprox / Math.max(8, th.minEurPerHour * 1.15)) * 60))
+      );
       const pickupMin = Math.max(3, Math.round(targetTotalMin * 0.28));
       const tripMin = Math.max(6, targetTotalMin - pickupMin);
       return {
@@ -325,6 +420,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
         bonusEur: 0,
         region: `${state.localization.currentLocation.city} · Zona Intermédia`,
         vehicleCostPerKmEur: 0.12,
+        commissionPct: baseComm,
         calculationBasis: 'total_distance',
         mode: 'Equilibrado',
       };
@@ -345,10 +441,19 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
       bonusEur: 0,
       region: 'Periferia Distante (Risco Retorno Vazio)',
       vehicleCostPerKmEur: 0.12,
+      commissionPct: baseComm,
       calculationBasis: 'total_distance',
       mode: 'Equilibrado',
     };
-  }, [sandboxPreset, visibleDriverPlatforms, state.localization.currentLocation.city, state.autoPilot.thresholds]);
+  }, [
+    selectedGalleryExample,
+    sandboxPreset,
+    visibleDriverPlatforms,
+    state.localization.currentLocation.city,
+    state.localization.currentLocation.countryCode,
+    activeMarket,
+    state.autoPilot.thresholds,
+  ]);
 
   const sandboxPackage = useMemo(
     () =>
@@ -528,11 +633,8 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
 
           <button
             type="button"
-            onClick={() => {
-              completeActiveTripAction(sess.grossEstimatedEur, 0, 0);
-              setCancelPanelOpen(false);
-            }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold shadow-xs transition-colors"
+            onClick={() => setCompletePanelOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold shadow-xs transition-colors cursor-pointer"
           >
             <CheckCircle2 className="w-3.5 h-3.5" />
             Concluir Viagem (€{sess.grossEstimatedEur.toFixed(2)})
@@ -541,11 +643,246 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           <button
             type="button"
             onClick={() => setCancelPanelOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer"
           >
             Registar Cancelamento / No-Show
           </button>
         </div>
+
+        {/* Navigation Launcher (Waze / Google Maps) + Observed Traffic & Post-Acceptance Actuals */}
+        <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+          {(() => {
+            const targetAddress =
+              sess.phase === 'Em deslocação para recolha'
+                ? sess.pickupAddress || sess.pickupZone
+                : sess.destinationAddress || sess.destinationZone || sess.pickupAddress || sess.pickupZone;
+            const wazePlan = buildWazeNavigationLaunch(targetAddress, 'Waze');
+            const gmapsPlan = buildWazeNavigationLaunch(targetAddress, 'Google Maps');
+            return (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                      <Navigation className="w-3.5 h-3.5 text-blue-600" />
+                      Navegação (Waze / Maps) &amp; Percurso Efetivo com Trânsito
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Estimativa antes da aceitação: {(sess.pickupDistanceKm + sess.tripDistanceKm).toFixed(1)} km ·{' '}
+                      {sess.pickupTimeEstMin + sess.tripTimeEstMin} min ({sess.pickupTimeEstMin}m recolha +{' '}
+                      {sess.tripTimeEstMin}m viagem)
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <a
+                      href={wazePlan.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        recordActiveTripNavigation({
+                          navigationAppUsed: 'Waze',
+                          navigationStartedAtIso: new Date().toISOString(),
+                        })
+                      }
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Abrir no Waze
+                    </a>
+                    <a
+                      href={gmapsPlan.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() =>
+                        recordActiveTripNavigation({
+                          navigationAppUsed: 'Google Maps',
+                          navigationStartedAtIso: new Date().toISOString(),
+                        })
+                      }
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-semibold"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Google Maps
+                    </a>
+                  </div>
+                </div>
+                <p className="text-[10px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-lg px-2.5 py-1.5">
+                  {wazePlan.honestyNote}
+                </p>
+              </>
+            );
+          })()}
+
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+            <div>
+              <label htmlFor="act-traffic-min" className="block text-[10px] text-slate-500 mb-0.5">
+                ETA c/ trânsito (min)
+              </label>
+              <input
+                id="act-traffic-min"
+                type="number"
+                min={1}
+                placeholder="Ex: 32"
+                value={navTrafficInput}
+                onChange={(e) => setNavTrafficInput(e.target.value)}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="act-obs-pkm" className="block text-[10px] text-slate-500 mb-0.5">
+                Recolha real (km)
+              </label>
+              <input
+                id="act-obs-pkm"
+                type="number"
+                step="0.1"
+                min={0}
+                placeholder={String(sess.pickupDistanceKm)}
+                value={obsPickupKmInput}
+                onChange={(e) => setObsPickupKmInput(e.target.value)}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="act-obs-pmin" className="block text-[10px] text-slate-500 mb-0.5">
+                Recolha real (min)
+              </label>
+              <input
+                id="act-obs-pmin"
+                type="number"
+                min={0}
+                placeholder={String(sess.pickupTimeEstMin)}
+                value={obsPickupMinInput}
+                onChange={(e) => setObsPickupMinInput(e.target.value)}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="act-obs-tkm" className="block text-[10px] text-slate-500 mb-0.5">
+                Viagem real (km)
+              </label>
+              <input
+                id="act-obs-tkm"
+                type="number"
+                step="0.1"
+                min={0}
+                placeholder={String(sess.tripDistanceKm)}
+                value={obsTripKmInput}
+                onChange={(e) => setObsTripKmInput(e.target.value)}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div>
+              <label htmlFor="act-obs-tmin" className="block text-[10px] text-slate-500 mb-0.5">
+                Viagem real (min)
+              </label>
+              <input
+                id="act-obs-tmin"
+                type="number"
+                min={0}
+                placeholder={String(sess.tripTimeEstMin)}
+                value={obsTripMinInput}
+                onChange={(e) => setObsTripMinInput(e.target.value)}
+                className="w-full px-2 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={() =>
+                  recordActiveTripNavigation({
+                    navigationTrafficEstTotalMin: navTrafficInput ? Number(navTrafficInput) : null,
+                    observedPickupKm: obsPickupKmInput ? Number(obsPickupKmInput) : null,
+                    observedPickupMin: obsPickupMinInput ? Number(obsPickupMinInput) : null,
+                    observedTripKm: obsTripKmInput ? Number(obsTripKmInput) : null,
+                    observedTripMin: obsTripMinInput ? Number(obsTripMinInput) : null,
+                  })
+                }
+                className="w-full py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-blue-700 text-white font-semibold cursor-pointer"
+              >
+                Guardar Trânsito / Real
+              </button>
+            </div>
+          </div>
+          {sess.navigationTrafficEstTotalMin && (
+            <p className="text-[11px] font-semibold text-blue-700 dark:text-blue-400">
+              ETA navegação registado: {sess.navigationTrafficEstTotalMin} min (vs{' '}
+              {sess.pickupTimeEstMin + sess.tripTimeEstMin} min estimados antes da aceitação ·{' '}
+              {activeMarket.currencySymbol}
+              {((sess.netEstimatedEur / Math.max(1, sess.navigationTrafficEstTotalMin)) * 60).toFixed(2)}
+              /h projetado sem assumir compensação automática).
+            </p>
+          )}
+        </div>
+
+        {completePanelOpen && (
+          <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-blue-200 dark:border-blue-800 space-y-3">
+            <p className="font-bold text-slate-900 dark:text-white">
+              Fechar Viagem: Valor Inicial vs Valor Confirmado &amp; Ajuste por Atraso
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div>
+                <label htmlFor="comp-gross" className="block text-[10px] text-slate-500 mb-0.5">
+                  Valor confirmado pela plataforma ({activeMarket.currencySymbol})
+                </label>
+                <input
+                  id="comp-gross"
+                  type="number"
+                  step="0.1"
+                  value={completeGrossInput}
+                  onChange={(e) => setCompleteGrossInput(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label htmlFor="comp-pend" className="block text-[10px] text-slate-500 mb-0.5">
+                  Ajuste atraso pendente ({activeMarket.currencySymbol} — não entra nos ganhos reais)
+                </label>
+                <input
+                  id="comp-pend"
+                  type="number"
+                  step="0.1"
+                  value={completePendingAdjInput}
+                  onChange={(e) => setCompletePendingAdjInput(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label htmlFor="comp-reason" className="block text-[10px] text-slate-500 mb-0.5">
+                  Motivo do pedido de ajuste
+                </label>
+                <input
+                  id="comp-reason"
+                  type="text"
+                  value={completePendingAdjReason}
+                  onChange={(e) => setCompletePendingAdjReason(e.target.value)}
+                  className="w-full px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const g = Number(completeGrossInput) || sess.grossEstimatedEur;
+                  const pAdj = Number(completePendingAdjInput) || 0;
+                  completeActiveTripAction(g, 0, 0, {
+                    pendingAdjustmentEur: pAdj > 0 ? pAdj : undefined,
+                    pendingAdjustmentReason: completePendingAdjReason,
+                  });
+                  setCompletePanelOpen(false);
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold cursor-pointer"
+              >
+                Confirmar Conclusão e Reconciliar IA
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompletePanelOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        )}
 
         {cancelPanelOpen && (
           <div className="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900 space-y-3">
@@ -583,7 +920,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               />
               <input
                 type="text"
-                aria-label="Motivo do cancelamento"
+                aria-label="Motivo do estado"
                 value={cancelReason}
                 onChange={(e) => setCancelReason(e.target.value)}
                 className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
@@ -726,7 +1063,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-600 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
               >
                 <Gauge className="w-4 h-4" />
-                <span>Tacógrafo</span>
+                <span>{translateUi(state.localization.languageCode, 'nav_tacho')}</span>
               </button>
               <button
                 type="button"
@@ -821,9 +1158,12 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
         </Card>
 
         {/* Primary KPI Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div
+          data-guide-target="driver-kpi-grid"
+          className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4"
+        >
           <MetricCard
-            label="Ganhos Brutos (Período)"
+            label={translateUi(state.localization.languageCode, 'gross_earnings')}
             value={formatMoney(metrics.gross, activeMarket.currency)}
             subtext={`${filteredTrips.length} viagens · exclui canceladas`}
             explanation="Soma total das tarifas brutas, gorjetas reconciliadas e bónus das viagens concluídas."
@@ -833,7 +1173,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             drillDownLabel="Ver histórico de viagens"
           />
           <MetricCard
-            label="Líquido Estimado"
+            label={translateUi(state.localization.languageCode, 'net_estimated')}
             value={formatMoney(metrics.net, activeMarket.currency)}
             subtext={`Após comissões e ${formatMoney(metrics.expensesTotal, activeMarket.currency)} custos`}
             explanation="Estimativa real após comissões das plataformas, custo energético/manutenção e despesas lançadas."
@@ -1102,32 +1442,389 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   // CONFIGURADOR & SIMULADOR ISOLADO DE CARTÕES FLUTUANTES
   // ==========================================================
   if (resolvedTab === 'cartoes-flutuantes') {
-    const visibleSet = new Set(overlayDraft.visibleMetrics);
+    const baseProfiles =
+      overlayDraft.classificationProfiles ?? createDefaultClassificationProfiles();
+    const activeTierDraft =
+      baseProfiles[editingTier] ?? resolveFloatingTierConfig(overlayDraft, editingTier);
+
+    const updateActiveTier = (
+      updater: (cur: FloatingCardTierStyleConfig) => FloatingCardTierStyleConfig
+    ) => {
+      setOverlayDraft((d) => {
+        const profiles = d.classificationProfiles ?? createDefaultClassificationProfiles();
+        const cur = profiles[editingTier] ?? resolveFloatingTierConfig(d, editingTier);
+        const updated = updater(cur);
+        return {
+          ...d,
+          classificationProfiles: {
+            ...profiles,
+            [editingTier]: updated,
+          },
+          ...(editingTier === 'verde'
+            ? {
+                bgColor: updated.bgColor,
+                textColor: updated.textColor,
+                borderColor: updated.borderColor,
+                borderWidthPx: updated.borderWidthPx,
+                opacityPercent: updated.opacityPercent,
+                brightnessAdjust: updated.brightnessAdjust,
+                colorIntensityPct: updated.colorIntensityPct,
+                fontFamily: updated.fontFamily,
+                fontSizePx: updated.fontSizePx,
+                widthPercent: updated.widthPercent,
+                layoutMode: updated.layoutMode,
+                position: updated.position,
+                marginOffsetPx: updated.marginOffsetPx,
+                visibleMetrics: [...updated.visibleMetrics],
+              }
+            : {}),
+        };
+      });
+    };
+
+    const visibleSet = new Set(activeTierDraft.visibleMetrics);
     const orderedMetrics: FloatingMetricKey[] = [
-      ...overlayDraft.visibleMetrics,
+      ...activeTierDraft.visibleMetrics,
       ...ALL_FLOATING_METRICS.filter((k) => !visibleSet.has(k)),
     ];
 
+    const ALL_POSITIONS: Array<{ id: FloatingCardPosition; label: string; hint: string }> = [
+      { id: 'Topo esquerdo', label: 'Topo esquerdo', hint: 'Canto superior esquerdo seguro' },
+      { id: 'Centro superior', label: 'Centro superior', hint: 'Abaixo da barra de estado' },
+      { id: 'Topo direito', label: 'Topo direito', hint: 'Canto superior direito seguro' },
+      { id: 'Lateral esquerda', label: 'Lateral esquerda', hint: 'Encostado à esquerda' },
+      { id: 'Centro', label: 'Centro', hint: 'Destaque central em ecrã' },
+      { id: 'Lateral direita', label: 'Lateral direita', hint: 'Encostado à direita' },
+      { id: 'Inferior esquerdo', label: 'Inferior esquerdo', hint: 'Canto inferior esquerdo seguro' },
+      { id: 'Centro inferior', label: 'Centro inferior', hint: 'Acima da barra de navegação' },
+      { id: 'Inferior direito', label: 'Inferior direito', hint: 'Canto inferior direito seguro' },
+    ];
+
+    const normalizedTierPos = normalizeFloatingCardPosition(activeTierDraft.position);
+    const safeTierMargin = Math.max(4, Math.min(36, activeTierDraft.marginOffsetPx ?? 12));
+
     const moveMetric = (key: FloatingMetricKey, dir: -1 | 1) => {
-      const idx = overlayDraft.visibleMetrics.indexOf(key);
+      const idx = activeTierDraft.visibleMetrics.indexOf(key);
       if (idx === -1) return;
       const nextIdx = idx + dir;
-      if (nextIdx < 0 || nextIdx >= overlayDraft.visibleMetrics.length) return;
-      const copy = [...overlayDraft.visibleMetrics];
+      if (nextIdx < 0 || nextIdx >= activeTierDraft.visibleMetrics.length) return;
+      const copy = [...activeTierDraft.visibleMetrics];
       [copy[idx], copy[nextIdx]] = [copy[nextIdx], copy[idx]];
-      setOverlayDraft((d) => ({ ...d, visibleMetrics: copy }));
+      updateActiveTier((cur) => ({ ...cur, visibleMetrics: copy }));
     };
 
     const toggleMetric = (key: FloatingMetricKey) => {
-      const exists = overlayDraft.visibleMetrics.includes(key);
-      if (exists && overlayDraft.visibleMetrics.length <= 2) return;
-      setOverlayDraft((d) => ({
-        ...d,
+      const exists = activeTierDraft.visibleMetrics.includes(key);
+      updateActiveTier((cur) => ({
+        ...cur,
         visibleMetrics: exists
-          ? d.visibleMetrics.filter((k) => k !== key)
-          : [...d.visibleMetrics, key],
+          ? cur.visibleMetrics.filter((k) => k !== key)
+          : [...cur.visibleMetrics, key],
       }));
     };
+
+    const getStageAlignmentClasses = (pos: FloatingCardPosition): string => {
+      switch (pos) {
+        case 'Topo esquerdo':
+          return 'items-start justify-start';
+        case 'Centro superior':
+          return 'items-center justify-start';
+        case 'Topo direito':
+          return 'items-end justify-start';
+        case 'Lateral esquerda':
+          return 'items-start justify-center';
+        case 'Centro':
+          return 'items-center justify-center';
+        case 'Lateral direita':
+          return 'items-end justify-center';
+        case 'Inferior esquerdo':
+          return 'items-start justify-end';
+        case 'Centro inferior':
+          return 'items-center justify-end';
+        case 'Inferior direito':
+          return 'items-end justify-end';
+        default:
+          return 'items-center justify-start';
+      }
+    };
+
+    const isMobileFrame = previewSurface === 'android' || previewSurface === 'ios';
+
+    const stageClassification = sandboxPackage.analysis.classification;
+    const stageActiveTier =
+      baseProfiles[stageClassification] ?? resolveFloatingTierConfig(overlayDraft, stageClassification);
+    const stageNormalizedPos = normalizeFloatingCardPosition(stageActiveTier.position);
+    const stageSafeMargin = Math.max(4, Math.min(36, stageActiveTier.marginOffsetPx ?? 12));
+
+    const filteredGallery = PROPOSAL_GALLERY_EXAMPLES.filter((ex) => {
+      if (galleryFilterPlatform !== 'ALL' && ex.platformId !== galleryFilterPlatform) return false;
+      if (galleryFilterQuality !== 'ALL' && ex.qualityTier !== galleryFilterQuality) return false;
+      return true;
+    });
+
+    const renderDeviceStage = (inModal = false) => {
+      const stageThemeIsDark = previewStageTheme === 'dark';
+      const cardStageWidthStyle = isMobileFrame
+        ? `${Math.max(55, Math.min(100, stageActiveTier.widthPercent))}%`
+        : `${Math.max(250, Math.round((stageActiveTier.widthPercent / 100) * 430))}px`;
+
+      return (
+        <div
+          className="space-y-3"
+          data-guide-target={inModal ? undefined : 'fc-preview-stage'}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[10px] font-bold">
+                {selectedGalleryExample
+                  ? 'EXEMPLO ANONIMIZADO DE DEMONSTRAÇÃO'
+                  : 'DADOS DE PRÉ-VISUALIZAÇÃO (SANDBOX)'}
+              </span>
+              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                Perfil: <strong>{stageActiveTier.customLabel}</strong> ({stageActiveTier.operationalMeaning}) · Posição:{' '}
+                <strong>{stageNormalizedPos}</strong> · Margem: <strong>{stageSafeMargin}px</strong>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPreviewStageTheme((t) => (t === 'light' ? 'dark' : 'light'))}
+                className="px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-[11px] font-semibold cursor-pointer"
+              >
+                Tema: {stageThemeIsDark ? 'Escuro' : 'Claro'}
+              </button>
+              <SegmentedFilter
+                value={selectedGalleryExample ? '__gallery__' : sandboxPreset}
+                onChange={(v) => {
+                  setActiveGalleryExampleId(null);
+                  setSandboxPreset(v as 'verde' | 'amarelo' | 'vermelho');
+                  setEditingTier(v as ProposalClassification);
+                  setSandboxCardClosed(false);
+                  setSandboxActionFeedback(null);
+                }}
+                options={[
+                  { id: 'verde', label: baseProfiles.verde.customLabel || 'Favorável' },
+                  { id: 'amarelo', label: baseProfiles.amarelo.customLabel || 'Atenção' },
+                  { id: 'vermelho', label: baseProfiles.vermelho.customLabel || 'Evitar' },
+                ]}
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <SegmentedFilter
+              value={previewSurface}
+              onChange={(v) => setPreviewSurface(v as typeof previewSurface)}
+              options={[
+                { id: 'web', label: 'Web Preview' },
+                { id: 'inapp', label: 'Aplicação AIVAD' },
+                { id: 'android', label: 'Android — simulação visual' },
+                { id: 'ios', label: 'iPhone — simulação visual' },
+              ]}
+            />
+            {selectedGalleryExample && (
+              <button
+                type="button"
+                onClick={() => setActiveGalleryExampleId(null)}
+                className="text-[11px] font-semibold text-blue-700 dark:text-blue-400 underline cursor-pointer"
+              >
+                Sair do exemplo ({selectedGalleryExample.platformId.toUpperCase()})
+              </button>
+            )}
+          </div>
+
+          {inModal && (
+            <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase text-slate-500 mr-1">Mover Posição ao Vivo:</span>
+                {ALL_POSITIONS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => {
+                      setEditingTier(stageClassification);
+                      setOverlayDraft((d) => {
+                        const profs = d.classificationProfiles ?? createDefaultClassificationProfiles();
+                        const cur = profs[stageClassification] ?? resolveFloatingTierConfig(d, stageClassification);
+                        return {
+                          ...d,
+                          classificationProfiles: {
+                            ...profs,
+                            [stageClassification]: { ...cur, position: p.id },
+                          },
+                        };
+                      });
+                    }}
+                    className={`px-2 py-1 rounded-md text-[10px] font-semibold border cursor-pointer ${
+                      stageNormalizedPos === p.id
+                        ? 'bg-blue-700 text-white border-blue-700'
+                        : 'bg-white dark:bg-slate-950 border-slate-300 dark:border-slate-700 hover:border-blue-500'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {previewSurface === 'android' && (
+            <p className="text-[11px] px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200">
+              <strong>Android — simulação visual:</strong> o overlay real sobre apps externas (Uber/Bolt) requer permissão nativa{' '}
+              <code>SYSTEM_ALERT_WINDOW</code> na build nativa Android. Este palco demonstra posicionamento e estilo contextual reais.
+            </p>
+          )}
+          {previewSurface === 'ios' && (
+            <p className="text-[11px] px-3 py-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200">
+              <strong>iPhone (iOS) — simulação visual intra-app:</strong> a Apple bloqueia janelas flutuantes sobre aplicações de terceiros no iOS. Em iPhone, o cartão opera dentro do AIVAD complementado pelo copiloto AIVAD Voice.
+            </p>
+          )}
+
+          {/* Contextual Device Frame Stage (Simulated Driving Map / Ride App Backdrop) */}
+          <div
+            data-testid="floating-preview-device-stage"
+            className={`mx-auto rounded-3xl border-2 overflow-hidden flex flex-col shadow-inner transition-colors ${
+              isMobileFrame
+                ? inModal
+                  ? 'max-w-[390px] w-full min-h-[540px]'
+                  : 'max-w-[390px] w-full min-h-[480px]'
+                : inModal
+                  ? 'w-full min-h-[520px]'
+                  : 'w-full min-h-[420px]'
+            } ${
+              stageThemeIsDark
+                ? 'bg-[#080E1C] border-slate-700 text-slate-100'
+                : 'bg-slate-100 border-slate-300 text-slate-900'
+            }`}
+          >
+            {/* Safe-Area Simulated Device Top Bar */}
+            <div
+              className={`px-4 py-2 border-b flex items-center justify-between gap-2 text-[11px] font-mono-tabular shrink-0 ${
+                stageThemeIsDark
+                  ? 'bg-[#0F182B] border-slate-800 text-slate-300'
+                  : 'bg-white border-slate-200 text-slate-600'
+              }`}
+            >
+              <span className="truncate">
+                {previewSurface === 'ios'
+                  ? '09:41 · iPhone Safe-Area (Intra-App)'
+                  : previewSurface === 'android'
+                    ? '09:41 · Android TVDE (Simulação Visual)'
+                    : `AIVAD ${previewSurface === 'inapp' ? 'App' : 'Web'} Viewport · ${sandboxInput.platformId.toUpperCase()}`}
+              </span>
+              <span className="whitespace-nowrap">{isMobileFrame ? 'Status Bar Protegida' : 'Mapa Operacional Simulado'}</span>
+            </div>
+
+            {/* Simulated Realistic Ride-App Map Backdrop + Positioned Floating Card */}
+            <div
+              data-testid="floating-stage-usable-area"
+              className={`relative flex-1 flex flex-col ${getStageAlignmentClasses(stageNormalizedPos)} overflow-hidden`}
+              style={{ padding: `${stageSafeMargin}px` }}
+            >
+              {/* Subtle simulated map backdrop behind card so opacity/transparency & position stand out cleanly */}
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 pointer-events-none select-none overflow-hidden"
+              >
+                <svg className="w-full h-full opacity-35" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <pattern id="aivad-grid-bg" width="48" height="48" patternUnits="userSpaceOnUse">
+                      <path
+                        d="M 48 0 L 0 0 0 48"
+                        fill="none"
+                        stroke={stageThemeIsDark ? '#1E3A5F' : '#CBD5E1'}
+                        strokeWidth="1"
+                      />
+                    </pattern>
+                  </defs>
+                  <rect width="800" height="500" fill="url(#aivad-grid-bg)" />
+                  <path
+                    d="M 60 420 Q 260 300 410 245 T 730 95"
+                    fill="none"
+                    stroke={sandboxInput.platformId === 'bolt' ? '#059669' : '#2563EB'}
+                    strokeWidth="6"
+                    strokeDasharray="10 6"
+                    strokeLinecap="round"
+                  />
+                  <circle cx="410" cy="245" r="10" fill="#10B981" />
+                  <circle cx="730" cy="95" r="10" fill="#E11D48" />
+                </svg>
+                <div className="absolute inset-x-4 bottom-3 flex items-center justify-between text-[10px] opacity-60 font-mono-tabular">
+                  <span>Zona: {sandboxInput.region} (Fundo ilustrativo)</span>
+                  <span>
+                    {sandboxInput.pickupDistanceKm} km recolha + {sandboxInput.tripDistanceKm} km viagem
+                  </span>
+                </div>
+              </div>
+
+              {sandboxCardClosed ? (
+                <div className="relative z-10 m-auto text-center py-8 px-4 rounded-2xl bg-white/90 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700 space-y-2 shadow-md">
+                  <p className="text-slate-600 dark:text-slate-300 font-medium">Cartão simulado fechado.</p>
+                  <button
+                    type="button"
+                    onClick={() => setSandboxCardClosed(false)}
+                    className="px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold cursor-pointer"
+                  >
+                    Reabrir Simulação
+                  </button>
+                </div>
+              ) : (
+                <div
+                  data-testid="floating-stage-positioned-wrapper"
+                  className="relative z-10 max-w-full transition-all duration-200"
+                  style={{ width: cardStageWidthStyle }}
+                >
+                  <DynamicFloatingProposalCard
+                    overlayConfig={overlayDraft}
+                    tierOverride={stageActiveTier}
+                    proposalInput={sandboxInput}
+                    analysis={sandboxPackage.analysis}
+                    recommendedAction={sandboxPackage.recommendedAction}
+                    confidencePct={sandboxPackage.confidencePct}
+                    confidenceStatus={sandboxPackage.confidenceStatus}
+                    zoneAlerts={sandboxZoneAlerts}
+                    isPreviewSurface={false}
+                    disableAutoCenter
+                    currencySymbol={activeMarket.currencySymbol}
+                    forceThemeMode={previewStageTheme}
+                    onAccept={() =>
+                      setSandboxActionFeedback(
+                        `Demonstração: Ação "Aceitar" testada no perfil "${stageActiveTier.customLabel}" (${stageActiveTier.operationalMeaning}) — 0 alterações no histórico real.`
+                      )
+                    }
+                    onReject={() =>
+                      setSandboxActionFeedback(
+                        `Demonstração: Ação "Recusar" testada no perfil "${stageActiveTier.customLabel}" — sem impacto nas previsões.`
+                      )
+                    }
+                    onClose={() => setSandboxCardClosed(true)}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Safe-Area Simulated Device Bottom Bar */}
+            <div
+              className={`px-4 py-2 border-t flex items-center justify-between text-[10px] font-semibold shrink-0 ${
+                stageThemeIsDark
+                  ? 'bg-[#0F182B] border-slate-800 text-slate-400'
+                  : 'bg-white border-slate-200 text-slate-500'
+              }`}
+            >
+              <span>Barra de Navegação Protegida (Safe-Area Bottom)</span>
+              <span>Margem {stageSafeMargin}px respeitada</span>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const TIER_TABS: Array<{ id: ProposalClassification; hint: string }> = [
+      { id: 'verde', hint: 'Significado interno: Favorável' },
+      { id: 'amarelo', hint: 'Significado interno: Atenção' },
+      { id: 'vermelho', hint: 'Significado interno: Evitar' },
+    ];
 
     return (
       <div className="space-y-6">
@@ -1135,19 +1832,19 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           <Card className="p-4 space-y-1.5 border-emerald-200 dark:border-emerald-800/70 bg-emerald-50/50 dark:bg-emerald-950/20">
             <StatusLabel tone="success" text="1. Cartão Intra-App Web / PWA · Operacional Agora" />
             <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
-              Funciona imediatamente neste navegador e PWA: avalia propostas, calcula líquido e anima o semáforo Verde, Amarelo e Vermelho dentro do AIVAD.
+              Funciona imediatamente neste navegador e PWA com 3 perfis totalmente independentes, 16 métricas explicadas e transparência rigorosa de dados indisponíveis.
             </p>
           </Card>
           <Card className="p-4 space-y-1.5 border-blue-200 dark:border-blue-800/70 bg-blue-50/50 dark:bg-blue-950/20">
-            <StatusLabel tone="info" text="2. Overlay Nativo Android · Preparado para Windsurf" />
+            <StatusLabel tone="info" text="2. Android — Simulação Visual (Overlay Nativo Pendente)" />
             <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
-              Para flutuar sobre o ecrã da Uber ou Bolt, o Android exige permissão nativa <code className="font-mono">SYSTEM_ALERT_WINDOW</code> na compilação nativa Android.
+              O overlay real sobre Uber/Bolt exige permissão <code className="font-mono">SYSTEM_ALERT_WINDOW</code> na build nativa Android. Este palco valida layout, luminosidade, opacidade e posição segura.
             </p>
           </Card>
           <Card className="p-4 space-y-1.5 border-amber-200 dark:border-amber-800/70 bg-amber-50/50 dark:bg-amber-950/20">
-            <StatusLabel tone="warning" text="3. Dispositivos iOS · Restrição Oficial Apple" />
+            <StatusLabel tone="warning" text="3. iPhone (iOS) — Restrição Oficial Apple" />
             <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
-              O iOS não permite janelas flutuantes sobre aplicações de terceiros; em iPhone o motorista utiliza o cartão intra-app e alertas sonoros AIVAD Voice.
+              O iOS não permite janelas flutuantes sobre apps de terceiros; em iPhone o motorista opera intra-app com suporte de voz AIVAD Voice.
             </p>
           </Card>
         </div>
@@ -1160,31 +1857,99 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-base font-bold flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-                Configuração do Cartão Flutuante
+                3 Classificações Independentes do Cartão Flutuante
               </h2>
               <button
                 type="button"
                 onClick={() => {
-                  setOverlayDraft(SEED_OVERLAY_CONFIG);
-                  updateOverlayConfig(SEED_OVERLAY_CONFIG);
-                  setOverlaySavedBanner('Configuração reposta para os valores padrão de fábrica.');
+                  const defaults = createDefaultClassificationProfiles();
+                  const nextOv = { ...SEED_OVERLAY_CONFIG, classificationProfiles: defaults };
+                  setOverlayDraft(nextOv);
+                  resetFloatingTierConfigs();
+                  setOverlaySavedBanner('Os 3 perfis independentes foram repostos para o padrão de fábrica.');
                 }}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" /> Repor Padrão
               </button>
             </div>
 
-            {/* Capture Profiles & Compact/Expanded Mode (Comando 6 §5) */}
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-bold text-slate-800 dark:text-slate-200">
-                  Perfis Rápidos de Condução & Captura
+            {/* 3 Independent Classification Profile Selector */}
+            <div className="space-y-2">
+              <p className="font-bold text-slate-900 dark:text-white">
+                Selecione a Classificação a Personalizar (cada perfil guarda cores, brilho, métricas e posição próprios)
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {TIER_TABS.map((t) => {
+                  const prof = baseProfiles[t.id];
+                  const isSel = editingTier === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      data-testid={`tier-tab-${t.id}`}
+                      onClick={() => {
+                        setEditingTier(t.id);
+                        setActiveGalleryExampleId(null);
+                        setSandboxPreset(t.id);
+                        setSandboxCardClosed(false);
+                      }}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                        isSel
+                          ? 'ring-2 ring-blue-600 border-blue-600 bg-blue-50/70 dark:bg-blue-950/40'
+                          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 hover:border-blue-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-extrabold truncate text-slate-900 dark:text-white">
+                          {prof.customLabel || prof.operationalMeaning}
+                        </span>
+                        <span
+                          className="w-4 h-4 rounded-md border shrink-0"
+                          style={{
+                            backgroundColor: prof.bgColor,
+                            borderColor: prof.borderColor,
+                            borderWidth: '2px',
+                          }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                        Papel: {prof.operationalMeaning}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/70 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800">
+                <strong>{activeTierDraft.operationalMeaning}:</strong> {TIER_MEANING_DESCRIPTIONS[editingTier]}
+              </p>
+            </div>
+
+            {/* Editable Custom Classification Name (Decoupled from Color) */}
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="tier-custom-label" className="block font-bold mb-1">
+                  Nome Apresentado neste Nível (livre)
+                </label>
+                <input
+                  id="tier-custom-label"
+                  type="text"
+                  maxLength={28}
+                  placeholder="Ex: Azul Top, Moderada, Fraca..."
+                  value={activeTierDraft.customLabel}
+                  onChange={(e) => updateActiveTier((c) => ({ ...c, customLabel: e.target.value }))}
+                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-semibold"
+                />
+                <span className="text-[10px] text-slate-500 mt-1 block">
+                  A classificação interna continua <strong>{activeTierDraft.operationalMeaning}</strong> independentemente da cor ou nome.
                 </span>
+              </div>
+              <div>
+                <span className="block font-bold mb-1">Modo de Cartão neste Nível</span>
                 <SegmentedFilter
-                  value={overlayDraft.layoutMode ?? 'expandido'}
+                  value={activeTierDraft.layoutMode}
                   onChange={(mode) =>
-                    setOverlayDraft((d) => ({ ...d, layoutMode: mode as 'compacto' | 'expandido' }))
+                    updateActiveTier((c) => ({ ...c, layoutMode: mode as 'compacto' | 'expandido' }))
                   }
                   options={[
                     { id: 'compacto', label: 'Modo Compacto' },
@@ -1192,157 +1957,474 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   ]}
                 />
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {(Object.keys(FLOATING_CAPTURE_PROFILE_PRESETS) as FloatingCardProfileId[]).map((profId) => {
-                  const preset = FLOATING_CAPTURE_PROFILE_PRESETS[profId];
-                  const isActive = overlayDraft.captureProfile === profId;
+            </div>
+
+            {/* Independent Colors, Brightness (Clarear/Escurecer), Saturation, Opacity, Typography, Dimensions */}
+            <div
+              data-guide-target="fc-colors"
+              className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                  Cores, Brilho, Intensidade, Transparência &amp; Dimensões ({activeTierDraft.customLabel || activeTierDraft.operationalMeaning})
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div>
+                  <label htmlFor="fl-bg" className="block font-medium mb-1">
+                    Cor de Fundo ({activeTierDraft.bgColor})
+                  </label>
+                  <input
+                    id="fl-bg"
+                    type="color"
+                    value={activeTierDraft.bgColor}
+                    onChange={(e) => {
+                      const nextBg = e.target.value;
+                      updateActiveTier((cur) => {
+                        const upperPrev = cur.textColor.toUpperCase();
+                        const bgIsDark = isDarkHexColor(nextBg);
+                        let nextText = cur.textColor;
+                        if (bgIsDark && (upperPrev === '#0F172A' || upperPrev === '#1E293B' || upperPrev === '#451A03' || upperPrev === '#4C0519')) {
+                          nextText = '#FFFFFF';
+                        } else if (!bgIsDark && (upperPrev === '#FFFFFF' || upperPrev === '#F8FAFC')) {
+                          nextText = '#0F172A';
+                        }
+                        return { ...cur, bgColor: nextBg, textColor: nextText };
+                      });
+                    }}
+                    className="w-full h-9 rounded border border-slate-300 dark:border-slate-700 cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="fl-txt" className="block font-medium mb-1">
+                    Cor do Texto ({activeTierDraft.textColor})
+                  </label>
+                  <input
+                    id="fl-txt"
+                    type="color"
+                    value={activeTierDraft.textColor}
+                    onChange={(e) => updateActiveTier((c) => ({ ...c, textColor: e.target.value }))}
+                    className="w-full h-9 rounded border border-slate-300 dark:border-slate-700 cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="fl-brd" className="block font-medium mb-1">
+                    Cor da Borda ({activeTierDraft.borderColor})
+                  </label>
+                  <input
+                    id="fl-brd"
+                    type="color"
+                    value={activeTierDraft.borderColor}
+                    onChange={(e) => updateActiveTier((c) => ({ ...c, borderColor: e.target.value }))}
+                    className="w-full h-9 rounded border border-slate-300 dark:border-slate-700 cursor-pointer"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor="fl-bright" className="font-medium">
+                      Luminosidade: Escurecer ↔ Clarear ({activeTierDraft.brightnessAdjust > 0 ? `+${activeTierDraft.brightnessAdjust}` : activeTierDraft.brightnessAdjust}%)
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateActiveTier((c) => ({
+                            ...c,
+                            brightnessAdjust: Math.max(-35, (c.brightnessAdjust ?? 0) - 8),
+                          }))
+                        }
+                        className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px] font-semibold cursor-pointer"
+                      >
+                        Escurecer
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateActiveTier((c) => ({ ...c, brightnessAdjust: 0 }))}
+                        className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px] cursor-pointer"
+                      >
+                        0%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateActiveTier((c) => ({
+                            ...c,
+                            brightnessAdjust: Math.min(35, (c.brightnessAdjust ?? 0) + 8),
+                          }))
+                        }
+                        className="px-1.5 py-0.5 rounded border border-slate-300 dark:border-slate-700 text-[10px] font-semibold cursor-pointer"
+                      >
+                        Clarear
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    id="fl-bright"
+                    type="range"
+                    min={-35}
+                    max={35}
+                    value={activeTierDraft.brightnessAdjust ?? 0}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, brightnessAdjust: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-sat" className="block font-medium mb-1">
+                    Intensidade da Cor ({activeTierDraft.colorIntensityPct ?? 100}%)
+                  </label>
+                  <input
+                    id="fl-sat"
+                    type="range"
+                    min={25}
+                    max={175}
+                    value={activeTierDraft.colorIntensityPct ?? 100}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, colorIntensityPct: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-opac" className="block font-medium mb-1">
+                    Transparência / Opacidade ({activeTierDraft.opacityPercent}%)
+                  </label>
+                  <input
+                    id="fl-opac"
+                    type="range"
+                    min={45}
+                    max={100}
+                    value={activeTierDraft.opacityPercent}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, opacityPercent: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-brd-w" className="block font-medium mb-1">
+                    Espessura Borda ({activeTierDraft.borderWidthPx}px)
+                  </label>
+                  <input
+                    id="fl-brd-w"
+                    type="range"
+                    min={1}
+                    max={6}
+                    value={activeTierDraft.borderWidthPx}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, borderWidthPx: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-font" className="block font-medium mb-1">Tipografia</label>
+                  <select
+                    id="fl-font"
+                    value={activeTierDraft.fontFamily}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({
+                        ...c,
+                        fontFamily: e.target.value as 'Sans' | 'Display' | 'Mono',
+                      }))
+                    }
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    <option value="Sans">Sans (Inter)</option>
+                    <option value="Display">Display (Destaque)</option>
+                    <option value="Mono">Mono Tabular</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="fl-width" className="block font-medium mb-1">
+                    Largura ({activeTierDraft.widthPercent}%)
+                  </label>
+                  <input
+                    id="fl-width"
+                    type="range"
+                    min={55}
+                    max={100}
+                    value={activeTierDraft.widthPercent}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, widthPercent: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-fsize" className="block font-medium mb-1">
+                    Tam. Letra ({activeTierDraft.fontSizePx}px)
+                  </label>
+                  <input
+                    id="fl-fsize"
+                    type="range"
+                    min={11}
+                    max={20}
+                    value={activeTierDraft.fontSizePx}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, fontSizePx: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="fl-pad" className="block font-medium mb-1">
+                    Dimensão / Espaço ({activeTierDraft.paddingPx}px)
+                  </label>
+                  <input
+                    id="fl-pad"
+                    type="range"
+                    min={10}
+                    max={24}
+                    value={activeTierDraft.paddingPx}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, paddingPx: Number(e.target.value) }))
+                    }
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 8 Peripheral Positions + Centro + Safe-Area Margin */}
+            <div
+              data-guide-target="fc-position"
+              className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label htmlFor="fl-pos" className="font-bold text-slate-900 dark:text-white">
+                  Posição &amp; Margens neste Nível ({activeTierDraft.customLabel || activeTierDraft.operationalMeaning})
+                </label>
+                <span className="font-mono-tabular text-[11px] font-bold text-blue-700 dark:text-blue-400">
+                  {normalizedTierPos}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {ALL_POSITIONS.map((posOpt) => {
+                  const isSel = normalizedTierPos === posOpt.id;
                   return (
                     <button
-                      key={profId}
+                      key={posOpt.id}
                       type="button"
-                      onClick={() =>
-                        setOverlayDraft((d) => ({
-                          ...d,
-                          captureProfile: profId,
-                          bgColor: preset.bgColor,
-                          textColor: preset.textColor,
-                          opacityPercent: preset.opacityPercent,
-                          layoutMode: preset.layoutMode,
-                          highContrastAccessibility: preset.highContrastAccessibility,
-                        }))
-                      }
-                      className={`p-2 rounded-lg border text-left transition-colors ${
-                        isActive
-                          ? 'bg-blue-700 text-white border-blue-700'
+                      title={posOpt.hint}
+                      onClick={() => updateActiveTier((c) => ({ ...c, position: posOpt.id }))}
+                      className={`px-2 py-2 rounded-lg border text-[11px] font-semibold text-center transition-colors cursor-pointer ${
+                        isSel
+                          ? 'bg-blue-700 text-white border-blue-700 shadow-xs'
                           : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-700 hover:border-blue-500'
                       }`}
                     >
-                      <span className="font-bold block text-[11px]">{preset.label}</span>
-                      <span className={`text-[10px] line-clamp-2 ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
-                        {preset.description}
-                      </span>
+                      {posOpt.label}
                     </button>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label htmlFor="fl-pos" className="block font-medium mb-1">Seletor Direto de Posição</label>
+                  <select
+                    id="fl-pos"
+                    value={normalizedTierPos}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, position: e.target.value as FloatingCardPosition }))
+                    }
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    {ALL_POSITIONS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="fl-margin" className="block font-medium mb-1">
+                    Margem de Segurança ({safeTierMargin}px)
+                  </label>
+                  <input
+                    id="fl-margin"
+                    type="range"
+                    min={4}
+                    max={36}
+                    value={safeTierMargin}
+                    onChange={(e) =>
+                      updateActiveTier((c) => ({ ...c, marginOffsetPx: Number(e.target.value) }))
+                    }
+                    className="w-full mt-2"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 16 Metrics Selection & Explanations (?) */}
+            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-bold">
+                  Métricas Visíveis neste Nível ({activeTierDraft.visibleMetrics.length}/{ALL_FLOATING_METRICS.length})
+                </p>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => updateActiveTier((c) => ({ ...c, visibleMetrics: [...ALL_FLOATING_METRICS] }))}
+                    className="text-blue-700 dark:text-blue-400 font-semibold hover:underline cursor-pointer"
+                  >
+                    Selecionar todas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateActiveTier((c) => ({ ...c, visibleMetrics: [] }))}
+                    className="text-slate-500 hover:underline cursor-pointer"
+                  >
+                    Limpar
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Pode ativar ou desativar qualquer métrica livremente (clique em <strong>?</strong> para ver fórmula e inputs).
+              </p>
+
+              <div className="max-h-[340px] overflow-y-auto space-y-1.5 pr-1">
+                {orderedMetrics.map((mKey) => {
+                  const isVisible = activeTierDraft.visibleMetrics.includes(mKey);
+                  const idx = activeTierDraft.visibleMetrics.indexOf(mKey);
+                  const def = FLOATING_METRIC_DEFINITIONS[mKey];
+                  const isExplained = explainedMetricKey === mKey;
+                  return (
+                    <div
+                      key={mKey}
+                      className="rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 px-3 py-2 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="inline-flex items-center gap-2 cursor-pointer font-medium min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isVisible}
+                            onChange={() => toggleMetric(mKey)}
+                          />
+                          <span className="truncate">{def.label}</span>
+                        </label>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            aria-label={`Explicação da métrica ${def.label}`}
+                            onClick={() => setExplainedMetricKey((k) => (k === mKey ? null : mKey))}
+                            className="p-1 rounded border border-slate-300 dark:border-slate-600 hover:border-blue-500 text-slate-600 dark:text-slate-300 cursor-pointer"
+                          >
+                            <HelpCircle className="w-3 h-3" />
+                          </button>
+                          {isVisible && (
+                            <>
+                              <button
+                                type="button"
+                                aria-label={`Subir ${def.label}`}
+                                disabled={idx === 0}
+                                onClick={() => moveMetric(mKey, -1)}
+                                className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40 cursor-pointer"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Descer ${def.label}`}
+                                disabled={idx === activeTierDraft.visibleMetrics.length - 1}
+                                onClick={() => moveMetric(mKey, 1)}
+                                className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40 cursor-pointer"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {isExplained && (
+                        <div className="p-2 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] space-y-0.5">
+                          <p className="text-slate-800 dark:text-slate-200">{def.shortExplanation}</p>
+                          <p className="text-slate-500 dark:text-slate-400">
+                            <strong>Fórmula:</strong> {def.formula}
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <div>
-                <label htmlFor="fl-pos" className="block font-medium mb-1">Posição no Ecrã</label>
-                <select
-                  id="fl-pos"
-                  value={overlayDraft.position}
-                  onChange={(e) =>
-                    setOverlayDraft((d) => ({ ...d, position: e.target.value as AndroidOverlayConfig['position'] }))
-                  }
-                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                >
-                  <option value="Topo">Topo</option>
-                  <option value="Centro">Centro</option>
-                  <option value="Fundo">Fundo</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="fl-font" className="block font-medium mb-1">Família Tipográfica</label>
-                <select
-                  id="fl-font"
-                  value={overlayDraft.fontFamily}
-                  onChange={(e) =>
-                    setOverlayDraft((d) => ({ ...d, fontFamily: e.target.value as AndroidOverlayConfig['fontFamily'] }))
-                  }
-                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
-                >
-                  <option value="Sans">Sans (Inter)</option>
-                  <option value="Display">Display (Destaque)</option>
-                  <option value="Mono">Mono Tabular</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="fl-dur" className="block font-medium mb-1">Duração Visível (s)</label>
-                <input
-                  id="fl-dur"
-                  type="number"
-                  min={3}
-                  max={45}
-                  value={overlayDraft.durationSeconds}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, durationSeconds: Number(e.target.value) }))}
-                  className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
-                />
+            {/* Independent Atalhos AIVAD Dock Configuration */}
+            <div
+              data-guide-target="fc-dock-config"
+              className="p-3.5 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/25 border border-indigo-200 dark:border-indigo-800/60 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="font-bold text-slate-900 dark:text-white">
+                    Botão Flutuante &ldquo;Atalhos AIVAD&rdquo; (Independente)
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Este botão não altera nenhum dos 3 perfis do Cartão Flutuante de Propostas.
+                  </p>
+                </div>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer font-semibold">
+                  <input
+                    type="checkbox"
+                    checked={dockDraft.enabled !== false}
+                    onChange={(e) => {
+                      const next = { ...dockDraft, enabled: e.target.checked };
+                      setDockDraft(next);
+                      updateFloatingDockConfig({ enabled: e.target.checked });
+                    }}
+                  />
+                  <span>Visível</span>
+                </label>
               </div>
 
-              <div>
-                <label htmlFor="fl-width" className="block font-medium mb-1">
-                  Largura ({overlayDraft.widthPercent}%)
-                </label>
-                <input
-                  id="fl-width"
-                  type="range"
-                  min={70}
-                  max={100}
-                  value={overlayDraft.widthPercent}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, widthPercent: Number(e.target.value) }))}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label htmlFor="fl-fsize" className="block font-medium mb-1">
-                  Tam. Letra ({overlayDraft.fontSizePx}px)
-                </label>
-                <input
-                  id="fl-fsize"
-                  type="range"
-                  min={11}
-                  max={18}
-                  value={overlayDraft.fontSizePx}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, fontSizePx: Number(e.target.value) }))}
-                  className="w-full"
-                />
-              </div>
-              <div>
-                <label htmlFor="fl-opac" className="block font-medium mb-1">
-                  Opacidade ({overlayDraft.opacityPercent}%)
-                </label>
-                <input
-                  id="fl-opac"
-                  type="range"
-                  min={55}
-                  max={100}
-                  value={overlayDraft.opacityPercent}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, opacityPercent: Number(e.target.value) }))}
-                  className="w-full"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="fl-bg" className="block font-medium mb-1">Cor Base Fundo</label>
-                <input
-                  id="fl-bg"
-                  type="color"
-                  value={overlayDraft.bgColor}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, bgColor: e.target.value }))}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
-              </div>
-              <div>
-                <label htmlFor="fl-txt" className="block font-medium mb-1">Cor Texto</label>
-                <input
-                  id="fl-txt"
-                  type="color"
-                  value={overlayDraft.textColor}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, textColor: e.target.value }))}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
-              </div>
-              <div>
-                <label htmlFor="fl-brd" className="block font-medium mb-1">Cor Borda Base</label>
-                <input
-                  id="fl-brd"
-                  type="color"
-                  value={overlayDraft.borderColor}
-                  onChange={(e) => setOverlayDraft((d) => ({ ...d, borderColor: e.target.value }))}
-                  className="w-full h-9 rounded border border-slate-300 dark:border-slate-700"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="dock-pos" className="block font-medium mb-1">Posição do Botão Atalhos</label>
+                  <select
+                    id="dock-pos"
+                    value={dockDraft.position}
+                    onChange={(e) => {
+                      const pos = e.target.value as FloatingDockConfig['position'];
+                      setDockDraft((d) => ({ ...d, position: pos }));
+                      updateFloatingDockConfig({ position: pos });
+                    }}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    <option value="Inferior direito">Inferior direito</option>
+                    <option value="Inferior esquerdo">Inferior esquerdo</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="dock-tone" className="block font-medium mb-1">Estilo do Botão Atalhos</label>
+                  <select
+                    id="dock-tone"
+                    value={dockDraft.themeTone}
+                    onChange={(e) => {
+                      const tone = e.target.value as FloatingDockConfig['themeTone'];
+                      setDockDraft((d) => ({ ...d, themeTone: tone }));
+                      updateFloatingDockConfig({ themeTone: tone });
+                    }}
+                    className="w-full px-2.5 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  >
+                    <option value="azul">Azul AIVAD</option>
+                    <option value="vermelho">Vermelho AIVAD</option>
+                    <option value="indigo">Índigo AI CORE</option>
+                    <option value="esmeralda">Esmeralda Operacional</option>
+                    <option value="personalizado">Cores Personalizadas</option>
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -1353,7 +2435,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   checked={overlayDraft.autoDismiss ?? true}
                   onChange={(e) => setOverlayDraft((d) => ({ ...d, autoDismiss: e.target.checked }))}
                 />
-                <span>Fechar automaticamente após duração</span>
+                <span>Fechar automaticamente ({overlayDraft.durationSeconds}s)</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -1374,90 +2456,35 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={overlayDraft.showHistoryFloatingButton}
-                  onChange={(e) =>
-                    setOverlayDraft((d) => ({ ...d, showHistoryFloatingButton: e.target.checked }))
-                  }
-                />
-                <span>Atalho rápido de histórico</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={Boolean(overlayDraft.highContrastAccessibility)}
-                  onChange={(e) =>
-                    setOverlayDraft((d) => ({ ...d, highContrastAccessibility: e.target.checked }))
-                  }
-                />
-                <span>Acessibilidade: Alto Contraste Máximo</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
                   checked={Boolean(overlayDraft.largeTouchTargets)}
-                  onChange={(e) =>
-                    setOverlayDraft((d) => ({ ...d, largeTouchTargets: e.target.checked }))
-                  }
+                  onChange={(e) => setOverlayDraft((d) => ({ ...d, largeTouchTargets: e.target.checked }))}
                 />
-                <span>Acessibilidade: Botões Grandes p/ Condução</span>
+                <span>Botões Grandes p/ Condução</span>
               </label>
-            </div>
-
-            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-              <p className="font-bold">Ordem e Visibilidade das Métricas no Cartão (mín. 2)</p>
-              <div className="space-y-1.5">
-                {orderedMetrics.map((mKey) => {
-                  const isVisible = overlayDraft.visibleMetrics.includes(mKey);
-                  const idx = overlayDraft.visibleMetrics.indexOf(mKey);
-                  return (
-                    <div
-                      key={mKey}
-                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
-                    >
-                      <label className="inline-flex items-center gap-2 cursor-pointer font-medium">
-                        <input
-                          type="checkbox"
-                          checked={isVisible}
-                          onChange={() => toggleMetric(mKey)}
-                        />
-                        <span>{FLOATING_METRIC_LABELS[mKey]}</span>
-                      </label>
-                      {isVisible && (
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            aria-label={`Subir ${FLOATING_METRIC_LABELS[mKey]}`}
-                            disabled={idx === 0}
-                            onClick={() => moveMetric(mKey, -1)}
-                            className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40"
-                          >
-                            <ArrowUp className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={`Descer ${FLOATING_METRIC_LABELS[mKey]}`}
-                            disabled={idx === overlayDraft.visibleMetrics.length - 1}
-                            onClick={() => moveMetric(mKey, 1)}
-                            className="p-1 rounded border border-slate-300 dark:border-slate-600 disabled:opacity-40"
-                          >
-                            <ArrowDown className="w-3 h-3" />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
             </div>
 
             <div className="flex flex-wrap gap-2 pt-2">
               <button
                 type="button"
+                data-guide-target="fc-preview-btn"
                 onClick={() => {
-                  updateOverlayConfig(overlayDraft);
-                  setOverlaySavedBanner('Configuração de cartão flutuante guardada no perfil!');
+                  setPreviewModalOpen(true);
+                  markFloatingPreviewOpened();
                 }}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" /> Demonstrar (Palco Contextual)
+              </button>
+              <button
+                type="button"
+                data-guide-target="fc-save-btn"
+                onClick={() => {
+                  updateOverlayConfig(overlayDraft, { markSaved: true });
+                  setOverlaySavedBanner(
+                    `Os 3 perfis independentes foram guardados (${activeTierDraft.customLabel}: ${activeTierDraft.bgColor} · ${normalizedTierPos}).`
+                  );
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold cursor-pointer"
               >
                 <Save className="w-3.5 h-3.5" /> Guardar Alterações
               </button>
@@ -1467,7 +2494,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   setOverlayDraft(state.overlayConfig);
                   setOverlaySavedBanner('Rascunho cancelado — revertido para a última configuração guardada.');
                 }}
-                className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-medium"
+                className="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-medium cursor-pointer"
               >
                 Cancelar
               </button>
@@ -1478,96 +2505,267 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
           <Card className="lg:col-span-6 p-5 space-y-4 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-base font-bold flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-red-600" />
-                Simulador em Ambiente Isolado (Sandbox)
+                <Monitor className="w-4 h-4 text-rose-600" />
+                Pré-visualização &amp; Posição Real no Ecrã
               </h2>
-              <SegmentedFilter
-                value={sandboxPreset}
-                onChange={(v) => {
-                  setSandboxPreset(v as typeof sandboxPreset);
-                  setSandboxCardClosed(false);
-                  setSandboxActionFeedback(null);
+              <button
+                type="button"
+                onClick={() => {
+                  setPreviewModalOpen(true);
+                  markFloatingPreviewOpened();
                 }}
-                options={[
-                  { id: 'verde', label: 'Cenário Verde' },
-                  { id: 'amarelo', label: 'Cenário Amarelo' },
-                  { id: 'vermelho', label: 'Cenário Vermelho' },
-                ]}
-              />
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 font-semibold cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" /> Demonstrar
+              </button>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-slate-500 font-medium">Superfície simulada:</span>
-              <SegmentedFilter
-                value={previewSurface}
-                onChange={(v) => setPreviewSurface(v as typeof previewSurface)}
-                options={[
-                  { id: 'web', label: 'Web Preview' },
-                  { id: 'inapp', label: 'App AIVAD' },
-                  { id: 'android', label: 'Android (A Validar)' },
-                ]}
-              />
-            </div>
-
-            <div
-              className={`min-h-[320px] rounded-2xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col bg-slate-200/70 dark:bg-slate-950 ${
-                overlayDraft.position === 'Topo'
-                  ? 'justify-start'
-                  : overlayDraft.position === 'Centro'
-                  ? 'justify-center'
-                  : 'justify-end'
-              }`}
-            >
-              {previewSurface === 'android' && (
-                <p className="text-[11px] text-center text-amber-700 dark:text-amber-300 font-semibold mb-2">
-                  Modo Overlay Sistema Android — INTEGRAÇÃO A VALIDAR (pré-visualização Web funcional)
-                </p>
-              )}
-
-              {sandboxCardClosed ? (
-                <div className="text-center py-8 space-y-2">
-                  <p className="text-slate-500">Cartão simulado fechado.</p>
-                  <button
-                    type="button"
-                    onClick={() => setSandboxCardClosed(false)}
-                    className="px-3 py-1.5 rounded-lg bg-blue-700 text-white font-semibold"
-                  >
-                    Reabrir Simulação
-                  </button>
-                </div>
-              ) : (
-                <DynamicFloatingProposalCard
-                  overlayConfig={overlayDraft}
-                  proposalInput={sandboxInput}
-                  analysis={sandboxPackage.analysis}
-                  recommendedAction={sandboxPackage.recommendedAction}
-                  confidencePct={sandboxPackage.confidencePct}
-                  confidenceStatus={sandboxPackage.confidenceStatus}
-                  zoneAlerts={sandboxZoneAlerts}
-                  isPreviewSurface
-                  onAccept={() =>
-                    setSandboxActionFeedback(
-                      `Simulação: Ação "Aceitar" testada no cenário ${sandboxPreset.toUpperCase()} (0 alterações gravadas no histórico real).`
-                    )
-                  }
-                  onReject={() =>
-                    setSandboxActionFeedback(
-                      `Simulação: Ação "Recusar" testada no cenário ${sandboxPreset.toUpperCase()} (sem impacto nas previsões).`
-                    )
-                  }
-                  onClose={() => setSandboxCardClosed(true)}
-                />
-              )}
-            </div>
+            {renderDeviceStage(false)}
 
             {sandboxActionFeedback && <StatusLabel tone="info" text={sandboxActionFeedback} />}
 
             <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300">
-              <strong>Garantia de Isolamento:</strong> Testar cenários neste painel utiliza{' '}
-              <code>isSimulatedSandbox: true</code> — não adiciona propostas falsas, não altera estatísticas financeiras nem contamina o histórico de aprendizagem da IA.
+              <strong>Garantia de Isolamento:</strong> Testar cenários neste palco não adiciona propostas nem altera estatísticas reais. As 3 classificações guardam estilos, opacidade, luminosidade, posição e métricas totalmente independentes.
             </div>
           </Card>
         </div>
+
+        {/* Anonymized Realistic Uber & Bolt Proposal Learning Gallery */}
+        <Card className="p-5 space-y-4 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                  Galeria de Aprendizagem Uber &amp; Bolt (Boa · Razoável · Má)
+                </h2>
+                <span className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-[10px] font-bold">
+                  Reprodução visual de demonstração · Dados pessoais anonimizados
+                </span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 mt-1">
+                Exemplos realistas estruturados para compreender como recolha, retorno vazio, comissão e tempo definem a classificação — nunca apenas o valor bruto.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <SegmentedFilter
+                value={galleryFilterPlatform}
+                onChange={(v) => setGalleryFilterPlatform(v as typeof galleryFilterPlatform)}
+                options={[
+                  { id: 'ALL', label: 'Uber + Bolt' },
+                  { id: 'uber', label: 'Uber' },
+                  { id: 'bolt', label: 'Bolt' },
+                ]}
+              />
+              <SegmentedFilter
+                value={galleryFilterQuality}
+                onChange={(v) => setGalleryFilterQuality(v as typeof galleryFilterQuality)}
+                options={[
+                  { id: 'ALL', label: 'Todas' },
+                  { id: 'Boa', label: 'Boas' },
+                  { id: 'Razoável', label: 'Razoáveis' },
+                  { id: 'Má', label: 'Más' },
+                ]}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {filteredGallery.map((ex) => {
+              const exPkg = analyzeProposalWithAiCore({
+                input: ex.input,
+                autoPilot: state.autoPilot,
+                activeVehicle,
+                tachograph: state.tachograph,
+                zones: state.zones,
+                savedPlaces: state.savedPlaces,
+                routine: state.routinePreferences,
+              });
+              const exTier =
+                baseProfiles[exPkg.analysis.classification] ??
+                resolveFloatingTierConfig(overlayDraft, exPkg.analysis.classification);
+              const badgeTone =
+                ex.qualityTier === 'Boa'
+                  ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                  : ex.qualityTier === 'Razoável'
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                    : 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300';
+
+              const metricKeys: FloatingMetricKey[] = [
+                'eurPerKm',
+                'eurPerHour',
+                'eurPerMin',
+                'pickupDistanceKm',
+                'pickupTimeMin',
+                'tripDistanceKm',
+                'tripTimeMin',
+                'totalDistanceKm',
+                'totalTime',
+                'grossValueEur',
+                'commissionEur',
+                'operatingCostEur',
+                'estimatedNet',
+                'emptyReturnRisk',
+              ];
+
+              return (
+                <div
+                  key={ex.id}
+                  data-testid={`gallery-example-${ex.id}`}
+                  className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/70 flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <PlatformLogo platformId={ex.platformId} name={ex.platformId} size={28} />
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-900 dark:text-white truncate">{ex.title}</p>
+                          <p className="text-[10px] text-slate-500">{ex.anonymizedPassengerAlias}</p>
+                        </div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${badgeTone}`}>
+                        {ex.qualityTier} · {exTier.customLabel}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] bg-white dark:bg-slate-950 p-2 rounded-lg border border-slate-200 dark:border-slate-800 space-y-0.5">
+                      <p className="truncate">
+                        <strong>Recolha:</strong> {ex.anonymizedPickupLabel}
+                      </p>
+                      <p className="truncate">
+                        <strong>Destino:</strong> {ex.anonymizedDestinationLabel}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                      {metricKeys.map((mk) => {
+                        const cell = evaluateFloatingMetricCell(
+                          mk,
+                          ex.input,
+                          exPkg.analysis,
+                          activeMarket.currencySymbol
+                        );
+                        return (
+                          <div
+                            key={mk}
+                            className="flex items-center justify-between gap-1 px-2 py-1 rounded bg-white dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800"
+                          >
+                            <span className="text-slate-500 truncate">{cell.label}</span>
+                            <span className="font-mono-tabular font-bold shrink-0">{cell.value}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <p className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                      {ex.decisionExplanation}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveGalleryExampleId(ex.id);
+                        setEditingTier(exPkg.analysis.classification);
+                        setSandboxPreset(exPkg.analysis.classification);
+                        setPreviewModalOpen(true);
+                        markFloatingPreviewOpened();
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white font-semibold cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5" /> Demonstrar no Cartão
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCalcInput(ex.input);
+                        setDriverNav('calculadora');
+                      }}
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:border-blue-600 font-semibold cursor-pointer"
+                    >
+                      Carregar na Calculadora
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        {/* Dedicated Contextual "Demonstrar" Multi-Device Modal (PEGGA-style Full Stage) */}
+        {previewModalOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Demonstrar Cartão Flutuante em Palco Contextual"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs p-2 sm:p-5 overflow-y-auto"
+          >
+            <Card className="w-full max-w-6xl p-4 sm:p-6 space-y-4 text-xs shadow-2xl max-h-[95vh] overflow-y-auto">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                    Demonstração Contextual Multi-Dispositivo · Posicionamento &amp; Cores Independentes
+                  </p>
+                  <h3 className="text-base sm:text-lg font-display font-extrabold">
+                    Demonstrar Cartão Flutuante ({stageActiveTier.customLabel} · {stageNormalizedPos})
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Fechar pré-visualização"
+                  onClick={() => setPreviewModalOpen(false)}
+                  className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {renderDeviceStage(true)}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaults = createDefaultClassificationProfiles();
+                    const nextOv = { ...SEED_OVERLAY_CONFIG, classificationProfiles: defaults };
+                    setOverlayDraft(nextOv);
+                    resetFloatingTierConfigs();
+                    setOverlaySavedBanner('Padrão de fábrica reposto para os 3 perfis.');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 font-semibold cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Repor Padrão
+                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOverlayDraft(state.overlayConfig);
+                      setPreviewModalOpen(false);
+                      setOverlaySavedBanner('Alterações de rascunho canceladas.');
+                    }}
+                    className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-700 font-semibold cursor-pointer"
+                  >
+                    Cancelar Alterações
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateOverlayConfig(overlayDraft, { markSaved: true });
+                      setPreviewModalOpen(false);
+                      setOverlaySavedBanner(
+                        `Configuração guardada para os 3 perfis (${stageActiveTier.customLabel} em ${stageNormalizedPos})!`
+                      );
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" /> Guardar Alterações
+                  </button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
       </div>
     );
   }
@@ -1576,12 +2774,15 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
   // CALCULADORA & ANALISADOR AI CORE
   // ==========================================================
   if (resolvedTab === 'calculadora') {
+    const tierProfiles =
+      state.overlayConfig.classificationProfiles ?? createDefaultClassificationProfiles();
+    const activeCalcTier = tierProfiles[liveAnalysis.classification];
     const classBadge =
       liveAnalysis.classification === 'verde'
-        ? { tone: 'success' as const, label: 'Verde — Proposta Favorável' }
+        ? { tone: 'success' as const, label: `${activeCalcTier.customLabel} — Favorável` }
         : liveAnalysis.classification === 'amarelo'
-        ? { tone: 'warning' as const, label: 'Amarelo — Proposta Intermédia' }
-        : { tone: 'danger' as const, label: 'Vermelho — Proposta Desfavorável' };
+        ? { tone: 'warning' as const, label: `${activeCalcTier.customLabel} — Atenção` }
+        : { tone: 'danger' as const, label: `${activeCalcTier.customLabel} — Evitar` };
 
     const handleSaveProposal = (e: React.FormEvent) => {
       e.preventDefault();
@@ -1596,6 +2797,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
     };
 
     const displayedPackage = lastSavedAiPackage ?? liveAiPackage;
+    const isMissingPickupSim = Boolean(calcInput.unavailableFields?.includes('pickupDistanceKm'));
 
     return (
       <div className="space-y-6">
@@ -1604,11 +2806,44 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
         {lifecycleError && <StatusLabel tone="danger" text={lifecycleError} />}
         <ContextualHelpBanner
           title="AIVAD Real-Time Offer Analyzer & Decisão Contextual AI CORE"
-          description="Avalie rentabilidade em €/km, €/hora e €/minuto, alertas de zona ativos, alternativas antes de aceitar e acompanhe a viagem com cronómetros separados."
+          description="Avalie rentabilidade líquida em €/km, €/hora e €/minuto com comissão da plataforma, alertas de zona ativos e exemplos anonimizados Uber/Bolt."
         />
 
+        {/* Quick Load from Anonymized Examples */}
+        <Card className="p-3.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-slate-700 dark:text-slate-200">
+              Carregar Exemplo (Demo Anonimizado):
+            </span>
+            {PROPOSAL_GALLERY_EXAMPLES.slice(0, 5).map((ex) => (
+              <button
+                key={ex.id}
+                type="button"
+                onClick={() => setCalcInput(ex.input)}
+                className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-blue-600 bg-white dark:bg-slate-900 font-medium cursor-pointer"
+              >
+                {ex.platformId.toUpperCase()} · {ex.qualityTier} ({activeMarket.currencySymbol}
+                {ex.input.grossValueEur.toFixed(2)})
+              </button>
+            ))}
+          </div>
+          <label className="inline-flex items-center gap-1.5 text-[11px] font-medium cursor-pointer text-slate-600 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={isMissingPickupSim}
+              onChange={(e) =>
+                setCalcInput((p) => ({
+                  ...p,
+                  unavailableFields: e.target.checked ? ['pickupDistanceKm'] : [],
+                }))
+              }
+            />
+            <span>Simular distância recolha indisponível</span>
+          </label>
+        </Card>
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <Card className="lg:col-span-7 p-5 space-y-4">
+          <Card data-guide-target="proposal-calculator" className="lg:col-span-7 p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-base font-bold flex items-center gap-2">
                 <Calculator className="w-4 h-4 text-blue-700 dark:text-blue-400" />
@@ -1640,6 +2875,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                       ...prev,
                       platformId: e.target.value,
                       category: pl?.categories[0] ?? 'Standard',
+                      commissionPct: pl?.commissionPct ?? prev.commissionPct ?? 25,
                     }));
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950"
@@ -1730,15 +2966,17 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 />
               </div>
               <div>
-                <label htmlFor="prop-tolls" className="block font-medium mb-1">
-                  Portagens ({activeMarket.currencySymbol})
+                <label htmlFor="prop-comm" className="block font-medium mb-1">
+                  Comissão Plataforma (%)
                 </label>
                 <input
-                  id="prop-tolls"
+                  id="prop-comm"
                   type="number"
-                  step="0.1"
-                  value={calcInput.tollsEur}
-                  onChange={(e) => setCalcInput((p) => ({ ...p, tollsEur: Number(e.target.value) }))}
+                  min={0}
+                  max={60}
+                  step="0.5"
+                  value={calcInput.commissionPct ?? 25}
+                  onChange={(e) => setCalcInput((p) => ({ ...p, commissionPct: Number(e.target.value) }))}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 font-mono-tabular"
                 />
               </div>
@@ -1786,7 +3024,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
               <div className="sm:col-span-3 flex flex-wrap items-center justify-between gap-3 pt-2">
                 <button
                   type="submit"
-                  className="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold"
+                  className="px-4 py-2.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold cursor-pointer"
                 >
                   Registar &amp; Analisar com AI CORE
                 </button>
@@ -1794,7 +3032,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   <button
                     type="button"
                     onClick={() => updateProposalLifecycle(lastCreatedPropId, 'Concluída')}
-                    className="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold"
+                    className="px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer"
                   >
                     Marcar Última como Concluída (Gerar Viagem + Reconciliar IA)
                   </button>
@@ -1882,15 +3120,28 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                   <span className="font-mono-tabular font-semibold">{liveAnalysis.totalTimeMin} min</span>
                 </div>
                 <div className="flex justify-between">
+                  <span className="text-slate-500">
+                    Comissão Plataforma ({liveAnalysis.commissionPctApplied ?? calcInput.commissionPct ?? 25}%)
+                  </span>
+                  <span className="font-mono-tabular font-semibold">
+                    {liveAnalysis.commissionEur !== undefined
+                      ? formatMoney(liveAnalysis.commissionEur, activeMarket.currency)
+                      : 'Indisponível'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-slate-500">Custo Operacional Estimado</span>
                   <span className="font-mono-tabular font-semibold">
                     {formatMoney(liveAnalysis.operatingCostEur, activeMarket.currency)}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Rentabilidade Líquida Antes de Comissão</span>
+                  <span className="text-slate-500">Líquido Estimado (após comissão e custos)</span>
                   <span className="font-mono-tabular font-bold text-blue-700 dark:text-blue-400">
                     {formatMoney(liveAnalysis.estimatedNetEur, activeMarket.currency)}
+                    {liveAnalysis.profitabilityPct !== undefined
+                      ? ` (${liveAnalysis.profitabilityPct.toFixed(0)}%)`
+                      : ''}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -1913,7 +3164,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 <button
                   type="button"
                   onClick={() => setDriverNav('cartoes-flutuantes')}
-                  className="text-blue-700 dark:text-blue-400 font-semibold hover:underline"
+                  className="text-blue-700 dark:text-blue-400 font-semibold hover:underline cursor-pointer"
                 >
                   Personalizar →
                 </button>
@@ -1926,6 +3177,7 @@ export const DriverDashboardAndOps: React.FC<{ activeTab: string }> = ({ activeT
                 confidencePct={displayedPackage.confidencePct}
                 confidenceStatus={displayedPackage.confidenceStatus}
                 zoneAlerts={calcZoneAlerts}
+                currencySymbol={activeMarket.currencySymbol}
                 quickHidden={state.floatingCardQuickHidden}
                 onToggleQuickHidden={setFloatingCardQuickHidden}
                 onAccept={() => {

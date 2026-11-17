@@ -81,14 +81,29 @@ export function analyzeProposal(
   const effectiveRevenueEur = round2(
     Math.max(0, input.grossValueEur) + Math.max(0, input.bonusEur)
   );
+  const commissionPctApplied =
+    input.commissionPct !== undefined &&
+    Number.isFinite(input.commissionPct) &&
+    !input.unavailableFields?.includes('commissionPct')
+      ? Math.max(0, input.commissionPct)
+      : undefined;
+  const commissionEur =
+    commissionPctApplied !== undefined
+      ? round2(effectiveRevenueEur * (commissionPctApplied / 100))
+      : undefined;
   const operatingCostEur = round2(
     totalDistanceKm * Math.max(0, input.vehicleCostPerKmEur) + Math.max(0, input.tollsEur)
   );
-  const estimatedNetEur = round2(effectiveRevenueEur - operatingCostEur);
+  const estimatedNetEur = round2(
+    effectiveRevenueEur - (commissionEur ?? 0) - operatingCostEur
+  );
+  const profitabilityPct =
+    effectiveRevenueEur > 0 ? round2((estimatedNetEur / effectiveRevenueEur) * 100) : undefined;
 
-  const eurPerKm = round2(effectiveRevenueEur / Math.max(0.1, basisDistance));
-  const eurPerHour = round2((effectiveRevenueEur / Math.max(1, totalTimeMin)) * 60);
-  const eurPerMin = round2(effectiveRevenueEur / Math.max(1, totalTimeMin));
+  const netBasisForRates = commissionEur !== undefined ? estimatedNetEur : effectiveRevenueEur;
+  const eurPerKm = round2(netBasisForRates / Math.max(0.1, basisDistance));
+  const eurPerHour = round2((netBasisForRates / Math.max(1, totalTimeMin)) * 60);
+  const eurPerMin = round2(netBasisForRates / Math.max(1, totalTimeMin));
 
   const pickupRatio = safePickupKm / Math.max(1, totalDistanceKm);
   const emptyReturnRisk: 'Baixo' | 'Médio' | 'Alto' =
@@ -213,8 +228,11 @@ export function analyzeProposal(
     eurPerKm,
     eurPerHour,
     eurPerMin,
+    commissionPctApplied,
+    commissionEur,
     operatingCostEur,
     estimatedNetEur,
+    profitabilityPct,
     emptyReturnRisk,
     returnPassengerProbabilityPct,
     returnProbabilityEpistemicTag,
@@ -793,9 +811,16 @@ export function reconcileCapturedEvent(
 
 export interface SmartPlanInput {
   targetNetEur: number;
+  targetGrossEur?: number;
   availableDays: number;
   hoursPerDay: number;
   breakMinutesPerDay: number;
+  startTime?: string;
+  endTime?: string;
+  flexibleDuration?: boolean;
+  selectedPlatformIds?: PlatformId[];
+  avgCommissionPct?: number;
+  avgGrossPerTripEur?: number;
   vehicle: VehicleRecord;
   historicalAvgGrossPerHour: number;
   currentEarnedNetEur: number;
@@ -804,11 +829,20 @@ export interface SmartPlanInput {
 
 export interface SmartPlanResult {
   remainingNetEur: number;
+  effectiveHoursPerDay: number;
   totalProductiveHours: number;
+  requiredGrossTotalEur: number;
   requiredGrossPerHour: number;
+  estimatedRidesNeeded: number;
+  estimatedKmNeeded: number;
   estimatedEnergyOrFuelCostEur: number;
+  estimatedCostsTotalEur: number;
+  batteryOrRangeRequiredKm: number;
+  vehicleRealRangeKm: number;
   chargingStopsRecommended: number;
   chargingMinutesTotal: number;
+  feasibilityStatus: 'Realista' | 'Exigente' | 'Irrealista';
+  feasibilityWarnings: string[];
   scenarios: Array<{
     name: string;
     grossPerHour: number;
@@ -818,21 +852,62 @@ export interface SmartPlanResult {
   disclaimer: string;
 }
 
+function computeHoursBetweenTimeStrings(start?: string, end?: string): number | null {
+  if (!start || !end) return null;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  if (!Number.isFinite(sh) || !Number.isFinite(sm) || !Number.isFinite(eh) || !Number.isFinite(em)) {
+    return null;
+  }
+  let diffMins = eh * 60 + em - (sh * 60 + sm);
+  if (diffMins <= 0) diffMins += 24 * 60;
+  return Math.max(0.5, diffMins / 60);
+}
+
 export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
-  const effectiveHoursPerDay = Math.max(0.5, input.hoursPerDay - input.breakMinutesPerDay / 60);
-  const totalProductiveHours = round2(Math.max(1, input.availableDays) * effectiveHoursPerDay);
-  const estimatedKm = totalProductiveHours * 24;
+  const timeWindowHours = computeHoursBetweenTimeStrings(input.startTime, input.endTime);
+  const rawShiftHours =
+    input.flexibleDuration === false && timeWindowHours !== null ? timeWindowHours : input.hoursPerDay;
+  const effectiveHoursPerDay = round2(Math.max(0.5, rawShiftHours - input.breakMinutesPerDay / 60));
+  const safeDays = Math.max(1, input.availableDays);
+  const totalProductiveHours = round2(safeDays * effectiveHoursPerDay);
+  const estimatedKmPerDay = Math.round(effectiveHoursPerDay * 24);
+  const estimatedKmNeeded = Math.round(totalProductiveHours * 24);
+
+  const unitPrice = getEnergyUnitPriceByTariff(
+    input.vehicle.energyTariffProfile,
+    input.vehicle.energyCostPerUnitEur
+  );
   const costPerKm =
-    (input.vehicle.consumptionPer100Km / 100) * input.vehicle.energyCostPerUnitEur +
-    input.vehicle.maintenancePerKmEur;
-  const estimatedEnergyOrFuelCostEur = round2(estimatedKm * costPerKm);
+    (input.vehicle.consumptionPer100Km / 100) * unitPrice + input.vehicle.maintenancePerKmEur;
+  const estimatedEnergyOrFuelCostEur = round2(estimatedKmNeeded * costPerKm);
+
+  const commRate = Math.min(0.45, Math.max(0, (input.avgCommissionPct ?? 0) / 100));
   const remainingNetEur = round2(Math.max(0, input.targetNetEur - input.currentEarnedNetEur));
-  const requiredGrossTotal = remainingNetEur + estimatedEnergyOrFuelCostEur;
-  const requiredGrossPerHour = round2(requiredGrossTotal / Math.max(1, totalProductiveHours));
+  const computedGrossFromNet = (remainingNetEur + estimatedEnergyOrFuelCostEur) / Math.max(0.35, 1 - commRate);
+  const requiredGrossTotalEur = round2(
+    input.targetGrossEur !== undefined && input.targetGrossEur > 0
+      ? Math.max(input.targetGrossEur, computedGrossFromNet)
+      : remainingNetEur + estimatedEnergyOrFuelCostEur
+  );
+  const requiredGrossPerHour = round2(requiredGrossTotalEur / Math.max(1, totalProductiveHours));
+
+  const avgGrossTrip = Math.max(6, input.avgGrossPerTripEur ?? 9.5);
+  const estimatedRidesNeeded = Math.max(1, Math.ceil(requiredGrossTotalEur / avgGrossTrip));
+  const estimatedCostsTotalEur = round2(
+    estimatedEnergyOrFuelCostEur + requiredGrossTotalEur * commRate
+  );
+
+  const vehicleRealRangeKm = Math.round(input.vehicle.realRangeKm ?? input.vehicle.rangeKm * 0.85);
+  const batteryOrRangeRequiredKm = estimatedKmPerDay;
+  const safeUsableRangeKm = Math.max(100, vehicleRealRangeKm * 0.82);
 
   const chargingStopsRecommended =
-    input.vehicle.fuelType === 'Elétrico' && input.needsChargingStops
-      ? Math.max(0, Math.floor(estimatedKm / Math.max(120, input.vehicle.rangeKm * 0.75)))
+    input.vehicle.fuelType === 'Elétrico' && (input.needsChargingStops || batteryOrRangeRequiredKm > safeUsableRangeKm)
+      ? Math.max(
+          batteryOrRangeRequiredKm > safeUsableRangeKm ? safeDays : 0,
+          Math.floor(estimatedKmNeeded / Math.max(120, input.vehicle.rangeKm * 0.75))
+        )
       : 0;
   const chargingMinutesTotal = chargingStopsRecommended * 28;
 
@@ -842,7 +917,9 @@ export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
       name: 'Conservador (-15% procura)',
       grossPerHour: round2(baseRate * 0.85),
       projectedNetEur: round2(
-        baseRate * 0.85 * totalProductiveHours - estimatedEnergyOrFuelCostEur + input.currentEarnedNetEur
+        baseRate * 0.85 * totalProductiveHours * (1 - commRate) -
+          estimatedEnergyOrFuelCostEur +
+          input.currentEarnedNetEur
       ),
       feasible: false,
     },
@@ -850,7 +927,9 @@ export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
       name: 'Base Histórica do Motorista',
       grossPerHour: round2(baseRate),
       projectedNetEur: round2(
-        baseRate * totalProductiveHours - estimatedEnergyOrFuelCostEur + input.currentEarnedNetEur
+        baseRate * totalProductiveHours * (1 - commRate) -
+          estimatedEnergyOrFuelCostEur +
+          input.currentEarnedNetEur
       ),
       feasible: false,
     },
@@ -858,7 +937,9 @@ export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
       name: 'Otimizado (Picos + Campanhas)',
       grossPerHour: round2(baseRate * 1.18),
       projectedNetEur: round2(
-        baseRate * 1.18 * totalProductiveHours - estimatedEnergyOrFuelCostEur + input.currentEarnedNetEur
+        baseRate * 1.18 * totalProductiveHours * (1 - commRate) -
+          estimatedEnergyOrFuelCostEur +
+          input.currentEarnedNetEur
       ),
       feasible: false,
     },
@@ -867,13 +948,53 @@ export function calculateSmartPlan(input: SmartPlanInput): SmartPlanResult {
     feasible: s.projectedNetEur >= input.targetNetEur,
   }));
 
+  const feasibilityWarnings: string[] = [];
+  if (rawShiftHours > 10) {
+    feasibilityWarnings.push(
+      `Duração diária (${rawShiftHours.toFixed(1)}h) excede o limite operacional de 10h no tacógrafo.`
+    );
+  }
+  if (requiredGrossPerHour > baseRate * 1.45) {
+    feasibilityWarnings.push(
+      `Meta horária exigida (€${requiredGrossPerHour.toFixed(2)}/h) supera em +45% a sua média histórica (€${baseRate.toFixed(2)}/h): objetivo altamente irrealista sem campanhas extraordinárias.`
+    );
+  } else if (requiredGrossPerHour > baseRate * 1.15) {
+    feasibilityWarnings.push(
+      `Meta horária exigida (€${requiredGrossPerHour.toFixed(2)}/h) exige operar nos picos de procura acima da média (€${baseRate.toFixed(2)}/h).`
+    );
+  }
+  if (batteryOrRangeRequiredKm > vehicleRealRangeKm) {
+    feasibilityWarnings.push(
+      `Autonomia diária necessária (~${batteryOrRangeRequiredKm} km/dia) excede a autonomia real do veículo (${vehicleRealRangeKm} km): inclua carregamento/abastecimento intermédio.`
+    );
+  }
+  if (input.selectedPlatformIds && input.selectedPlatformIds.length === 0) {
+    feasibilityWarnings.push('Nenhuma plataforma selecionada para o plano.');
+  }
+
+  let feasibilityStatus: SmartPlanResult['feasibilityStatus'] = 'Realista';
+  if (rawShiftHours > 10 || requiredGrossPerHour > baseRate * 1.45 || (!scenarios[2].feasible && remainingNetEur > 0)) {
+    feasibilityStatus = 'Irrealista';
+  } else if (!scenarios[1].feasible || batteryOrRangeRequiredKm > safeUsableRangeKm || feasibilityWarnings.length > 0) {
+    feasibilityStatus = 'Exigente';
+  }
+
   return {
     remainingNetEur,
+    effectiveHoursPerDay,
     totalProductiveHours,
+    requiredGrossTotalEur,
     requiredGrossPerHour,
+    estimatedRidesNeeded,
+    estimatedKmNeeded,
     estimatedEnergyOrFuelCostEur,
+    estimatedCostsTotalEur,
+    batteryOrRangeRequiredKm,
+    vehicleRealRangeKm,
     chargingStopsRecommended,
     chargingMinutesTotal,
+    feasibilityStatus,
+    feasibilityWarnings,
     scenarios,
     disclaimer:
       'Projeção indicativa baseada no histórico registado e custos técnicos do veículo. Não constitui garantia de ganhos.',
@@ -1232,10 +1353,22 @@ export function computeVehicleOwnershipTcoPerKm(
   };
 }
 
+export function getConfirmedAdjustmentsEur(trip: TripRecord): number {
+  if (!trip.fareAdjustments || trip.fareAdjustments.length === 0) return 0;
+  return round2(
+    trip.fareAdjustments
+      .filter((a) => a.status === 'Confirmado pela plataforma')
+      .reduce((acc, a) => acc + a.amountEur, 0)
+  );
+}
+
 export function computeFinancialSummary(trips: TripRecord[], expenses: ExpenseRecord[]) {
   const completed = trips.filter((t) => isCompletedTripStatus(t.status));
   const cancelledOrLostCount = trips.filter((t) => !isCompletedTripStatus(t.status)).length;
-  const grossTotal = round2(completed.reduce((acc, t) => acc + t.grossEur, 0));
+  // Apenas ajustes confirmados pela plataforma entram na receita real; ajustes pendentes ficam fora dos ganhos reais
+  const grossTotal = round2(
+    completed.reduce((acc, t) => acc + t.grossEur + getConfirmedAdjustmentsEur(t), 0)
+  );
   const tipsTotal = round2(completed.reduce((acc, t) => acc + t.tipEur, 0));
   const bonusTotal = round2(completed.reduce((acc, t) => acc + t.bonusEur, 0));
   const tollsTotal = round2(completed.reduce((acc, t) => acc + t.tollsEur, 0));
@@ -1246,11 +1379,45 @@ export function computeFinancialSummary(trips: TripRecord[], expenses: ExpenseRe
   const netEstimated = round2(totalRevenue - commissionsTotal - tripOpCost - loggedExpenses);
 
   const totalKm = round2(
-    completed.reduce((acc, t) => acc + t.pickupDistanceKm + t.tripDistanceKm, 0)
+    completed.reduce(
+      (acc, t) =>
+        acc +
+        (t.postAcceptanceActual?.hasObservedActuals && t.postAcceptanceActual.totalDistanceKm
+          ? t.postAcceptanceActual.totalDistanceKm
+          : t.pickupDistanceKm + t.tripDistanceKm),
+      0
+    )
   );
-  const passengerKm = round2(completed.reduce((acc, t) => acc + t.tripDistanceKm, 0));
-  const emptyKm = round2(completed.reduce((acc, t) => acc + t.pickupDistanceKm, 0));
-  const totalHours = round2(completed.reduce((acc, t) => acc + t.durationMin, 0) / 60);
+  const passengerKm = round2(
+    completed.reduce(
+      (acc, t) =>
+        acc +
+        (t.postAcceptanceActual?.hasObservedActuals && t.postAcceptanceActual.tripDistanceKm
+          ? t.postAcceptanceActual.tripDistanceKm
+          : t.tripDistanceKm),
+      0
+    )
+  );
+  const emptyKm = round2(
+    completed.reduce(
+      (acc, t) =>
+        acc +
+        (t.postAcceptanceActual?.hasObservedActuals && t.postAcceptanceActual.pickupDistanceKm
+          ? t.postAcceptanceActual.pickupDistanceKm
+          : t.pickupDistanceKm),
+      0
+    )
+  );
+  const totalHours = round2(
+    completed.reduce(
+      (acc, t) =>
+        acc +
+        (t.postAcceptanceActual?.hasObservedActuals && t.postAcceptanceActual.totalTimeMin
+          ? t.postAcceptanceActual.totalTimeMin
+          : t.durationMin),
+      0
+    ) / 60
+  );
 
   return {
     tripCount: completed.length,

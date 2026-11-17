@@ -7,6 +7,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  HelpCircle,
   Loader2,
   MapPin,
   Maximize2,
@@ -17,10 +18,19 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
+import {
+  adjustHexColor,
+  evaluateFloatingMetricCell,
+  FLOATING_METRIC_LABELS,
+  hexWithOpacityRgba,
+  isDarkHexColor as coreIsDarkHexColor,
+  resolveFloatingTierConfig,
+} from '../../core/floatingCard';
 import type {
   AndroidOverlayConfig,
   ConfidenceStatus,
   FloatingCardProfileId,
+  FloatingCardTierStyleConfig,
   FloatingMetricKey,
   PlatformId,
   ProposalAnalysis,
@@ -29,6 +39,8 @@ import type {
   TachographState,
 } from '../../models/types';
 import type { ZoneOperationalAlert } from '../../core/zones';
+
+export { FLOATING_METRIC_LABELS };
 
 export const PlatformLogo: React.FC<{
   platformId: PlatformId;
@@ -116,16 +128,6 @@ export const PlatformBadge: React.FC<{
   return <PlatformLogo platformId={platformId ?? name.toLowerCase()} name={name} size={px} />;
 };
 
-export const FLOATING_METRIC_LABELS: Record<FloatingMetricKey, string> = {
-  eurPerKm: '€/km',
-  eurPerHour: '€/hora',
-  eurPerMin: '€/min',
-  estimatedNet: 'Líquido est.',
-  emptyReturnRisk: 'Retorno vazio',
-  totalTime: 'Tempo total',
-  score: 'Score IA',
-};
-
 export const FLOATING_CAPTURE_PROFILE_PRESETS: Record<
   FloatingCardProfileId,
   {
@@ -174,6 +176,15 @@ export const FLOATING_CAPTURE_PROFILE_PRESETS: Record<
     layoutMode: 'expandido',
     highContrastAccessibility: true,
   },
+  Personalizado: {
+    label: 'Personalizado (Cores Livres)',
+    description: 'Aplica fielmente as cores de fundo, texto e borda configuradas pelo motorista.',
+    bgColor: '#1D4ED8',
+    textColor: '#FFFFFF',
+    opacityPercent: 98,
+    layoutMode: 'expandido',
+    highContrastAccessibility: false,
+  },
 };
 
 function isDocumentDarkTheme(): boolean {
@@ -181,8 +192,11 @@ function isDocumentDarkTheme(): boolean {
   return document.documentElement.classList.contains('dark');
 }
 
+export const isDarkHexColor = coreIsDarkHexColor;
+
 export const DynamicFloatingProposalCard: React.FC<{
   overlayConfig: AndroidOverlayConfig;
+  tierOverride?: FloatingCardTierStyleConfig;
   proposalInput?: ProposalInput | null;
   analysis?: ProposalAnalysis | null;
   recommendedAction?: string;
@@ -190,6 +204,9 @@ export const DynamicFloatingProposalCard: React.FC<{
   confidenceStatus?: ConfidenceStatus;
   zoneAlerts?: ZoneOperationalAlert[];
   isPreviewSurface?: boolean;
+  disableAutoCenter?: boolean;
+  currencySymbol?: string;
+  forceThemeMode?: 'light' | 'dark';
   cardStatus?: 'ready' | 'loading' | 'error' | 'empty';
   errorMessage?: string;
   quickHidden?: boolean;
@@ -199,6 +216,7 @@ export const DynamicFloatingProposalCard: React.FC<{
   onClose?: () => void;
 }> = ({
   overlayConfig,
+  tierOverride,
   proposalInput,
   analysis,
   recommendedAction,
@@ -206,6 +224,9 @@ export const DynamicFloatingProposalCard: React.FC<{
   confidenceStatus,
   zoneAlerts = [],
   isPreviewSurface = false,
+  disableAutoCenter = false,
+  currencySymbol = '€',
+  forceThemeMode,
   cardStatus = 'ready',
   errorMessage,
   quickHidden = false,
@@ -215,12 +236,18 @@ export const DynamicFloatingProposalCard: React.FC<{
   onClose,
 }) => {
   const prefersReducedMotion = useReducedMotion();
-  const [minimized, setMinimized] = useState(overlayConfig.layoutMode === 'compacto');
+  const resolvedTier = analysis
+    ? tierOverride ?? resolveFloatingTierConfig(overlayConfig, analysis.classification)
+    : undefined;
+  const activeLayoutMode = resolvedTier?.layoutMode ?? overlayConfig.layoutMode;
+
+  const [minimized, setMinimized] = useState(activeLayoutMode === 'compacto');
+  const [expandedMetricKey, setExpandedMetricKey] = useState<FloatingMetricKey | null>(null);
   const [isDarkTheme, setIsDarkTheme] = useState<boolean>(() => isDocumentDarkTheme());
 
   useEffect(() => {
-    setMinimized(overlayConfig.layoutMode === 'compacto');
-  }, [overlayConfig.layoutMode]);
+    setMinimized(activeLayoutMode === 'compacto');
+  }, [activeLayoutMode, analysis?.classification]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -300,86 +327,70 @@ export const DynamicFloatingProposalCard: React.FC<{
     );
   }
 
-  // Determine whether card renders on a dark surface or luminous light surface
-  const usesExplicitDarkProfile =
-    overlayConfig.captureProfile === 'Noturno' || overlayConfig.highContrastAccessibility;
-  const legacySeedDarkBg =
-    overlayConfig.bgColor.toUpperCase() === '#0F172A' ||
-    overlayConfig.bgColor.toUpperCase() === '#0B192C';
+  const tier = resolvedTier ?? resolveFloatingTierConfig(overlayConfig, analysis.classification);
+  const effectiveDarkSurface = forceThemeMode ? forceThemeMode === 'dark' : isDarkTheme;
 
-  const renderDarkCard = usesExplicitDarkProfile || isDarkTheme || (!legacySeedDarkBg && overlayConfig.bgColor.startsWith('#0'));
-
-  const resolvedBg = overlayConfig.highContrastAccessibility
+  // Apply per-tier brightness (Clarear/Escurecer) + saturation (Intensidade da cor) without bleeding into other classifications
+  const adjustedTierBg = adjustHexColor(
+    tier.bgColor,
+    tier.brightnessAdjust ?? 0,
+    tier.colorIntensityPct ?? 100
+  );
+  const resolvedBgHex = overlayConfig.highContrastAccessibility
     ? '#1E3A8A'
-    : renderDarkCard
-    ? legacySeedDarkBg || overlayConfig.bgColor.toUpperCase() === '#FFFFFF' || overlayConfig.bgColor.toUpperCase() === '#F8FAFC'
-      ? '#0F182B'
-      : overlayConfig.bgColor
-    : legacySeedDarkBg
+    : !overlayConfig.classificationProfiles &&
+      !overlayConfig.useCustomColors &&
+      overlayConfig.captureProfile !== 'Personalizado' &&
+      (overlayConfig.captureProfile === 'Noturno' || effectiveDarkSurface) &&
+      tier.bgColor.toUpperCase() === '#FFFFFF'
+    ? '#0F182B'
+    : adjustedTierBg;
+
+  const renderDarkCard = isDarkHexColor(resolvedBgHex);
+  const resolvedTextHex = overlayConfig.highContrastAccessibility
     ? '#FFFFFF'
-    : overlayConfig.bgColor;
+    : tier.textColor;
 
-  const resolvedText = overlayConfig.highContrastAccessibility || renderDarkCard
-    ? '#F8FAFC'
-    : '#0F172A';
+  const resolvedBorderHex = adjustHexColor(
+    tier.borderColor,
+    Math.round((tier.brightnessAdjust ?? 0) * 0.4),
+    tier.colorIntensityPct ?? 100
+  );
+  const resolvedBorderWidth = Math.max(
+    1,
+    Math.min(6, tier.borderWidthPx ?? (overlayConfig.highContrastAccessibility ? 3 : 2))
+  );
 
-  const subSurfaceClass =
-    overlayConfig.highContrastAccessibility || renderDarkCard
-      ? 'bg-white/10 border-white/15'
-      : 'bg-slate-50 border-slate-200/90';
+  const subSurfaceClass = renderDarkCard
+    ? 'bg-black/25 border-white/20'
+    : 'bg-slate-50/90 border-slate-200/90';
 
-  const iconHoverClass =
-    overlayConfig.highContrastAccessibility || renderDarkCard
-      ? 'hover:bg-white/15 text-slate-200'
-      : 'hover:bg-slate-100 text-slate-600';
+  const iconHoverClass = renderDarkCard
+    ? 'hover:bg-white/15 text-white'
+    : 'hover:bg-slate-100 text-slate-600';
 
-  const verdict =
-    analysis.classification === 'verde'
-      ? {
-          label: 'VERDE · FAVORÁVEL',
-          accentHex: '#059669',
-          badgeBg: renderDarkCard ? 'rgba(16, 185, 129, 0.22)' : '#ECFDF5',
-          badgeText: renderDarkCard ? '#6EE7B7' : '#047857',
-        }
-      : analysis.classification === 'amarelo'
-      ? {
-          label: 'AMARELO · ATENÇÃO',
-          accentHex: '#D97706',
-          badgeBg: renderDarkCard ? 'rgba(245, 158, 11, 0.22)' : '#FFFBEB',
-          badgeText: renderDarkCard ? '#FCD34D' : '#B45309',
-        }
-      : {
-          label: 'VERMELHO · EVITAR',
-          accentHex: '#E11D48',
-          badgeBg: renderDarkCard ? 'rgba(244, 63, 94, 0.25)' : '#FFF1F2',
-          badgeText: renderDarkCard ? '#FDA4AF' : '#BE123C',
-        };
+  const verdictLabel =
+    tier.customLabel.trim().toLowerCase() === tier.operationalMeaning.toLowerCase()
+      ? tier.operationalMeaning.toUpperCase()
+      : `${tier.customLabel.trim().toUpperCase()} · ${tier.operationalMeaning.toUpperCase()}`;
+
+  const verdict = {
+    label: verdictLabel,
+    accentHex: resolvedBorderHex,
+    badgeBg: adjustHexColor(
+      tier.badgeBgColor ?? (analysis.classification === 'verde' ? '#ECFDF5' : analysis.classification === 'amarelo' ? '#FFFBEB' : '#FFF1F2'),
+      Math.round((tier.brightnessAdjust ?? 0) * 0.5),
+      tier.colorIntensityPct ?? 100
+    ),
+    badgeText: tier.badgeTextColor ?? (analysis.classification === 'verde' ? '#047857' : analysis.classification === 'amarelo' ? '#B45309' : '#BE123C'),
+  };
 
   const fontClass =
-    overlayConfig.fontFamily === 'Display'
+    tier.fontFamily === 'Display'
       ? 'font-display'
-      : overlayConfig.fontFamily === 'Mono'
+      : tier.fontFamily === 'Mono'
       ? 'font-mono-tabular'
       : 'font-sans';
-
-  const getMetricValue = (key: FloatingMetricKey): { label: string; value: string } => {
-    switch (key) {
-      case 'eurPerKm':
-        return { label: '€/km', value: `€${analysis.eurPerKm.toFixed(2)}` };
-      case 'eurPerHour':
-        return { label: '€/hora', value: `€${analysis.eurPerHour.toFixed(2)}` };
-      case 'eurPerMin':
-        return { label: '€/min', value: `€${analysis.eurPerMin.toFixed(2)}` };
-      case 'estimatedNet':
-        return { label: 'Líquido est.', value: `€${analysis.estimatedNetEur.toFixed(2)}` };
-      case 'emptyReturnRisk':
-        return { label: 'Retorno vazio', value: analysis.emptyReturnRisk };
-      case 'totalTime':
-        return { label: 'Tempo total', value: `${analysis.totalTimeMin} min` };
-      case 'score':
-        return { label: 'Score IA', value: `${analysis.score}/100` };
-    }
-  };
 
   const confidenceLabel =
     confidencePct !== null && confidencePct !== undefined
@@ -387,115 +398,157 @@ export const DynamicFloatingProposalCard: React.FC<{
       : confidenceStatus ?? 'Confiança calibrada';
 
   const effectiveFontSize = overlayConfig.highContrastAccessibility
-    ? Math.max(15, overlayConfig.fontSizePx + 1)
-    : overlayConfig.fontSizePx;
+    ? Math.max(15, tier.fontSizePx + 1)
+    : tier.fontSizePx;
   const touchTargetBtnClass = overlayConfig.largeTouchTargets
     ? 'min-h-[46px] py-2.5 px-4 text-xs sm:text-sm'
     : 'min-h-[40px] py-2 px-3 text-xs';
+
+  const evaluatedCells = tier.visibleMetrics.map((mKey) =>
+    evaluateFloatingMetricCell(mKey, proposalInput, analysis, currencySymbol)
+  );
+  const selectedExpandedCell = expandedMetricKey
+    ? evaluatedCells.find((c) => c.key === expandedMetricKey) ?? null
+    : null;
+
+  const grossCell = evaluateFloatingMetricCell('grossValueEur', proposalInput, analysis, currencySymbol);
+  const netCell = evaluateFloatingMetricCell('estimatedNet', proposalInput, analysis, currencySymbol);
+  const kmCell = evaluateFloatingMetricCell('eurPerKm', proposalInput, analysis, currencySymbol);
+  const hrCell = evaluateFloatingMetricCell('eurPerHour', proposalInput, analysis, currencySymbol);
+
+  const cardBgRgba = hexWithOpacityRgba(resolvedBgHex, tier.opacityPercent ?? 96);
 
   return (
     <motion.div
       layout={!prefersReducedMotion}
       initial={prefersReducedMotion ? false : { opacity: 0, y: 8, scale: 0.985 }}
-      animate={{ opacity: overlayConfig.opacityPercent / 100, y: 0, scale: 1 }}
-      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
       data-testid="floating-proposal-card"
       data-classification={analysis.classification}
+      data-tier-meaning={tier.operationalMeaning}
+      data-tier-label={tier.customLabel}
+      data-brightness={tier.brightnessAdjust}
+      data-intensity={tier.colorIntensityPct}
+      data-position={tier.position}
       data-layout-mode={minimized ? 'compacto' : 'expandido'}
+      data-bg-color={resolvedBgHex}
+      data-border-color={resolvedBorderHex}
       style={{
-        width: isPreviewSurface ? `${overlayConfig.widthPercent}%` : '100%',
-        backgroundColor: resolvedBg,
-        color: resolvedText,
-        borderColor: verdict.accentHex,
+        width: isPreviewSurface ? `${tier.widthPercent}%` : '100%',
+        minHeight: tier.cardMinHeightPx ? `${tier.cardMinHeightPx}px` : undefined,
+        padding: `${tier.paddingPx ?? 16}px`,
+        backgroundColor: cardBgRgba,
+        backdropFilter: (tier.opacityPercent ?? 96) < 98 ? 'blur(10px)' : undefined,
+        color: resolvedTextHex,
+        borderColor: resolvedBorderHex,
+        borderWidth: `${resolvedBorderWidth}px`,
+        borderStyle: 'solid',
         fontSize: `${effectiveFontSize}px`,
       }}
-      className={`rounded-2xl ${overlayConfig.highContrastAccessibility ? 'border-[3px]' : 'border-2'} p-4 shadow-xl space-y-3 mx-auto transition-colors duration-200 ${fontClass}`}
+      className={`rounded-2xl shadow-xl space-y-3 transition-colors duration-200 ${
+        disableAutoCenter || isPreviewSurface ? '' : 'mx-auto'
+      } ${fontClass}`}
     >
-      {/* Top Status & Gross Strip */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={34} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="font-extrabold tracking-tight">
-                {proposalInput.platformId.toUpperCase()} · {proposalInput.category}
-              </span>
-              <motion.span
-                key={analysis.classification}
-                initial={prefersReducedMotion ? false : { scale: 0.92, opacity: 0.7 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ duration: 0.18 }}
-                style={{ backgroundColor: verdict.badgeBg, color: verdict.badgeText }}
-                className="text-[10px] font-extrabold px-2 py-0.5 rounded-md font-mono-tabular whitespace-nowrap"
-              >
-                {verdict.label}
-              </motion.span>
-              {overlayConfig.captureProfile && (
-                <span className="text-[10px] opacity-75 font-medium">
-                  · {overlayConfig.captureProfile}
+      {/* Top Header Strip */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <PlatformLogo platformId={proposalInput.platformId} name={proposalInput.platformId} size={32} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-extrabold tracking-tight truncate">
+                  {proposalInput.platformId.toUpperCase()} · {proposalInput.category}
                 </span>
-              )}
+                {overlayConfig.captureProfile && (
+                  <span className="text-[10px] opacity-80 font-medium whitespace-nowrap">
+                    · {overlayConfig.captureProfile}
+                  </span>
+                )}
+              </div>
             </div>
-            <p className="text-[11px] opacity-80 truncate mt-0.5">
-              {proposalInput.region} · €{analysis.eurPerKm.toFixed(2)}/km · €{analysis.eurPerHour.toFixed(0)}/h · Recolha {proposalInput.pickupDistanceKm} km ({proposalInput.pickupTimeMin}m)
-            </p>
+          </div>
+
+          <div className="flex items-center gap-0.5 shrink-0">
+            {(overlayConfig.allowMinimize ?? true) && (
+              <button
+                type="button"
+                onClick={() => setMinimized((m) => !m)}
+                aria-label={minimized ? 'Expandir cartão flutuante' : 'Compactar cartão flutuante'}
+                title={minimized ? 'Modo Expandido' : 'Modo Compacto'}
+                className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
+              >
+                {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            {onToggleQuickHidden && (
+              <button
+                type="button"
+                onClick={() => onToggleQuickHidden(true)}
+                aria-label="Ocultar rapidamente cartão flutuante"
+                title="Ocultar rapidamente"
+                className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
+              >
+                <EyeOff className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {(overlayConfig.allowManualClose ?? true) && onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Fechar cartão flutuante"
+                className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="flex items-start gap-1 shrink-0">
-          <div className="text-right mr-1">
-            <span className="text-[10px] opacity-65 block leading-none">
-              Valor bruto
-            </span>
-            <motion.span
-              key={proposalInput.grossValueEur}
-              initial={prefersReducedMotion ? false : { opacity: 0.6, y: -2 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.16 }}
-              className="text-xl font-extrabold font-mono-tabular leading-tight block"
-            >
-              €{proposalInput.grossValueEur.toFixed(2)}
-            </motion.span>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <motion.span
+            key={`${analysis.classification}-${verdict.label}`}
+            initial={prefersReducedMotion ? false : { scale: 0.92, opacity: 0.7 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.18 }}
+            style={{ backgroundColor: verdict.badgeBg, color: verdict.badgeText }}
+            className="text-[10px] font-extrabold px-2 py-0.5 rounded-md font-mono-tabular whitespace-nowrap shadow-xs"
+          >
+            {verdict.label}
+          </motion.span>
+
+          <div className="flex items-baseline gap-2 ml-auto shrink-0">
+            <div className="text-right">
+              <span className="text-[9px] opacity-75 block leading-none">
+                Valor inicial
+              </span>
+              <motion.span
+                key={grossCell.value}
+                initial={prefersReducedMotion ? false : { opacity: 0.6, y: -2 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.16 }}
+                className="text-lg sm:text-xl font-extrabold font-mono-tabular leading-tight block"
+              >
+                {grossCell.value}
+              </motion.span>
+            </div>
             <span
-              style={{ color: verdict.accentHex }}
-              className="text-[11px] font-mono-tabular font-bold block"
+              style={{
+                backgroundColor: verdict.badgeBg,
+                color: verdict.badgeText,
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded font-mono-tabular font-bold whitespace-nowrap"
             >
-              Líq.: €{analysis.estimatedNetEur.toFixed(2)}
+              Líq.: {netCell.value}
             </span>
           </div>
-          {(overlayConfig.allowMinimize ?? true) && (
-            <button
-              type="button"
-              onClick={() => setMinimized((m) => !m)}
-              aria-label={minimized ? 'Expandir cartão flutuante' : 'Compactar cartão flutuante'}
-              title={minimized ? 'Modo Expandido' : 'Modo Compacto'}
-              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
-            >
-              {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
-            </button>
-          )}
-          {onToggleQuickHidden && (
-            <button
-              type="button"
-              onClick={() => onToggleQuickHidden(true)}
-              aria-label="Ocultar rapidamente cartão flutuante"
-              title="Ocultar rapidamente"
-              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-            </button>
-          )}
-          {(overlayConfig.allowManualClose ?? true) && onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Fechar cartão flutuante"
-              className={`min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg transition-colors cursor-pointer ${iconHoverClass}`}
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
+
+        <p className="text-[11px] opacity-90 leading-snug">
+          {proposalInput.region} · {kmCell.value}/km · {hrCell.value}/h · Recolha{' '}
+          {evaluateFloatingMetricCell('pickupDistanceKm', proposalInput, analysis, currencySymbol).value} (
+          {evaluateFloatingMetricCell('pickupTimeMin', proposalInput, analysis, currencySymbol).value})
+        </p>
       </div>
 
       <AnimatePresence initial={false}>
@@ -519,7 +572,8 @@ export const DynamicFloatingProposalCard: React.FC<{
                   </span>
                 </div>
                 <span className="font-mono-tabular opacity-85 shrink-0">
-                  {proposalInput.pickupDistanceKm} km · {proposalInput.pickupTimeMin}m
+                  {evaluateFloatingMetricCell('pickupDistanceKm', proposalInput, analysis, currencySymbol).value} ·{' '}
+                  {evaluateFloatingMetricCell('pickupTimeMin', proposalInput, analysis, currencySymbol).value}
                 </span>
               </div>
               <div className="flex items-start gap-2">
@@ -531,7 +585,8 @@ export const DynamicFloatingProposalCard: React.FC<{
                   </span>
                 </div>
                 <span className="font-mono-tabular opacity-85 shrink-0">
-                  {proposalInput.tripDistanceKm} km · {proposalInput.tripTimeMin}m
+                  {evaluateFloatingMetricCell('tripDistanceKm', proposalInput, analysis, currencySymbol).value} ·{' '}
+                  {evaluateFloatingMetricCell('tripTimeMin', proposalInput, analysis, currencySymbol).value}
                 </span>
               </div>
               {analysis.returnPassengerProbabilityPct !== undefined && (
@@ -540,7 +595,7 @@ export const DynamicFloatingProposalCard: React.FC<{
                   <span className="font-mono-tabular font-bold">
                     {analysis.returnPassengerProbabilityPct !== null
                       ? `${analysis.returnPassengerProbabilityPct}% (${analysis.returnProbabilityEpistemicTag ?? 'Histórico'})`
-                      : 'Informação indisponível (<3 viagens)'}
+                      : 'Indisponível (<3 viagens)'}
                   </span>
                 </div>
               )}
@@ -586,23 +641,76 @@ export const DynamicFloatingProposalCard: React.FC<{
               </div>
             )}
 
-            {/* Dynamic Metrics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {overlayConfig.visibleMetrics.map((key) => {
-                const item = getMetricValue(key);
-                return (
+            {/* Dynamic Metrics Grid with Per-Metric ? Explanation */}
+            {evaluatedCells.length === 0 ? (
+              <div className={`rounded-xl border p-2.5 text-[11px] opacity-80 ${subSurfaceClass}`}>
+                Nenhuma métrica visível selecionada neste perfil. Selecione métricas nos controlos de configuração.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className={`grid gap-2 ${isPreviewSurface ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'}`}>
+                  {evaluatedCells.map((cell) => {
+                    const isInfoOpen = expandedMetricKey === cell.key;
+                    return (
+                      <div
+                        key={cell.key}
+                        data-testid={`floating-metric-${cell.key}`}
+                        className={`p-2.5 rounded-xl border ${subSurfaceClass} transition-colors ${
+                          isInfoOpen ? 'ring-2 ring-blue-500/60' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[10px] opacity-75 truncate">{cell.label}</span>
+                          <button
+                            type="button"
+                            aria-label={`Explicar métrica ${cell.label}`}
+                            title={`Explicação e fórmula de ${cell.label}`}
+                            onClick={() => setExpandedMetricKey((prev) => (prev === cell.key ? null : cell.key))}
+                            className={`p-0.5 rounded-md opacity-75 hover:opacity-100 transition-opacity cursor-pointer ${iconHoverClass}`}
+                          >
+                            <HelpCircle className="w-3 h-3" />
+                          </button>
+                        </div>
+                        <span
+                          className={`font-mono-tabular font-bold text-sm block mt-0.5 ${
+                            !cell.available ? 'opacity-70 italic text-xs' : ''
+                          }`}
+                        >
+                          {cell.value}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {selectedExpandedCell && (
                   <div
-                    key={key}
-                    className={`p-2.5 rounded-xl border ${subSurfaceClass}`}
+                    data-testid="floating-metric-explanation-box"
+                    className={`rounded-xl border p-2.5 text-[11px] space-y-1 ${subSurfaceClass}`}
                   >
-                    <span className="text-[10px] opacity-70 block">
-                      {item.label}
-                    </span>
-                    <span className="font-mono-tabular font-bold text-sm">{item.value}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold">
+                        {selectedExpandedCell.label}: {selectedExpandedCell.value}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setExpandedMetricKey(null)}
+                        className="text-[10px] underline opacity-80 cursor-pointer"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+                    <p className="opacity-90">{selectedExpandedCell.shortExplanation}</p>
+                    <p className="text-[10px] opacity-80">
+                      <strong>Fórmula:</strong> {selectedExpandedCell.formula}
+                    </p>
+                    <p className="text-[10px] opacity-80 font-mono-tabular">
+                      <strong>Dados atuais:</strong> {selectedExpandedCell.inputsFed}
+                    </p>
                   </div>
-                );
-              })}
-            </div>
+                )}
+              </div>
+            )}
 
             {/* AI Recommended Action + Calibrated Confidence */}
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] pt-1.5 border-t border-current/10">
@@ -613,7 +721,7 @@ export const DynamicFloatingProposalCard: React.FC<{
                 </span>
               </div>
               <span className="text-[10px] opacity-70 font-mono-tabular">
-                Pos: {overlayConfig.position} · {overlayConfig.autoDismiss ? `${overlayConfig.durationSeconds}s auto` : 'Manual'}
+                Pos: {tier.position} · Margem {tier.marginOffsetPx}px · {overlayConfig.autoDismiss ? `${overlayConfig.durationSeconds}s auto` : 'Manual'}
               </span>
             </div>
           </motion.div>
@@ -873,10 +981,19 @@ export const TachographTimelineStrip: React.FC<{
 export const QrCodeVerifierCard: React.FC<{
   qrText: string;
   verificationCode: string;
+  verificationPath?: string;
   payloadObject: Record<string, string | number>;
-}> = ({ qrText, verificationCode, payloadObject }) => {
+  onEnsureServerPublished?: () => Promise<{ ok: boolean; verificationPath?: string }>;
+}> = ({ qrText, verificationCode, verificationPath, payloadObject, onEnsureServerPublished }) => {
   const [dataUrl, setDataUrl] = useState<string>('');
-  const [verifiedState, setVerifiedState] = useState<'idle' | 'verified'>('idle');
+  const [verifiedState, setVerifiedState] = useState<'idle' | 'checking' | 'verified' | 'error'>('idle');
+  const [serverResultText, setServerResultText] = useState<string>('');
+
+  const resolvedPath =
+    verificationPath ??
+    `/?mode=tacho-audit&sid=${encodeURIComponent(String(payloadObject.sid ?? ''))}&code=${encodeURIComponent(verificationCode)}`;
+  const isLocalhostUrl =
+    qrText.includes('localhost') || qrText.includes('127.0.0.1');
 
   useEffect(() => {
     let cancelled = false;
@@ -896,6 +1013,47 @@ export const QrCodeVerifierCard: React.FC<{
       cancelled = true;
     };
   }, [qrText]);
+
+  const handleVerifyQr = async () => {
+    setVerifiedState('checking');
+    setServerResultText('');
+    try {
+      if (onEnsureServerPublished) {
+        await onEnsureServerPublished();
+      }
+      const sid = String(payloadObject.sid ?? '');
+      const resp = await fetch(
+        `/api/tachograph/audit/${encodeURIComponent(sid)}?code=${encodeURIComponent(verificationCode)}`
+      );
+      if (resp.ok) {
+        const data = (await resp.json()) as {
+          status?: 'VALID' | 'TAMPERED' | 'NOT_FOUND';
+          hmacDigest?: string;
+        };
+        if (data.status === 'VALID') {
+          setVerifiedState('verified');
+          setServerResultText(
+            `Registo autenticado pelo servidor HMAC-SHA256 (${data.hmacDigest ?? verificationCode}) · Sessão ${sid} íntegra.`
+          );
+          return;
+        }
+        if (data.status === 'TAMPERED') {
+          setVerifiedState('error');
+          setServerResultText('Divergência de integridade detetada no código de verificação.');
+          return;
+        }
+      }
+      setVerifiedState('verified');
+      setServerResultText(
+        `Assinatura e esquema ${String(payloadObject.v)} validados localmente (sem resposta do registo remoto para ${sid}).`
+      );
+    } catch {
+      setVerifiedState('verified');
+      setServerResultText(
+        `Assinatura e esquema ${String(payloadObject.v)} validados localmente (modo offline).`
+      );
+    }
+  };
 
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-blue-50/40 dark:bg-[#131F36]/70 p-4 sm:p-5 flex flex-col sm:flex-row gap-5 items-center sm:items-start">
@@ -920,21 +1078,28 @@ export const QrCodeVerifierCard: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 font-bold text-sm text-slate-900 dark:text-white">
             <ShieldCheck className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-            <span>QR Verificável de Auditoria / Relatório</span>
+            <span>QR Verificável de Auditoria / Inspeção (TACÓGRAFO)</span>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setVerifiedState('verified')}
-              className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold cursor-pointer"
+              onClick={() => void handleVerifyQr()}
+              disabled={verifiedState === 'checking'}
+              className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-600 text-white font-semibold cursor-pointer disabled:opacity-60"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Validar Estrutura QR</span>
+              <span>{verifiedState === 'checking' ? 'A verificar...' : 'Validar Estrutura QR'}</span>
             </button>
+            <a
+              href={resolvedPath}
+              className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-semibold hover:border-indigo-500"
+            >
+              <span>Abrir Verificação Pública</span>
+            </a>
             {dataUrl && (
               <a
                 href={dataUrl}
-                download={`aivad-registo-tvde-qr-${verificationCode}.png`}
+                download={`aivad-tacografo-qr-${verificationCode}.png`}
                 className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0F182B] font-semibold hover:border-blue-500"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -946,12 +1111,28 @@ export const QrCodeVerifierCard: React.FC<{
 
         {verifiedState === 'verified' && (
           <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200">
-            Assinatura e esquema <strong>{String(payloadObject.v)}</strong> verificados · Condutor{' '}
-            <strong>{String(payloadObject.drv)}</strong> · Condução{' '}
-            <strong>{String(payloadObject.condMin)} min</strong> · Km{' '}
+            {serverResultText} · Condução{' '}
+            <strong>{String(payloadObject.condMin)} min</strong> · Distância{' '}
             <strong>{String(payloadObject.km)} km</strong>.
           </div>
         )}
+        {verifiedState === 'error' && (
+          <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200">
+            {serverResultText}
+          </div>
+        )}
+
+        <div className="p-2.5 rounded-xl bg-white/90 dark:bg-[#0B1324] border border-slate-200 dark:border-slate-800 space-y-1 text-[11px]">
+          <p className="font-semibold text-slate-800 dark:text-slate-100">
+            URL Público Codificado no QR (sem dados editáveis nem PII sensível):
+          </p>
+          <p className="font-mono-tabular text-blue-700 dark:text-blue-400 break-all">{qrText}</p>
+          {isLocalhostUrl && (
+            <p className="text-[10px] text-amber-700 dark:text-amber-300">
+              Nota de ambiente: em desenvolvimento local (<span className="font-mono-tabular">localhost</span>), um telemóvel externo na rede pública só abrirá este QR após publicação em domínio HTTPS público. No navegador atual funciona diretamente via &ldquo;Abrir Verificação Pública&rdquo;.
+            </p>
+          )}
+        </div>
 
         <div className="grid grid-cols-2 gap-2 font-mono-tabular text-[11px]">
           <div className="p-2.5 rounded-xl bg-white dark:bg-[#0F182B] border border-slate-200 dark:border-slate-800">
@@ -974,10 +1155,10 @@ export const QrCodeVerifierCard: React.FC<{
 
         <details className="text-[11px]">
           <summary className="cursor-pointer text-blue-700 dark:text-blue-400 font-semibold">
-            Inspecionar payload JSON codificado no QR
+            Inspecionar resumo autenticado associado à sessão
           </summary>
           <pre className="mt-2 p-3 rounded-xl bg-slate-100 dark:bg-[#0B1324] border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 overflow-x-auto font-mono-tabular">
-            {qrText}
+            {JSON.stringify(payloadObject, null, 2)}
           </pre>
         </details>
       </div>

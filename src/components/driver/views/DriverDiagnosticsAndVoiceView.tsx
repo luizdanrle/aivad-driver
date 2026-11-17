@@ -327,7 +327,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                 </h3>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                  <label className="space-y-1 block">
+                  <label className="space-y-1 block" data-guide-target="voice-delivery-mode">
                     <span className="font-semibold text-slate-600 dark:text-slate-300">Modo de Saída</span>
                     <select
                       value={state.voiceConfig.outputChannel}
@@ -356,7 +356,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                     </select>
                   </label>
 
-                  <label className="space-y-1 block">
+                  <label className="space-y-1 block" data-guide-target="voice-language">
                     <span className="font-semibold text-slate-600 dark:text-slate-300">Idioma / Sotaque</span>
                     <select
                       value={state.voiceConfig.language}
@@ -432,7 +432,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                   <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     Categorias de Avisos Ativas
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5" data-guide-target="voice-categories">
                     {(Object.keys(VOICE_CATEGORY_LABELS) as VoiceCategoryKey[]).map((catKey) => {
                       const meta = VOICE_CATEGORY_LABELS[catKey];
                       const checked = state.voiceConfig.categories[catKey];
@@ -471,6 +471,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                 <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     type="button"
+                    data-guide-target="voice-test-btn"
                     onClick={handleTestVoiceProposal}
                     className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold"
                   >
@@ -586,7 +587,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
               </div>
             )}
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6" data-guide-target="connectors-overview">
               {(['uber', 'bolt'] as const).map((cid) => {
                 const conn = state.connectors[cid];
                 return (
@@ -644,7 +645,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                     )}
 
                     {/* Explicit Permission Separation: Read/Capture vs External Execution */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs" data-guide-target="connectors-permissions">
                       <label className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 flex items-start gap-2 cursor-pointer">
                         <input
                           type="checkbox"
@@ -716,7 +717,7 @@ export const DriverDiagnosticsAndVoiceView: React.FC<{ activeTab: string }> = ({
                       <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                         Executar Suite de Verificação em 3 Níveis
                       </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" data-guide-target="connectors-tests">
                         <button
                           type="button"
                           onClick={() => handleRunConnectorSuite(cid, 1)}

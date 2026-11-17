@@ -34,6 +34,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { translateUi } from '../../core/localization';
+import { isRtlLanguage } from '../../core/i18n';
+import { computeLiveTachographClocks, formatDurationHms } from '../../core/tachograph';
 import {
   DRIVER_ONBOARDING_STEPS,
   getDriverModuleGuide,
@@ -54,6 +56,7 @@ import {
   QuickActionItem,
   ThemeToggleButton,
 } from '../ui/DesignSystem';
+import { InteractiveAssistantOverlay } from '../ui/InteractiveAssistantOverlay';
 import { LocalizationPromptOverlay, LocationPillButton } from '../ui/LocalizationModal';
 import { DriverAiCoreView } from './views/DriverAiCoreView';
 import { DriverDashboardAndOps } from './views/DriverDashboardAndOps';
@@ -76,6 +79,8 @@ export type DriverMenuGroup =
 export interface DriverMenuItem {
   id: string;
   label: string;
+  subtitle: string;
+  tier: 'primary' | 'secondary';
   group: DriverMenuGroup;
   icon: React.ComponentType<{ className?: string }>;
   keywords: string;
@@ -94,6 +99,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'dashboard',
     label: 'Painel principal',
+    subtitle: 'Lucro líquido e metas do dia',
+    tier: 'primary',
     group: 'VISÃO GERAL',
     icon: LayoutDashboard,
     keywords: 'inicio dashboard cockpit metas resumo',
@@ -101,6 +108,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'ai-core',
     label: 'AIVAD AI CORE',
+    subtitle: '8 agentes e previsões privadas',
+    tier: 'primary',
     group: 'VISÃO GERAL',
     icon: Sparkles,
     keywords: 'ia cerebro agentes recomendacoes aprendizagem assistente',
@@ -109,6 +118,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'corridas',
     label: 'Corridas',
+    subtitle: 'Analisar propostas e recolha/espera',
+    tier: 'primary',
     group: 'OPERAÇÃO',
     icon: Compass,
     keywords: 'propostas calculadora historico smart data capture viagens',
@@ -116,6 +127,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'estrategia',
     label: 'Estratégia das aplicações',
+    subtitle: 'AutoPilot 3 modos e regras €/km',
+    tier: 'primary',
     group: 'OPERAÇÃO',
     icon: Layers,
     keywords: 'autopilot manual semiautomatico automatico consolidado uber bolt',
@@ -123,21 +136,27 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'agenda-turnos',
     label: 'Agenda e turnos',
+    subtitle: 'Planeamento de escalas e campanhas',
+    tier: 'secondary',
     group: 'OPERAÇÃO',
     icon: CalendarClock,
     keywords: 'planeador escalas turnos pausas metas campanhas',
   },
   {
     id: 'tacografo',
-    label: 'Registo de atividade TVDE',
+    label: 'TACÓGRAFO',
+    subtitle: 'Dois relógios reais, pausas e QR',
+    tier: 'primary',
     group: 'OPERAÇÃO',
     icon: Gauge,
-    keywords: 'tacografo portaria 7 2022 10h 24h qr offline',
+    keywords: 'tacografo portaria 7 2022 10h 24h qr offline relogio turno',
   },
   // GESTÃO INTELIGENTE
   {
     id: 'financeiro',
     label: 'Financeiro',
+    subtitle: 'Comissões, despesas e fórmula real',
+    tier: 'primary',
     group: 'GESTÃO INTELIGENTE',
     icon: Wallet,
     keywords: 'ganhos despesas liquido custos calculo transparencia',
@@ -145,6 +164,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'relatorios',
     label: 'Análises e relatórios',
+    subtitle: '9 sub-relatórios e exportação',
+    tier: 'secondary',
     group: 'GESTÃO INTELIGENTE',
     icon: FileSpreadsheet,
     keywords: 'exportar csv xlsx pdf png graficos desempenho',
@@ -152,6 +173,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'veiculos',
     label: 'Veículos e energia',
+    subtitle: 'Autonomia real, EV e comparador',
+    tier: 'secondary',
     group: 'GESTÃO INTELIGENTE',
     icon: Car,
     keywords: 'eletrico autonomia real homologada carregamento tarifa comparador elegibilidade',
@@ -159,6 +182,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'locais-rotas',
     label: 'Locais e rotas',
+    subtitle: 'Zonas rentáveis e recolhas seguras',
+    tier: 'secondary',
     group: 'GESTÃO INTELIGENTE',
     icon: MapPin,
     keywords: 'casa garagem carregadores zonas mapas google maps waze favoritos',
@@ -167,6 +192,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'voz-copiloto',
     label: 'AIVAD Voice · Copiloto',
+    subtitle: 'Leitura mãos-livres de alertas',
+    tier: 'secondary',
     group: 'PERSONALIZAÇÃO',
     icon: Volume2,
     keywords: 'voz copiloto sintese audio alerta propostas bateria maos livres',
@@ -174,6 +201,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'cartoes-flutuantes',
     label: 'Cartões flutuantes',
+    subtitle: 'Cores, 8 posições e pré-visualizar',
+    tier: 'primary',
     group: 'PERSONALIZAÇÃO',
     icon: Smartphone,
     keywords: 'overlay dinamico verde amarelo vermelho preview simulador android perfis',
@@ -181,6 +210,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'conectores',
     label: 'Conectores Uber e Bolt',
+    subtitle: 'Permissões e testes em 3 níveis',
+    tier: 'secondary',
     group: 'PERSONALIZAÇÃO',
     icon: Plug,
     keywords: 'uber bolt conectores nivel 1 2 3 sandbox api permissoes backoff',
@@ -188,6 +219,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'apps-integracoes',
     label: 'Aplicações e integrações',
+    subtitle: 'Apps validadas na sua cidade',
+    tier: 'secondary',
     group: 'PERSONALIZAÇÃO',
     icon: Layers,
     keywords: 'uber bolt cabify freenow pop vloz ativar desativar plataforma',
@@ -195,6 +228,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'perfil',
     label: 'Configurações',
+    subtitle: 'Conta, idioma, mercado e privacidade',
+    tier: 'secondary',
     group: 'PERSONALIZAÇÃO',
     icon: Settings,
     keywords: 'conta perfil internacional idioma moeda privacidade notificacoes',
@@ -203,6 +238,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'diagnostico',
     label: 'Diagnóstico e estado',
+    subtitle: 'Prontidão técnica e estado API',
+    tier: 'secondary',
     group: 'APOIO',
     icon: Activity,
     keywords: 'diagnostico auditoria transparencia windsurf matriz estado real api',
@@ -210,6 +247,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'suporte',
     label: 'Ajuda e suporte',
+    subtitle: 'Tickets, docs e legislação local',
+    tier: 'secondary',
     group: 'APOIO',
     icon: LifeBuoy,
     keywords: 'tickets legislacao documentos avaliacao dashcam notificacoes sugestoes',
@@ -217,6 +256,8 @@ export const DRIVER_SIDEBAR_ITEMS: DriverMenuItem[] = [
   {
     id: 'portal',
     label: 'Aceder ao site',
+    subtitle: 'Regressar ao portal público',
+    tier: 'secondary',
     group: 'APOIO',
     icon: Globe,
     keywords: 'portal institucional site oficial sair',
@@ -239,7 +280,7 @@ const NAV_LABELS: Record<string, string> = {
   'agenda-turnos': 'Agenda e turnos',
   planeador: 'Agenda e turnos · Planeador',
   campanhas: 'Agenda e turnos · Campanhas',
-  tacografo: 'Registo de atividade TVDE',
+  tacografo: 'TACÓGRAFO',
   financeiro: 'Financeiro',
   relatorios: 'Análises e relatórios',
   veiculos: 'Veículos e energia',
@@ -260,6 +301,35 @@ const NAV_LABELS: Record<string, string> = {
   'assistente-ia': 'AIVAD AI CORE',
   notificacoes: 'Notificações',
   sugestoes: 'Ajuda · Sugestões',
+};
+
+const GROUP_I18N_KEY: Record<DriverMenuGroup, string> = {
+  'VISÃO GERAL': 'group_overview',
+  'OPERAÇÃO': 'group_ops',
+  'GESTÃO INTELIGENTE': 'group_smart',
+  'PERSONALIZAÇÃO': 'group_custom',
+  'APOIO': 'group_support',
+};
+
+const ITEM_I18N_KEYS: Record<string, { labelKey: string; subtitleKey: string }> = {
+  dashboard: { labelKey: 'nav_dashboard', subtitleKey: 'nav_dashboard_sub' },
+  'ai-core': { labelKey: 'nav_aicore', subtitleKey: 'nav_aicore_sub' },
+  corridas: { labelKey: 'nav_rides', subtitleKey: 'nav_rides_sub' },
+  estrategia: { labelKey: 'nav_strategy', subtitleKey: 'nav_strategy_sub' },
+  'agenda-turnos': { labelKey: 'nav_shifts', subtitleKey: 'nav_shifts_sub' },
+  tacografo: { labelKey: 'nav_tacho', subtitleKey: 'nav_tacho_sub' },
+  financeiro: { labelKey: 'nav_finance', subtitleKey: 'nav_finance_sub' },
+  relatorios: { labelKey: 'nav_reports', subtitleKey: 'nav_reports_sub' },
+  veiculos: { labelKey: 'nav_vehicles', subtitleKey: 'nav_vehicles_sub' },
+  'locais-rotas': { labelKey: 'nav_places', subtitleKey: 'nav_places_sub' },
+  'voz-copiloto': { labelKey: 'nav_voice', subtitleKey: 'nav_voice_sub' },
+  'cartoes-flutuantes': { labelKey: 'nav_cards', subtitleKey: 'nav_cards_sub' },
+  conectores: { labelKey: 'nav_connectors', subtitleKey: 'nav_connectors_sub' },
+  'apps-integracoes': { labelKey: 'nav_apps', subtitleKey: 'nav_apps_sub' },
+  perfil: { labelKey: 'nav_settings', subtitleKey: 'nav_settings_sub' },
+  diagnostico: { labelKey: 'nav_diag', subtitleKey: 'nav_diag_sub' },
+  suporte: { labelKey: 'nav_support', subtitleKey: 'nav_support_sub' },
+  portal: { labelKey: 'nav_portal', subtitleKey: 'nav_portal_sub' },
 };
 
 function loadInitialOnboardingState(): ProgressiveOnboardingState {
@@ -288,6 +358,8 @@ export const DriverLayout: React.FC = () => {
     state,
     activeDriver,
     activeDriverPlan,
+    activeVehicle,
+    activeMarket,
     rolling24hCompliance,
     setDriverNav,
     setMode,
@@ -295,11 +367,14 @@ export const DriverLayout: React.FC = () => {
     syncNowToServer,
     updateVoiceCopilotConfig,
     dismissVisualVoiceBanner,
+    openAssistantHub,
+    startInteractiveAssistant,
   } = useEcosystem();
 
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [locationModalOpen, setLocationModalOpen] = useState(false);
+  const [tachoNowMs, setTachoNowMs] = useState<number>(() => Date.now());
   const [searchQuery, setSearchQuery] = useState('');
   const [favorites, setFavorites] = useState<string[]>(['dashboard', 'ai-core', 'corridas', 'tacografo']);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -320,6 +395,7 @@ export const DriverLayout: React.FC = () => {
   ).length;
 
   const lang = state.localization.languageCode;
+  const isRtl = isRtlLanguage(lang);
   const activeNav = state.activeDriverNav;
   const activeModuleGuide = useMemo(() => getDriverModuleGuide(activeNav), [activeNav]);
 
@@ -334,16 +410,28 @@ export const DriverLayout: React.FC = () => {
     );
   };
 
+  const getLocalizedItemLabel = (item: DriverMenuItem) => {
+    const keys = ITEM_I18N_KEYS[item.id];
+    return keys ? translateUi(lang, keys.labelKey) : item.label;
+  };
+  const getLocalizedItemSubtitle = (item: DriverMenuItem) => {
+    const keys = ITEM_I18N_KEYS[item.id];
+    return keys ? translateUi(lang, keys.subtitleKey) : item.subtitle;
+  };
+
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return DRIVER_SIDEBAR_ITEMS;
-    return DRIVER_SIDEBAR_ITEMS.filter(
-      (it) =>
+    return DRIVER_SIDEBAR_ITEMS.filter((it) => {
+      const lbl = getLocalizedItemLabel(it).toLowerCase();
+      return (
+        lbl.includes(q) ||
         it.label.toLowerCase().includes(q) ||
         it.keywords.toLowerCase().includes(q) ||
         it.group.toLowerCase().includes(q)
-    );
-  }, [searchQuery]);
+      );
+    });
+  }, [searchQuery, lang]);
 
   const handleSelectNav = (id: string) => {
     if (id === 'portal') {
@@ -360,6 +448,54 @@ export const DriverLayout: React.FC = () => {
   const activeTachoSession = state.tachograph.sessions.find(
     (s) => s.id === state.tachograph.activeSessionId && s.status === 'Em curso'
   );
+
+  useEffect(() => {
+    setTachoNowMs(Date.now());
+    if (!activeTachoSession) return;
+    const id = window.setInterval(() => {
+      setTachoNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [activeTachoSession?.id, activeTachoSession?.currentState]);
+
+  const liveTachoClocks = useMemo(
+    () =>
+      computeLiveTachographClocks(state.tachograph, tachoNowMs, {
+        countryCode: activeMarket.code,
+      }),
+    [state.tachograph, tachoNowMs, activeMarket.code]
+  );
+
+  const operationalStatusMeta = activeTachoSession
+    ? liveTachoClocks.operationalStatus === 'Em Pausa'
+      ? {
+          label: translateUi(lang, 'tacho_on_break'),
+          cls: 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800',
+        }
+      : {
+          label: translateUi(lang, 'tacho_active_shift'),
+          cls: 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800',
+        }
+    : {
+        label: translateUi(lang, 'tacho_offline'),
+        cls: 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700',
+      };
+
+  const resolveAssistantIdForNav = (navId: string): string => {
+    if (navId === 'cartoes-flutuantes') return 'floating-card';
+    if (navId === 'voz-copiloto') return 'voice';
+    if (navId === 'estrategia' || navId === 'autopilot') return 'autopilot';
+    if (navId === 'conectores') return 'connectors';
+    if (navId === 'tacografo') return 'tacografo';
+    if (['corridas', 'calculadora', 'propostas-tempo-real', 'smart-capture', 'historico-viagens'].includes(navId)) return 'corridas';
+    if (navId === 'financeiro') return 'financeiro';
+    if (navId === 'relatorios') return 'relatorios';
+    if (navId === 'veiculos' || navId === 'comparador-veiculos') return 'veiculos';
+    if (navId === 'locais-rotas' || navId === 'mapas-zonas') return 'locais-rotas';
+    if (navId === 'apps-integracoes') return 'apps-integracoes';
+    if (navId === 'diagnostico') return 'diagnostico';
+    return 'dashboard';
+  };
 
   const isNavActive = (itemId: string): boolean => {
     if (activeNav === itemId) return true;
@@ -385,7 +521,7 @@ export const DriverLayout: React.FC = () => {
       },
       {
         id: 'qa-flutuante',
-        label: 'Cartão Flutuante Dinâmico',
+        label: translateUi(lang, 'nav_cards'),
         sublabel: 'Simulador Verde · Amarelo · Vermelho',
         variant: 'accent',
         icon: <Smartphone className="w-4 h-4" />,
@@ -393,22 +529,22 @@ export const DriverLayout: React.FC = () => {
       },
       {
         id: 'qa-tacografo',
-        label: 'Registo TVDE 10h / 24h',
-        sublabel: `Restam ${rolling24hCompliance.remainingLegalMinutes} min legais`,
+        label: translateUi(lang, 'nav_tacho'),
+        sublabel: `${translateUi(lang, 'tacho_remaining')}: ${rolling24hCompliance.remainingLegalMinutes} min`,
         variant: 'success',
         icon: <Gauge className="w-4 h-4" />,
         onSelect: () => handleSelectNav('tacografo'),
       },
       {
         id: 'qa-aicore',
-        label: 'Consultar AI CORE & Voz',
-        sublabel: '8 Agentes especialistas + síntese mãos-livres',
+        label: translateUi(lang, 'nav_aicore'),
+        sublabel: translateUi(lang, 'nav_aicore_sub'),
         variant: 'ai',
         icon: <Sparkles className="w-4 h-4" />,
         onSelect: () => handleSelectNav('ai-core'),
       },
     ],
-    [rolling24hCompliance.remainingLegalMinutes]
+    [rolling24hCompliance.remainingLegalMinutes, lang]
   );
 
   const renderView = () => {
@@ -461,35 +597,77 @@ export const DriverLayout: React.FC = () => {
 
   const bottomTabs = [
     { id: 'dashboard', label: translateUi(lang, 'nav_home'), icon: Home },
-    { id: 'corridas', label: 'Corridas', icon: Compass },
-    { id: 'tacografo', label: 'Atividade', icon: Gauge, featured: true },
-    { id: 'ai-core', label: 'AI CORE', icon: Sparkles },
+    { id: 'corridas', label: translateUi(lang, 'nav_rides'), icon: Compass },
+    { id: 'tacografo', label: translateUi(lang, 'nav_tacho'), icon: Gauge, featured: true },
+    { id: 'ai-core', label: translateUi(lang, 'nav_aicore'), icon: Sparkles },
     { id: 'perfil', label: translateUi(lang, 'nav_profile'), icon: User },
   ];
 
   const renderSidebarBody = (isMobile = false) => (
     <>
       <div className="p-3 space-y-2.5 border-b border-slate-200/90 dark:border-[#1E2D4A]">
-        {/* Live 10h/24h Legal Bar */}
+        {/* Live Compact Dual-Clock TACÓGRAFO Widget */}
         <button
           type="button"
+          data-testid={isMobile ? 'sidebar-tacho-clocks-mobile' : 'sidebar-tacho-clocks'}
           onClick={() => handleSelectNav('tacografo')}
-          className={`w-full p-3 rounded-xl border text-left transition-all space-y-1.5 cursor-pointer ${
+          className={`w-full p-3 rounded-xl border text-start transition-all space-y-2 cursor-pointer ${
             activeNav === 'tacografo'
               ? 'bg-gradient-to-r from-blue-700 to-blue-600 text-white border-blue-600 shadow-sm'
               : 'bg-blue-50/80 dark:bg-[#131F36] border-blue-200/80 dark:border-blue-800/60 hover:border-blue-500'
           }`}
         >
-          <div className="flex items-center justify-between text-[11px] font-bold">
+          <div className="flex items-center justify-between text-[11px] font-bold gap-1">
             <span className="flex items-center gap-1.5">
-              <Gauge className="w-3.5 h-3.5" />
-              <span>Atividade TVDE 10h/24h</span>
+              <Gauge className="w-3.5 h-3.5 shrink-0" />
+              <span>{translateUi(lang, 'nav_tacho')}</span>
             </span>
-            <span className="font-mono-tabular">
-              {Math.floor(rolling24hCompliance.rolling24hWorkMinutes / 60)}h
-              {String(rolling24hCompliance.rolling24hWorkMinutes % 60).padStart(2, '0')}m
+            <span
+              className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold ${
+                activeNav === 'tacografo'
+                  ? 'bg-white/20 text-white'
+                  : liveTachoClocks.operationalStatus === 'Em Turno'
+                  ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                  : liveTachoClocks.operationalStatus === 'Em Pausa'
+                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+              }`}
+            >
+              {operationalStatusMeta.label}
             </span>
           </div>
+
+          <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+            <div
+              className={`px-2 py-1.5 rounded-lg border ${
+                activeNav === 'tacografo'
+                  ? 'bg-white/10 border-white/20'
+                  : 'bg-white/90 dark:bg-[#0B1324] border-slate-200/80 dark:border-slate-700'
+              }`}
+            >
+              <span className={`block truncate ${activeNav === 'tacografo' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
+                {translateUi(lang, 'tacho_status_shift')}
+              </span>
+              <span className="font-mono-tabular font-extrabold text-xs block">
+                {formatDurationHms(liveTachoClocks.shiftElapsedSeconds)}
+              </span>
+            </div>
+            <div
+              className={`px-2 py-1.5 rounded-lg border ${
+                activeNav === 'tacografo'
+                  ? 'bg-white/10 border-white/20'
+                  : 'bg-white/90 dark:bg-[#0B1324] border-slate-200/80 dark:border-slate-700'
+              }`}
+            >
+              <span className={`block truncate ${activeNav === 'tacografo' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
+                {translateUi(lang, 'tacho_status_effective')}
+              </span>
+              <span className="font-mono-tabular font-extrabold text-xs block">
+                {formatDurationHms(liveTachoClocks.effectiveWorkSeconds)}
+              </span>
+            </div>
+          </div>
+
           <div className="h-1.5 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden">
             <div
               className={`h-full transition-all duration-300 ${
@@ -505,22 +683,22 @@ export const DriverLayout: React.FC = () => {
               }}
             />
           </div>
-          <p className={`text-[11px] truncate ${activeNav === 'tacografo' ? 'text-blue-100' : 'text-slate-600 dark:text-slate-300'}`}>
-            {activeTachoSession ? activeTachoSession.currentState : 'Fora de serviço'} · Restam{' '}
+          <p className={`text-[10px] truncate ${activeNav === 'tacografo' ? 'text-blue-100' : 'text-slate-600 dark:text-slate-300'}`}>
+            {activeTachoSession ? activeTachoSession.currentState : translateUi(lang, 'tacho_offline')} · {translateUi(lang, 'tacho_remaining')}:{' '}
             {rolling24hCompliance.remainingLegalMinutes}m
           </p>
         </button>
 
         {/* Search Modules */}
         <div className="relative">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute start-3 top-1/2 -translate-y-1/2" />
           <input
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Pesquisar módulos..."
-            aria-label="Pesquisar módulos do motorista"
-            className="w-full pl-8 pr-2.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1324] text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-blue-600"
+            placeholder={translateUi(lang, 'search_modules')}
+            aria-label={translateUi(lang, 'search_modules')}
+            className="w-full ps-8 pe-2.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B1324] text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-blue-600"
           />
         </div>
       </div>
@@ -530,7 +708,7 @@ export const DriverLayout: React.FC = () => {
         {!searchQuery && favorites.length > 0 && (
           <div className="space-y-1.5">
             <p className="px-2 text-[11px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
-              <Star className="w-3 h-3 fill-current" /> Favoritos rápidos
+              <Star className="w-3 h-3 fill-current" /> {translateUi(lang, 'favorites_quick')}
             </p>
             <div className="flex flex-wrap gap-1 px-1">
               {favorites.map((favId) => {
@@ -548,7 +726,7 @@ export const DriverLayout: React.FC = () => {
                         : 'bg-slate-50 dark:bg-[#131F36] border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-blue-500'
                     }`}
                   >
-                    {it.label}
+                    {getLocalizedItemLabel(it)}
                   </button>
                 );
               })}
@@ -561,6 +739,7 @@ export const DriverLayout: React.FC = () => {
           const groupItems = filteredItems.filter((m) => m.group === groupName);
           if (groupItems.length === 0) return null;
           const isCollapsed = !searchQuery && Boolean(collapsedGroups[groupName]);
+          const translatedGroup = translateUi(lang, GROUP_I18N_KEY[groupName]);
           return (
             <div key={groupName} className="space-y-0.5">
               <button
@@ -568,9 +747,9 @@ export const DriverLayout: React.FC = () => {
                 onClick={() => toggleGroup(groupName)}
                 className="w-full px-2 py-1 flex items-center justify-between text-[11px] font-bold text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
               >
-                <span>{groupName}</span>
+                <span>{translatedGroup}</span>
                 {isCollapsed ? (
-                  <ChevronRight className="w-3 h-3" />
+                  <ChevronRight className="w-3 h-3 rtl-flip" />
                 ) : (
                   <ChevronDown className="w-3 h-3" />
                 )}
@@ -581,6 +760,8 @@ export const DriverLayout: React.FC = () => {
                   const Icon = item.icon;
                   const active = isNavActive(item.id);
                   const isFav = favorites.includes(item.id);
+                  const itemLabel = getLocalizedItemLabel(item);
+                  const itemSubtitle = getLocalizedItemSubtitle(item);
                   return (
                     <div
                       key={item.id}
@@ -593,13 +774,24 @@ export const DriverLayout: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleSelectNav(item.id)}
-                        className="flex-1 min-w-0 min-h-[40px] flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-left cursor-pointer"
+                        className="flex-1 min-w-0 min-h-[44px] flex items-center gap-2.5 px-3 py-1.5 text-start cursor-pointer"
                       >
                         <Icon className="w-4 h-4 shrink-0" />
-                        <span className="truncate">{item.label}</span>
+                        <span className="min-w-0 block">
+                          <span className={`block truncate ${item.tier === 'primary' ? 'text-xs font-bold' : 'text-xs font-semibold'}`}>
+                            {itemLabel}
+                          </span>
+                          <span
+                            className={`block truncate text-[10px] leading-tight ${
+                              active ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'
+                            }`}
+                          >
+                            {itemSubtitle}
+                          </span>
+                        </span>
                       </button>
                       {item.id === 'suporte' && unreadNotifications > 0 && (
-                        <span className="mr-1.5 px-1.5 py-0.5 rounded-full bg-rose-600 text-white font-mono-tabular text-[10px] font-bold">
+                        <span className="me-1.5 px-1.5 py-0.5 rounded-full bg-rose-600 text-white font-mono-tabular text-[10px] font-bold">
                           {unreadNotifications}
                         </span>
                       )}
@@ -607,8 +799,8 @@ export const DriverLayout: React.FC = () => {
                         <button
                           type="button"
                           onClick={(e) => toggleFavorite(item.id, e)}
-                          aria-label={isFav ? `Remover ${item.label} dos favoritos` : `Fixar ${item.label} nos favoritos`}
-                          className={`p-1.5 mr-1 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer ${
+                          aria-label={isFav ? `Remover ${itemLabel} dos favoritos` : `Fixar ${itemLabel} nos favoritos`}
+                          className={`p-1.5 me-1 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity cursor-pointer ${
                             isFav ? 'opacity-100 text-amber-400' : 'text-slate-400 hover:text-amber-500'
                           }`}
                         >
@@ -628,7 +820,7 @@ export const DriverLayout: React.FC = () => {
   return (
     <div className="min-h-screen aivad-canvas-bg text-slate-900 dark:text-slate-100 flex">
       {/* Desktop Clean 5-Group Sidebar */}
-      <aside className="hidden lg:flex lg:w-72 lg:flex-col border-r border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shrink-0">
+      <aside className="hidden lg:flex lg:w-72 lg:flex-col border-e border-slate-200/90 dark:border-[#1E2D4A] bg-white dark:bg-[#0F182B] shrink-0">
         <div className="h-16 px-4 border-b border-slate-200/90 dark:border-[#1E2D4A] flex items-center justify-between gap-2">
           <button
             type="button"
@@ -645,29 +837,45 @@ export const DriverLayout: React.FC = () => {
 
         {renderSidebarBody(false)}
 
-        <div className="p-3 border-t border-slate-200/90 dark:border-[#1E2D4A] flex items-center justify-between gap-2 text-xs">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <img
-              src="/src/assets/images/aivad_avatar_driver_1794711880211.jpg"
-              alt={activeDriver.name}
-              referrerPolicy="no-referrer"
-              className="w-8 h-8 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
-            />
-            <div className="min-w-0">
-              <p className="font-semibold truncate">{activeDriver.name}</p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                {activeDriver.city} · {activeDriver.osPlatform}
-              </p>
-            </div>
+        <div className="p-3 border-t border-slate-200/90 dark:border-[#1E2D4A] space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className={`px-2 py-0.5 rounded-full border text-[10px] font-bold ${operationalStatusMeta.cls}`}>
+              ● {operationalStatusMeta.label}
+            </span>
+            <button
+              type="button"
+              onClick={openAssistantHub}
+              className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300 hover:underline inline-flex items-center gap-1 cursor-pointer"
+            >
+              <Sparkles className="w-3 h-3" /> {translateUi(lang, 'assistants_btn')}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => handleSelectNav('perfil')}
-            aria-label="Abrir configurações"
-            className="p-2 rounded-lg text-slate-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-slate-100 dark:hover:bg-[#131F36] cursor-pointer"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <img
+                src="/src/assets/images/aivad_avatar_driver_1794711880211.jpg"
+                alt={activeDriver.name}
+                referrerPolicy="no-referrer"
+                className="w-8 h-8 rounded-full object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+              />
+              <div className="min-w-0">
+                <p className="font-semibold truncate">
+                  {activeDriver.name} <span className="text-[10px] font-mono-tabular text-slate-400">#{activeDriver.id.slice(-4)}</span>
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {activeVehicle.brand} {activeVehicle.model} · {activeDriver.city}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleSelectNav('perfil')}
+              aria-label={translateUi(lang, 'nav_settings')}
+              className="p-2 rounded-lg text-slate-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-slate-100 dark:hover:bg-[#131F36] cursor-pointer"
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -684,11 +892,11 @@ export const DriverLayout: React.FC = () => {
               onClick={() => setMobileMenuOpen(false)}
             />
             <motion.aside
-              initial={prefersReducedMotion ? false : { x: -280, opacity: 0.8 }}
+              initial={prefersReducedMotion ? false : { x: isRtl ? 280 : -280, opacity: 0.8 }}
               animate={{ x: 0, opacity: 1 }}
-              exit={prefersReducedMotion ? undefined : { x: -280, opacity: 0 }}
+              exit={prefersReducedMotion ? undefined : { x: isRtl ? 280 : -280, opacity: 0 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-              className="relative w-80 max-w-[88vw] bg-white dark:bg-[#0F182B] h-full flex flex-col border-r border-slate-200 dark:border-[#1E2D4A] z-10 shadow-2xl"
+              className="relative w-80 max-w-[88vw] bg-white dark:bg-[#0F182B] h-full flex flex-col border-e border-slate-200 dark:border-[#1E2D4A] z-10 shadow-2xl"
             >
               <div className="h-14 px-4 border-b border-slate-200 dark:border-[#1E2D4A] flex items-center justify-between">
                 <span className="font-display font-bold text-sm flex items-center gap-2">
@@ -697,7 +905,7 @@ export const DriverLayout: React.FC = () => {
                 </span>
                 <button
                   type="button"
-                  aria-label="Fechar menu"
+                  aria-label={translateUi(lang, 'close_btn')}
                   onClick={() => setMobileMenuOpen(false)}
                   className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
@@ -725,15 +933,28 @@ export const DriverLayout: React.FC = () => {
               </button>
               <div className="min-w-0">
                 <p className="hidden sm:block text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                  AIVAD · O Cérebro Inteligente do Motorista
+                  {translateUi(lang, 'app_brand_tagline')}
                 </p>
                 <h1 className="text-sm sm:text-base font-display font-extrabold truncate text-slate-900 dark:text-white">
-                  {NAV_LABELS[activeNav] ?? 'Painel principal'}
+                  {ITEM_I18N_KEYS[activeNav]
+                    ? translateUi(lang, ITEM_I18N_KEYS[activeNav].labelKey)
+                    : activeNav === 'tacografo'
+                    ? translateUi(lang, 'nav_tacho')
+                    : NAV_LABELS[activeNav] ?? translateUi(lang, 'nav_dashboard')}
                 </h1>
               </div>
             </div>
 
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={openAssistantHub}
+                title="Abrir Centro de Guias e Assistentes Interativos passo a passo"
+                className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>{translateUi(lang, 'assistants_btn')}</span>
+              </button>
               <button
                 type="button"
                 onClick={() =>
@@ -748,7 +969,7 @@ export const DriverLayout: React.FC = () => {
               >
                 <BookOpen className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                 <span>
-                  Guia ({onboardingState.completedStepIds.length}/{DRIVER_ONBOARDING_STEPS.length})
+                  {translateUi(lang, 'guide_btn')} ({onboardingState.completedStepIds.length}/{DRIVER_ONBOARDING_STEPS.length})
                 </span>
               </button>
 
@@ -808,7 +1029,7 @@ export const DriverLayout: React.FC = () => {
                 className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#131F36] text-xs font-semibold hover:border-blue-600 whitespace-nowrap cursor-pointer"
               >
                 <Globe className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
-                <span>Site Oficial</span>
+                <span>{translateUi(lang, 'site_official')}</span>
               </button>
             </div>
           </header>
@@ -854,7 +1075,7 @@ export const DriverLayout: React.FC = () => {
           {state.session.isDemoSession && (
             <div className="rounded-xl bg-amber-50/90 dark:bg-amber-950/45 border border-amber-200 dark:border-amber-800/80 px-3.5 py-2 text-[11px] text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2">
               <span>
-                <strong>Modo Demonstração (Sandbox):</strong> dados de exemplo isolados da conta real.
+                <strong>{translateUi(lang, 'demo_sandbox_notice')}</strong>
                 {syncNotice ? ` · ${syncNotice}` : ''}
               </span>
               <div className="flex items-center gap-3">
@@ -926,6 +1147,8 @@ export const DriverLayout: React.FC = () => {
             key={activeModuleGuide.id}
             guide={activeModuleGuide}
             onNavigate={handleSelectNav}
+            onStartInteractiveGuide={() => startInteractiveAssistant(resolveAssistantIdForNav(activeNav))}
+            onOpenGuideHub={openAssistantHub}
           />
 
           {/* Smooth Animated Module Viewport */}
@@ -943,7 +1166,7 @@ export const DriverLayout: React.FC = () => {
         </main>
       </div>
 
-      {/* Global Semantic Floating Action Dock (Zero Black Buttons in Light & Dark Modes) */}
+      {/* Global Semantic Floating Action Dock (Independent Config from Proposal Cards) */}
       <FloatingActionButton
         label="Atalhos AIVAD"
         ariaLabel="Abrir atalhos rápidos operacionais AIVAD"
@@ -951,6 +1174,7 @@ export const DriverLayout: React.FC = () => {
         icon={<Zap className="w-4 h-4" />}
         badgeText="4"
         actions={quickDockActions}
+        dockConfig={state.floatingDockConfig}
       />
 
       {/* Mobile Fixed Bottom Navigation (56px height -> fits strictly inside <=15% sticky viewport budget) */}
@@ -995,6 +1219,7 @@ export const DriverLayout: React.FC = () => {
         manualOpen={locationModalOpen}
         onCloseManual={() => setLocationModalOpen(false)}
       />
+      <InteractiveAssistantOverlay scope="driver" />
       <OfflineIndicator />
     </div>
   );

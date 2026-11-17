@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Check, Compass, Globe2, MapPin, Navigation, ShieldCheck, X } from 'lucide-react';
 import { translateUi } from '../../core/localization';
+import { SUPPORTED_LANGUAGES } from '../../core/i18n';
 import { useEcosystem } from '../../services/EcosystemContext';
 import { Button, Card } from './DesignSystem';
 
@@ -17,6 +18,7 @@ export const LocalizationPromptOverlay: React.FC<{
     simulateOrSelectLocation,
     confirmLocalMarket,
     dismissCountryChangePrompt,
+    setLanguageCode,
   } = useEcosystem();
 
   const loc = state.localization;
@@ -179,6 +181,27 @@ export const LocalizationPromptOverlay: React.FC<{
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div className="space-y-1.5 text-xs">
+                <label htmlFor="loc-lang-pick" className="block font-semibold text-slate-700 dark:text-slate-200">
+                  {translateUi(loc.languageCode, 'lang_selector_label')} (26 idiomas)
+                </label>
+                <select
+                  id="loc-lang-pick"
+                  value={loc.languageCode}
+                  onChange={(e) => setLanguageCode(e.target.value)}
+                  className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B1324] font-medium"
+                >
+                  {SUPPORTED_LANGUAGES.map((lng) => (
+                    <option key={lng.code} value={lng.code}>
+                      {lng.nativeName} — {lng.englishName} ({lng.dir.toUpperCase()})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {translateUi(loc.languageCode, 'lang_independent_note')}
+                </p>
               </div>
 
               <div className="p-3 rounded-xl border border-blue-200/80 dark:border-blue-900/60 bg-blue-50/70 dark:bg-blue-950/30 text-[11px] text-slate-700 dark:text-slate-300 flex items-start gap-2">

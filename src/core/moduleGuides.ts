@@ -66,11 +66,11 @@ export const DRIVER_ONBOARDING_STEPS: OnboardingStepDefinition[] = [
   {
     id: 'step-tacografo',
     stepNumber: 2,
-    title: 'Ativar o Registo TVDE 10h / 24h',
+    title: 'Ativar o TACÓGRAFO 10h / 24h',
     shortGoal: 'Controlar o limite legal de 10h em janela deslizante de 24h entre todas as apps.',
     explanation:
       'Antes de conduzir, inicie turno com o odómetro atual. O AIVAD soma automaticamente o tempo de condução multi-app e emite avisos preventivos às 8h e 9h.',
-    actionLabel: 'Abrir Registo TVDE',
+    actionLabel: 'Abrir TACÓGRAFO',
     targetNav: 'tacografo',
     estimatedTime: '45 seg',
   },
@@ -268,12 +268,12 @@ export const DRIVER_MODULE_GUIDES: Record<string, DriverModuleGuide> = {
       'Adicione turnos planeados com horário de início, fim e pausa de refeição.',
       'Registe campanhas/bónus em curso para acompanhar quantas viagens faltam.',
     ],
-    primaryAction: { label: 'Abrir Registo TVDE 10h/24h', targetNav: 'tacografo' },
+    primaryAction: { label: 'Abrir TACÓGRAFO 10h/24h', targetNav: 'tacografo' },
   },
 
   tacografo: {
     id: 'tacografo',
-    title: 'Registo de Atividade TVDE (10h / 24h)',
+    title: 'TACÓGRAFO (10h / 24h)',
     subtitle: 'Controlo cronológico de condução, pausas, odómetro, fila offline e QR verificável de auditoria.',
     categoryLabel: 'Operação · Conformidade',
     whatIsIt:

@@ -203,7 +203,7 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
           />
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" data-guide-target="admin-users-panel">
           <Card className="lg:col-span-8 overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
@@ -425,7 +425,7 @@ export const AdminCoreOps: React.FC<{ activeTab: string }> = ({ activeTab }) => 
           </form>
         </Card>
 
-        <Card className="overflow-x-auto">
+        <Card className="overflow-x-auto" data-guide-target="admin-orgs-panel">
           <div className="p-4 border-b border-slate-200 dark:border-slate-800">
             <h2 className="text-sm font-bold">Organizações, Operadores &amp; Cooperativas ({state.organizations.length})</h2>
           </div>

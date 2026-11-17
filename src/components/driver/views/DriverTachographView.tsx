@@ -1,18 +1,21 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
   Clock,
+  Coffee,
   Download,
   Edit3,
   FileSpreadsheet,
   Gauge,
   History,
   Layers,
+  PauseCircle,
   Play,
   RefreshCw,
   ShieldAlert,
+  Utensils,
   WifiOff,
   X,
 } from 'lucide-react';
@@ -21,14 +24,17 @@ import {
   exportToCsv,
   exportToXlsx,
 } from '../../../core/exportUtils';
-import { daysAgoIso, formatDistance, getTodayIso } from '../../../core/localization';
+import { daysAgoIso, formatDistance, getTodayIso, translateUi } from '../../../core/localization';
 import {
   buildTachographPeriodReport,
   buildTachographQrPayload,
   canTransitionTachographState,
+  computeLiveTachographClocks,
   consolidateMultiPlatformJornada,
+  formatDurationHms,
   PORTARIA_7_2022_CHECKLIST,
   TACHOGRAPH_LEGAL_DISCLAIMER,
+  TACHOGRAPH_OPERATIONAL_CATEGORIES,
   TACHOGRAPH_STATES,
 } from '../../../core/tachograph';
 import type { TachographActivityRecord, TachographState } from '../../../models/types';
@@ -63,7 +69,10 @@ export const DriverTachographView: React.FC = () => {
     correctTachographActivity,
     enqueueOfflineTachograph,
     syncOfflineTachograph,
+    publishTachographAuditSnapshot,
   } = useEcosystem();
+
+  const lang = state.localization.languageCode;
 
   const todayIso = getTodayIso();
   const weekStartIso = daysAgoIso(6);
@@ -74,6 +83,19 @@ export const DriverTachographView: React.FC = () => {
     (s) => s.id === tacho.activeSessionId && s.status === 'Em curso'
   );
   const latestSession = activeSession ?? tacho.sessions[0];
+
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+    if (!activeSession) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [activeSession?.id, activeSession?.currentState]);
+
+  const liveClocks = useMemo(
+    () => computeLiveTachographClocks(tacho, nowMs, { countryCode: activeMarket.code }),
+    [tacho, nowMs, activeMarket.code]
+  );
 
   const [odoInput, setOdoInput] = useState<number>(
     () => (activeSession?.odometerCurrentKm ?? latestSession?.odometerEndKm ?? 48450) + 6
@@ -248,7 +270,7 @@ export const DriverTachographView: React.FC = () => {
           <div>
             <h2 className="text-sm font-bold flex items-center gap-2">
               <Gauge className="w-4 h-4 text-blue-700 dark:text-blue-400" />
-              Conformidade TVDE 10h em Janela Deslizante de 24 Horas
+              {translateUi(lang, 'tachograph_title')} · Conformidade 10h / 24h
             </h2>
             <p className="text-xs text-slate-500">{rolling24hCompliance.platformBreakdownNote}</p>
           </div>
@@ -295,14 +317,14 @@ export const DriverTachographView: React.FC = () => {
         )}
       </Card>
 
-      {/* Live Tachograph Cockpit Hero (Light & Dark Adaptive) */}
+      {/* Dual Independent Live Clocks + 6 Categories */}
       <Card variant="tinted-blue" className="p-5 sm:p-6 space-y-5 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="inline-flex items-center gap-1.5 font-mono-tabular font-bold text-blue-700 dark:text-blue-300">
                 <Gauge className="w-3.5 h-3.5" />
-                {activeSession ? 'Turno Ativo no Tacógrafo' : 'Fora de Serviço · Sem Turno Ativo'}
+                {activeSession ? `${translateUi(lang, 'tachograph_title')} · Turno Ativo` : `${translateUi(lang, 'tachograph_title')} · ${translateUi(lang, 'tacho_offline')}`}
               </span>
               <span aria-hidden="true" className="text-slate-400">·</span>
               <span className="font-mono-tabular text-slate-600 dark:text-slate-300">
@@ -356,6 +378,152 @@ export const DriverTachographView: React.FC = () => {
           </div>
         </div>
 
+        {/* Dual Live Clocks Strip */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div
+            data-testid="tacho-clock-shift"
+            className="p-4 rounded-2xl bg-white dark:bg-[#0B1324] border border-blue-200 dark:border-blue-800/70 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-blue-700 dark:text-blue-400 uppercase tracking-wide">
+                Relógio 1 · {translateUi(lang, 'tacho_status_shift')}
+              </span>
+              <StatusLabel
+                tone={liveClocks.hasActiveShift ? 'success' : 'neutral'}
+                text={liveClocks.hasActiveShift ? 'Contagem Contínua Ativa' : translateUi(lang, 'tacho_offline')}
+              />
+            </div>
+            <p className="text-3xl sm:text-4xl font-display font-extrabold font-mono-tabular text-slate-900 dark:text-white tracking-tight">
+              {formatDurationHms(liveClocks.shiftElapsedSeconds)}
+            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300 font-mono-tabular">
+              <span>
+                Início:{' '}
+                {liveClocks.shiftStartIso
+                  ? new Date(liveClocks.shiftStartIso).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : '—'}
+              </span>
+              <span>
+                Restante limite 10h:{' '}
+                <strong className={liveClocks.shiftRemainingTo10hSeconds < 3600 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'}>
+                  {formatDurationHms(liveClocks.shiftRemainingTo10hSeconds)}
+                </strong>
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Inicia em &ldquo;Iniciar Turno no Tacógrafo&rdquo; e continua a contar durante Pausa, Refeição e Descanso até ao fim do turno.
+            </p>
+          </div>
+
+          <div
+            data-testid="tacho-clock-effective"
+            className="p-4 rounded-2xl bg-white dark:bg-[#0B1324] border border-emerald-200 dark:border-emerald-800/70 space-y-2"
+          >
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide">
+                Relógio 2 · {translateUi(lang, 'tacho_status_effective')}
+              </span>
+              <StatusLabel
+                tone={
+                  !liveClocks.hasActiveShift
+                    ? 'neutral'
+                    : liveClocks.operationalStatus === 'Em Pausa'
+                    ? 'warning'
+                    : 'success'
+                }
+                text={
+                  !liveClocks.hasActiveShift
+                    ? translateUi(lang, 'tacho_offline')
+                    : liveClocks.operationalStatus === 'Em Pausa'
+                    ? 'Pausado (Acumulado Preservado)'
+                    : 'A Contar Trabalho Real'
+                }
+              />
+            </div>
+            <p className="text-3xl sm:text-4xl font-display font-extrabold font-mono-tabular text-slate-900 dark:text-white tracking-tight">
+              {formatDurationHms(liveClocks.effectiveWorkSeconds)}
+            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-300 font-mono-tabular">
+              <span>
+                Pausa atual / acumul.: {formatDurationHms(liveClocks.currentPauseSeconds)} / {formatDurationHms(liveClocks.breakElapsedSeconds)}
+              </span>
+              <span>
+                Série contínua: <strong>{liveClocks.continuousDrivingMinutesSinceBreak} min</strong> (ref. 270m)
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Conta apenas condução e trabalho operacional; congela em Pausa, Refeição ou Descanso e retoma do valor preservado.
+            </p>
+          </div>
+        </div>
+
+        {/* Live Pre-Break / Prolonged Driving / Resume Alerts + Quick Actions */}
+        {(liveClocks.alerts.length > 0 || activeSession) && (
+          <div className="space-y-2">
+            {liveClocks.alerts.map((al) => (
+              <div
+                key={al.code}
+                className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+                  al.severity === 'critical'
+                    ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+                    : al.severity === 'warning'
+                    ? 'bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200'
+                    : 'bg-blue-50 dark:bg-blue-950/50 border-blue-300 dark:border-blue-800 text-blue-900 dark:text-blue-200'
+                }`}
+              >
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">{al.title}</p>
+                  <p>{al.message}</p>
+                </div>
+              </div>
+            ))}
+
+            {activeSession && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {(['Condução em serviço', 'Pausa', 'Refeição', 'Descanso', 'Fim de turno'] as TachographState[]).map((quickSt) => {
+                  const isCurrent = activeSession.currentState === quickSt;
+                  return (
+                    <button
+                      key={quickSt}
+                      type="button"
+                      disabled={isCurrent}
+                      onClick={() => {
+                        const res = transitionTachograph(quickSt, odoInput, {
+                          platformId: selectedPlatform === 'consolidado' ? undefined : selectedPlatform,
+                          movementKind: quickSt === 'Condução em serviço' ? movementKind : 'Estacionado / Sem movimento',
+                          notes: noteInput.trim() || `Ação rápida: ${quickSt}`,
+                        });
+                        if (!res.ok) {
+                          setFeedback({ tone: 'danger', text: res.error ?? 'Transição não permitida.' });
+                        } else {
+                          setOdoInput((v) => v + 2);
+                          setFeedback({ tone: 'success', text: `TACÓGRAFO atualizado para "${quickSt}".` });
+                        }
+                      }}
+                      className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors cursor-pointer disabled:opacity-50 ${
+                        quickSt === 'Fim de turno'
+                          ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600'
+                          : isCurrent
+                          ? 'bg-blue-700 text-white border-blue-700'
+                          : 'bg-white dark:bg-[#0B1324] border-slate-300 dark:border-slate-700 hover:border-blue-600 text-slate-800 dark:text-slate-100'
+                      }`}
+                    >
+                      {quickSt === 'Pausa' && <PauseCircle className="w-3.5 h-3.5 text-amber-500" />}
+                      {quickSt === 'Refeição' && <Utensils className="w-3.5 h-3.5 text-orange-500" />}
+                      {quickSt === 'Descanso' && <Coffee className="w-3.5 h-3.5 text-indigo-500" />}
+                      {quickSt === 'Condução em serviço' && <Play className="w-3.5 h-3.5 text-emerald-500" />}
+                      <span>{quickSt}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">{liveClocks.marketRuleNote}</p>
+          </div>
+        )}
+
         {feedback && (
           <div
             role="status"
@@ -375,7 +543,7 @@ export const DriverTachographView: React.FC = () => {
         )}
 
         {!activeSession ? (
-          <div className="p-4 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs items-end">
+          <div data-guide-target="tachograph-controls" className="p-4 rounded-xl bg-white/95 dark:bg-[#0B1324]/90 border border-blue-100 dark:border-slate-700/80 grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs items-end">
             <div>
               <label htmlFor="tac-start-odo" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
                 Odómetro Inicial (km)
@@ -421,7 +589,7 @@ export const DriverTachographView: React.FC = () => {
             </button>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-4" data-guide-target="tachograph-controls">
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
               <div>
                 <label htmlFor="tac-odo" className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
@@ -546,6 +714,30 @@ export const DriverTachographView: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* 6 Operational Categories Legend */}
+        <div className="pt-3 border-t border-blue-200/60 dark:border-slate-700/80 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-[11px]">
+          {TACHOGRAPH_OPERATIONAL_CATEGORIES.map((cat) => (
+            <div
+              key={cat.id}
+              className="p-2.5 rounded-xl bg-white/85 dark:bg-[#0B1324]/85 border border-slate-200/80 dark:border-slate-700/80 space-y-0.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-900 dark:text-white">{cat.label}</span>
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                    cat.countsAsEffectiveWork
+                      ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {cat.countsAsEffectiveWork ? 'Conta Efetivo' : 'Pausa Relógio 2'}
+                </span>
+              </div>
+              <p className="text-slate-500 dark:text-slate-400">{cat.description}</p>
+            </div>
+          ))}
+        </div>
       </Card>
 
       {/* Multi-Platform Consolidation + Chronological Timeline */}
@@ -884,7 +1076,11 @@ export const DriverTachographView: React.FC = () => {
           <QrCodeVerifierCard
             qrText={qrData.qrText}
             verificationCode={qrData.verificationCode}
+            verificationPath={qrData.verificationPath}
             payloadObject={qrData.payloadObject}
+            onEnsureServerPublished={() =>
+              publishTachographAuditSnapshot(activeSession?.id ?? latestSession?.id)
+            }
           />
         </Card>
       </div>

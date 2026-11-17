@@ -17,6 +17,10 @@ import {
   type ProposalAiDecisionPackage,
 } from '../core/aiCore';
 import {
+  createDefaultClassificationProfiles,
+  resolveFloatingTierConfig,
+} from '../core/floatingCard';
+import {
   INITIAL_BOLT_CONNECTOR,
   INITIAL_UBER_CONNECTOR,
   registerConnectorFailure,
@@ -26,10 +30,30 @@ import {
   type PlatformConnectorState,
 } from '../core/connectors';
 import {
-  computeDriverDeactivatedPlatformsForLocation,
+  computeNextReviewDate,
+  evaluateValidationFreshness,
+  getDriverOperationalPlatformsForLocation,
+  getPlatformOperationInLocation,
   getValidatedPlatformsForLocation,
+  isPlatformOperationalInLocation,
+  normalizeFloatingCardPosition,
+  sanitizePlatformIdList,
+  sanitizePlatformList,
   upsertPlatformCountryOperation,
 } from '../core/marketCatalog';
+import {
+  applyStepConfirmationToProgress,
+  confirmAssistantStepByUser,
+  createInitialAssistantProgress,
+  evaluateAssistantStepVerification,
+  INTERACTIVE_ASSISTANTS,
+  pauseAssistantProgress,
+  resumeAssistantProgress,
+  skipOptionalAssistantStep,
+  type AssistantEvaluationContext,
+  type AssistantProgressRecord,
+  type AssistantStepStatus,
+} from '../core/interactiveAssistants';
 import {
   appendIdempotentLifecycleEvent,
   buildCancelledTripFromActiveSession,
@@ -44,11 +68,15 @@ import {
   confirmLocalMarketAdaptation,
   detectFallbackLocation,
   evaluateCountryChange,
+  isSupportedLanguageCode,
   resolveLocationFromCoordinates,
 } from '../core/localization';
+import { createDefaultCostsCalculatorConfig } from '../core/costsCalculator';
 import { canAccessMode, isAdminRole } from '../core/rbac';
 import { buildComprehensiveReports, type ComprehensiveReportsBundle } from '../core/reports';
 import {
+  buildTachographQrPayload,
+  computeLiveTachographClocks,
   consolidateMultiPlatformJornada,
   correctTachographRecord,
   enqueueOfflineTachographAction,
@@ -85,6 +113,7 @@ import {
   SEED_EVENTS,
   SEED_EXPENSES,
   SEED_FINANCIAL_COST_CONFIG,
+  SEED_FLOATING_DOCK_CONFIG,
   SEED_LIFECYCLE_AUDIT_EVENTS,
   SEED_LOCALIZATION,
   SEED_NOTIFICATIONS,
@@ -129,6 +158,7 @@ import type {
   CaptureSource,
   CmsContentState,
   ComplianceObligation,
+  CostsCalculatorConfig,
   CountryMarketConfig,
   DashcamClip,
   DataScopeFilter,
@@ -141,6 +171,8 @@ import type {
   ExpenseRecord,
   FeatureSuggestion,
   FinancialCostConfig,
+  FloatingCardTierStyleConfig,
+  FloatingDockConfig,
   LocalizationProfile,
   MapZoneRecord,
   MarketStatus,
@@ -153,6 +185,7 @@ import type {
   PlatformId,
   PlatformRecord,
   PlatformStatus,
+  ProposalClassification,
   ProposalInput,
   ProposalLifecycleState,
   ProposalRecord,
@@ -169,6 +202,8 @@ import type {
   TachographStateStore,
   ThemeMode,
   TicketRecord,
+  TripFareAdjustmentRecord,
+  TripPostAcceptanceActual,
   TripRecord,
   TripStatus,
   UserAccount,
@@ -227,6 +262,7 @@ export interface EcosystemState {
   activeTrip: ActiveTripSession | null;
   zoneObservations: DriverZoneObservation[];
   financialCostConfig: FinancialCostConfig;
+  costsCalculator: CostsCalculatorConfig;
     reportFilters: {
       preset: DateRangePreset;
       customStart: string;
@@ -251,6 +287,17 @@ export interface EcosystemState {
     referralCoupons: import('../models/types').ReferralCouponRecord[];
     vehicleCatalogFilters: import('../models/types').PersistedVehicleCatalogFilters;
     floatingCardQuickHidden: boolean;
+    floatingDockConfig: FloatingDockConfig;
+    activeAssistantId: string | null;
+    assistantHubOpen: boolean;
+    assistantProgress: Record<string, AssistantProgressRecord>;
+    floatingPreviewOpened: boolean;
+    floatingConfigSavedCount: number;
+    voiceTestCount: number;
+    autoPilotSavedCount: number;
+    adminRevalidationCount: number;
+    portalSimulatorTested: boolean;
+    portalComparisonViewed: boolean;
     cmsPersistenceInfo: {
       lastServerScope: 'global_published' | 'demo_sandbox_isolated' | 'local_only';
       lastUpdatedAt: string | null;
@@ -261,6 +308,18 @@ export interface EcosystemState {
 
 const STORAGE_KEY_DEMO = 'aivad_ecosystem_demo_v2';
 const STORAGE_KEY_REAL = 'aivad_ecosystem_real_v2';
+const UI_LANGUAGE_STORAGE_KEY = 'aivad_ui_lang_v1';
+
+function loadPersistedUiLanguage(): string | null {
+  try {
+    const raw = localStorage.getItem(UI_LANGUAGE_STORAGE_KEY);
+    if (raw && isSupportedLanguageCode(raw)) return raw;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 const EMPTY_TACHOGRAPH: TachographStateStore = {
   sessions: [],
   activities: [],
@@ -272,6 +331,8 @@ const EMPTY_TACHOGRAPH: TachographStateStore = {
 
 function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemState {
   const isReal = workspaceKind === 'real';
+  const persistedLang = loadPersistedUiLanguage();
+  const seedActiveVeh = SEED_VEHICLES.find((v) => v.isActiveDriverVehicle) ?? SEED_VEHICLES[0];
   return {
     mode: 'portal',
     theme: 'light',
@@ -282,13 +343,8 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
     activePortalPage: 'inicio',
     activeDriverUserId: 'usr-driver-1',
     activeAdminRole: 'Superadministrador',
-    driverDeactivatedPlatformIds: computeDriverDeactivatedPlatformsForLocation(
-      SEED_PLATFORMS,
-      SEED_LOCALIZATION.selectedMarketCode,
-      SEED_LOCALIZATION.currentLocation.region,
-      SEED_LOCALIZATION.currentLocation.city
-    ),
-    platforms: SEED_PLATFORMS,
+    driverDeactivatedPlatformIds: [],
+    platforms: sanitizePlatformList(SEED_PLATFORMS),
     vehicles: SEED_VEHICLES,
     trips: isReal ? [] : SEED_TRIPS,
     proposals: isReal ? [] : SEED_PROPOSALS,
@@ -296,7 +352,9 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
     expenses: isReal ? [] : SEED_EXPENSES,
     shifts: isReal ? [] : SEED_SHIFTS,
     tachograph: isReal ? EMPTY_TACHOGRAPH : SEED_TACHOGRAPH,
-    localization: SEED_LOCALIZATION,
+    localization: persistedLang
+      ? { ...SEED_LOCALIZATION, languageCode: persistedLang }
+      : SEED_LOCALIZATION,
     captures: isReal ? [] : SEED_CAPTURES,
     obligations: SEED_OBLIGATIONS,
     documents: isReal ? [] : SEED_DOCUMENTS,
@@ -327,6 +385,7 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
     activeTrip: null,
     zoneObservations: SEED_ZONE_OBSERVATIONS,
     financialCostConfig: SEED_FINANCIAL_COST_CONFIG,
+    costsCalculator: createDefaultCostsCalculatorConfig(seedActiveVeh),
     reportFilters: {
       preset: 'ultimos_7_dias',
       customStart: new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10),
@@ -356,6 +415,17 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
     referralCoupons: SEED_REFERRAL_COUPONS,
     vehicleCatalogFilters: { ...DEFAULT_PERSISTED_VEHICLE_FILTERS },
     floatingCardQuickHidden: false,
+    floatingDockConfig: SEED_FLOATING_DOCK_CONFIG,
+    activeAssistantId: null,
+    assistantHubOpen: false,
+    assistantProgress: {},
+    floatingPreviewOpened: false,
+    floatingConfigSavedCount: 0,
+    voiceTestCount: 0,
+    autoPilotSavedCount: 0,
+    adminRevalidationCount: 0,
+    portalSimulatorTested: false,
+    portalComparisonViewed: false,
     cmsPersistenceInfo: {
       lastServerScope: 'local_only',
       lastUpdatedAt: null,
@@ -367,11 +437,32 @@ function buildInitialState(workspaceKind: 'demo' | 'real' = 'demo'): EcosystemSt
 
 function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | 'real'): EcosystemState {
   const initial = buildInitialState(workspaceKind);
-  const migratedCountries =
+  const migratedCountries = (
     parsed.countries && parsed.countries.length > 0 && 'marketStatus' in parsed.countries[0]
       ? parsed.countries
-      : initial.countries;
+      : initial.countries
+  ).map((c) => ({
+    ...c,
+    activePlatforms: sanitizePlatformIdList(c.activePlatforms ?? []),
+  }));
   const canonicalMode = normalizeCanonicalStrategyMode(parsed.autoPilot?.mode, parsed.autoPilot?.strategyMode);
+  const hydratedPlatforms = sanitizePlatformList(
+    parsed.platforms && parsed.platforms.length > 0 && parsed.platforms[0]?.countryOperations
+      ? parsed.platforms
+      : initial.platforms
+  );
+  const currentLoc = parsed.localization?.currentLocation ? parsed.localization : initial.localization;
+  const operationalInLocIds = new Set(
+    getValidatedPlatformsForLocation(
+      hydratedPlatforms,
+      currentLoc.selectedMarketCode,
+      currentLoc.currentLocation.region,
+      currentLoc.currentLocation.city
+    )
+  );
+  const sanitizedDeactivated = sanitizePlatformIdList(parsed.driverDeactivatedPlatformIds ?? []).filter((id) =>
+    operationalInLocIds.has(id)
+  );
   const mergedAutoPilot: AutoPilotConfig = {
     ...initial.autoPilot,
     ...(parsed.autoPilot ?? {}),
@@ -380,6 +471,9 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
     thresholds: {
       ...initial.autoPilot.thresholds,
       ...(parsed.autoPilot?.thresholds ?? {}),
+      allowedPlatforms: sanitizePlatformIdList(
+        parsed.autoPilot?.thresholds?.allowedPlatforms ?? initial.autoPilot.thresholds.allowedPlatforms
+      ),
     },
     modeConfigs: parsed.autoPilot?.modeConfigs ?? initial.autoPilot.modeConfigs,
     semiAutoBounds: parsed.autoPilot?.semiAutoBounds ?? initial.autoPilot.semiAutoBounds,
@@ -399,10 +493,6 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
     supportedLanguages: parsed.cms?.supportedLanguages ?? initial.cms.supportedLanguages,
     localizedContent: parsed.cms?.localizedContent ?? initial.cms.localizedContent,
   };
-  const hydratedPlatforms =
-    parsed.platforms && parsed.platforms.length > 0 && parsed.platforms[0]?.countryOperations
-      ? parsed.platforms
-      : initial.platforms;
   return {
     ...initial,
     ...parsed,
@@ -410,27 +500,78 @@ function hydrateState(parsed: Partial<EcosystemState>, workspaceKind: 'demo' | '
     session: SEED_AUTH_SESSION,
     platforms: hydratedPlatforms,
     rbacDeniedMessage: null,
-    driverDeactivatedPlatformIds:
-      parsed.driverDeactivatedPlatformIds && parsed.driverDeactivatedPlatformIds.length > 0
-        ? parsed.driverDeactivatedPlatformIds
-        : initial.driverDeactivatedPlatformIds,
+    driverDeactivatedPlatformIds: sanitizedDeactivated,
     savedPlaces: parsed.savedPlaces ?? initial.savedPlaces,
     routinePreferences: parsed.routinePreferences ?? initial.routinePreferences,
     aiPredictions: parsed.aiPredictions ?? initial.aiPredictions,
     autoPilot: mergedAutoPilot,
     cms: mergedCms,
-    overlayConfig: {
-      ...initial.overlayConfig,
-      ...(parsed.overlayConfig ?? {}),
+    overlayConfig: (() => {
+      const defaults = createDefaultClassificationProfiles();
+      const rawOv = parsed.overlayConfig;
+      const hydratedProfiles = {
+        verde: {
+          ...defaults.verde,
+          ...(rawOv?.classificationProfiles?.verde ?? {}),
+          tierKey: 'verde' as const,
+          operationalMeaning: 'Favorável' as const,
+          visibleMetrics: Array.isArray(rawOv?.classificationProfiles?.verde?.visibleMetrics)
+            ? [...rawOv!.classificationProfiles!.verde!.visibleMetrics]
+            : [...defaults.verde.visibleMetrics],
+        },
+        amarelo: {
+          ...defaults.amarelo,
+          ...(rawOv?.classificationProfiles?.amarelo ?? {}),
+          tierKey: 'amarelo' as const,
+          operationalMeaning: 'Atenção' as const,
+          visibleMetrics: Array.isArray(rawOv?.classificationProfiles?.amarelo?.visibleMetrics)
+            ? [...rawOv!.classificationProfiles!.amarelo!.visibleMetrics]
+            : [...defaults.amarelo.visibleMetrics],
+        },
+        vermelho: {
+          ...defaults.vermelho,
+          ...(rawOv?.classificationProfiles?.vermelho ?? {}),
+          tierKey: 'vermelho' as const,
+          operationalMeaning: 'Evitar' as const,
+          visibleMetrics: Array.isArray(rawOv?.classificationProfiles?.vermelho?.visibleMetrics)
+            ? [...rawOv!.classificationProfiles!.vermelho!.visibleMetrics]
+            : [...defaults.vermelho.visibleMetrics],
+        },
+      };
+      return {
+        ...initial.overlayConfig,
+        ...(rawOv ?? {}),
+        position: normalizeFloatingCardPosition(rawOv?.position ?? initial.overlayConfig.position),
+        classificationProfiles: hydratedProfiles,
+      };
+    })(),
+    floatingDockConfig: {
+      ...initial.floatingDockConfig,
+      ...(parsed.floatingDockConfig ?? {}),
     },
+    activeAssistantId: null,
+    assistantHubOpen: false,
+    assistantProgress: parsed.assistantProgress ?? {},
     countries: migratedCountries,
     tachograph: parsed.tachograph?.sessions ? parsed.tachograph : initial.tachograph,
-    localization: parsed.localization?.currentLocation ? parsed.localization : initial.localization,
+    localization: (() => {
+      const persistedLang = loadPersistedUiLanguage();
+      return persistedLang && isSupportedLanguageCode(persistedLang)
+        ? { ...currentLoc, languageCode: persistedLang }
+        : currentLoc;
+    })(),
     payments: parsed.payments ?? initial.payments,
     zoneObservations: parsed.zoneObservations ?? initial.zoneObservations,
     financialCostConfig: {
       ...initial.financialCostConfig,
       ...(parsed.financialCostConfig ?? {}),
+    },
+    costsCalculator: {
+      ...initial.costsCalculator,
+      ...(parsed.costsCalculator ?? {}),
+      operatorCosts: Array.isArray(parsed.costsCalculator?.operatorCosts)
+        ? parsed.costsCalculator!.operatorCosts
+        : initial.costsCalculator.operatorCosts,
     },
     reportFilters: {
       ...initial.reportFilters,
@@ -521,6 +662,8 @@ interface EcosystemContextValue {
   syncNowToServer: (options?: { forceOverwrite?: boolean }) => Promise<{ ok: boolean; message: string; conflictDetected?: boolean }>;
   // Reports & Cost Config
   updateFinancialCostConfig: (patch: Partial<FinancialCostConfig>) => void;
+  updateCostsCalculator: (patch: Partial<CostsCalculatorConfig>) => void;
+  resetCostsCalculator: () => void;
   updateReportFilters: (patch: Partial<EcosystemState['reportFilters']>) => void;
   // Active Trip Lifecycle & Timers
   acceptProposalForTrip: (proposal: ProposalRecord, aiRec: ActiveTripSession['aiRecommendation']) => { ok: boolean; error?: string };
@@ -528,7 +671,26 @@ interface EcosystemContextValue {
   markActiveTripArrived: (method: ArrivalDetectionMethod, startWaitImmediately?: boolean) => void;
   startActiveTripWait: () => void;
   startActiveTripInProgress: () => void;
-  completeActiveTripAction: (actualGrossEur?: number, tipEur?: number, tollsEur?: number) => TripRecord | null;
+  recordActiveTripNavigation: (patch: {
+    navigationAppUsed?: 'Waze' | 'Google Maps' | 'Outro' | 'Nenhum';
+    navigationStartedAtIso?: string;
+    navigationTrafficEstTotalMin?: number | null;
+    observedPickupKm?: number | null;
+    observedPickupMin?: number | null;
+    observedTripKm?: number | null;
+    observedTripMin?: number | null;
+  }) => void;
+  completeActiveTripAction: (
+    actualGrossEur?: number,
+    tipEur?: number,
+    tollsEur?: number,
+    options?: {
+      pendingAdjustmentEur?: number;
+      pendingAdjustmentReason?: string;
+      confirmedAdjustmentEur?: number;
+      confirmedAdjustmentReason?: string;
+    }
+  ) => TripRecord | null;
   cancelActiveTripAction: (
     cancellationBy: CancellationBy,
     isNoShow: boolean,
@@ -541,6 +703,7 @@ interface EcosystemContextValue {
   confirmLocalMarket: (countryCode?: string) => void;
   dismissCountryChangePrompt: () => void;
   setProfessionalMarkets: (residenceCode: string, primaryMarketCode: string, additionalCodes: string[]) => void;
+  setLanguageCode: (languageCode: string) => void;
   // Tachograph TVDE Services
   startTachograph: (odometerStartKm: number, operatorName?: string, notes?: string) => { ok: boolean; error?: string };
   transitionTachograph: (
@@ -555,6 +718,7 @@ interface EcosystemContextValue {
   ) => { ok: boolean; error?: string };
   enqueueOfflineTachograph: (item: Omit<TachographOfflineQueueItem, 'id' | 'syncState' | 'createdAtIso'>) => void;
   syncOfflineTachograph: () => { syncedCount: number; duplicatesSkipped: number; conflictsResolved: number };
+  publishTachographAuditSnapshot: (sessionId?: string) => Promise<{ ok: boolean; verificationPath?: string }>;
   // Proposal, Strategy & AI CORE Services
   createAndAnalyzeProposal: (
     input: ProposalInput,
@@ -569,13 +733,35 @@ interface EcosystemContextValue {
   deleteStrategyPreset: (presetId: string) => void;
   runSemiAutoCalibration: () => { applied: boolean; rationale: string };
   undoStrategyAdjustment: (adjustmentId: string) => void;
-  updateOverlayConfig: (patch: Partial<AndroidOverlayConfig>) => void;
+  updateOverlayConfig: (patch: Partial<AndroidOverlayConfig>, options?: { markSaved?: boolean }) => void;
+  updateFloatingTierConfig: (
+    tier: ProposalClassification,
+    patch: Partial<FloatingCardTierStyleConfig>,
+    options?: { markSaved?: boolean }
+  ) => void;
+  resetFloatingTierConfigs: () => void;
+  updateFloatingDockConfig: (patch: Partial<FloatingDockConfig>) => void;
   // Trip & Finance Services
   completeTrip: (trip: Omit<TripRecord, 'id' | 'netEur' | 'commissionEur' | 'operationalCostEur'>) => TripRecord;
   updateTripStatus: (
     tripId: string,
     status: TripStatus,
     extra?: { cancellationBy?: CancellationBy; cancellationReason?: string }
+  ) => void;
+  updateTripPostAcceptanceActual: (tripId: string, actualPatch: Partial<TripPostAcceptanceActual>) => void;
+  addTripFareAdjustment: (
+    tripId: string,
+    adj: {
+      amountEur: number;
+      reason: string;
+      status: TripFareAdjustmentRecord['status'];
+      evidenceNote?: string;
+    }
+  ) => void;
+  resolveTripFareAdjustmentStatus: (
+    tripId: string,
+    adjustmentId: string,
+    status: TripFareAdjustmentRecord['status']
   ) => void;
   addExpense: (expense: Omit<ExpenseRecord, 'id' | 'isDemo'>) => void;
   // Platform Driver Lifecycle
@@ -647,6 +833,8 @@ interface EcosystemContextValue {
       changeNote?: string;
     }
   ) => void;
+  revalidatePlatformCountryOperation: (platformId: PlatformId, countryCode: string, validationSource?: string) => void;
+  revalidateCountryMarket: (countryCode: string, validationSource?: string) => void;
   addCountryMarket: (country: CountryMarketConfig) => void;
   updateCountryMarketStatus: (countryCode: string, status: MarketStatus) => void;
   addRegionOrCityToCountry: (countryCode: string, regionName: string, cityName: string) => void;
@@ -717,6 +905,21 @@ interface EcosystemContextValue {
   setFloatingCardQuickHidden: (hidden: boolean) => void;
   addReferralCoupon: (coupon: Omit<import('../models/types').ReferralCouponRecord, 'id' | 'currentRedemptions' | 'billingExecutionState'>) => void;
   toggleReferralCouponActive: (couponId: string) => void;
+  // Interactive Assistants & Preview Signals (Comando 6.3)
+  openAssistantHub: () => void;
+  closeAssistantHub: () => void;
+  startInteractiveAssistant: (assistantId: string) => void;
+  pauseInteractiveAssistant: () => void;
+  resumeInteractiveAssistant: (assistantId?: string) => void;
+  resetInteractiveAssistant: (assistantId: string) => void;
+  goToAssistantStep: (stepIndex: number) => void;
+  verifyCurrentAssistantStep: () => { status: AssistantStepStatus; detail: string };
+  confirmCurrentAssistantStepByUser: () => void;
+  skipOptionalCurrentAssistantStep: () => void;
+  closeInteractiveAssistant: () => void;
+  markFloatingPreviewOpened: () => void;
+  markPortalSimulatorTested: () => void;
+  markPortalComparisonViewed: () => void;
 }
 
 const EcosystemContext = createContext<EcosystemContextValue | null>(null);
@@ -803,8 +1006,15 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       .then((data) => {
         if (cancelled || !data?.ok) return;
         setState((prev) => {
-          const nextCountries = Array.isArray(data.countries) ? data.countries : prev.countries;
-          const nextPlatforms = Array.isArray(data.platforms) ? data.platforms : prev.platforms;
+          const nextCountries = Array.isArray(data.countries)
+            ? data.countries.map((c: CountryMarketConfig) => ({
+                ...c,
+                activePlatforms: sanitizePlatformIdList(c.activePlatforms ?? []),
+              }))
+            : prev.countries;
+          const nextPlatforms = Array.isArray(data.platforms)
+            ? sanitizePlatformList(data.platforms)
+            : prev.platforms;
           return {
             ...prev,
             countries: nextCountries,
@@ -940,13 +1150,25 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     [state.countries]
   );
 
-  const visibleDriverPlatforms = useMemo(
-    () =>
-      state.platforms.filter(
-        (p) => p.status === 'Ativa' && !state.driverDeactivatedPlatformIds.includes(p.id)
-      ),
-    [state.platforms, state.driverDeactivatedPlatformIds]
-  );
+  const visibleDriverPlatforms = useMemo(() => {
+    const sameCountry =
+      state.localization.currentLocation.countryCode.toUpperCase() ===
+      state.localization.selectedMarketCode.toUpperCase();
+    const operational = getDriverOperationalPlatformsForLocation(
+      state.platforms,
+      state.localization.selectedMarketCode,
+      sameCountry ? state.localization.currentLocation.region : undefined,
+      sameCountry ? state.localization.currentLocation.city : undefined
+    );
+    return operational.filter((p) => !state.driverDeactivatedPlatformIds.includes(p.id));
+  }, [
+    state.platforms,
+    state.localization.selectedMarketCode,
+    state.localization.currentLocation.countryCode,
+    state.localization.currentLocation.region,
+    state.localization.currentLocation.city,
+    state.driverDeactivatedPlatformIds,
+  ]);
 
   const activeDriverTrips = useMemo(
     () =>
@@ -1078,12 +1300,28 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   function getPlatformLifecycleStateHelper(
     platformId: PlatformId,
     platforms: PlatformRecord[],
-    deactivatedIds: PlatformId[]
+    deactivatedIds: PlatformId[],
+    countryCode: string,
+    region?: string,
+    city?: string
   ): PlatformDriverLifecycleState {
     const plat = platforms.find((p) => p.id === platformId);
     if (!plat) return 'Integração não configurada';
-    if (deactivatedIds.includes(platformId)) return 'Desativada pelo motorista';
     if (plat.status !== 'Ativa') return 'Suspensa/Indisponível por administração';
+    const op = getPlatformOperationInLocation(plat, countryCode, region, city);
+    if (!op) return 'Não operacional no mercado';
+    if (op.operationalStatus === 'Em validação') return 'Ainda não validada';
+    if (
+      op.operationalStatus === 'Encerrada no país' ||
+      op.operationalStatus === 'Suspensa' ||
+      op.operationalStatus === 'Licenciada sem operação confirmada' ||
+      op.operationalStatus === 'Disponibilidade regional limitada'
+    ) {
+      return 'Não operacional no mercado';
+    }
+    const freshness = evaluateValidationFreshness(op.verifiedAt);
+    if (freshness.isStale) return 'Verificação desatualizada';
+    if (deactivatedIds.includes(platformId)) return 'Desativada pelo motorista';
     if (plat.lastErrorNote) return 'Integração com erro';
     if (plat.integrationStatus === 'Indisponível' || plat.integrationStatus === 'Descontinuada') {
       return 'Integração não configurada';
@@ -1577,7 +1815,19 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }),
 
-    completeActiveTripAction: (actualGrossEur, tipEur = 0, tollsEur = 0) => {
+    recordActiveTripNavigation: (patch) =>
+      setState((prev) => {
+        if (!prev.activeTrip) return prev;
+        return {
+          ...prev,
+          activeTrip: {
+            ...prev.activeTrip,
+            ...patch,
+          },
+        };
+      }),
+
+    completeActiveTripAction: (actualGrossEur, tipEur = 0, tollsEur = 0, options) => {
       if (!state.activeTrip) return null;
       if (hasExistingLifecycleTrip(state.trips, state.activeTrip.proposalId, state.activeTrip.externalRef)) {
         setState((prev) => ({ ...prev, activeTrip: null }));
@@ -1588,8 +1838,52 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const plat = state.platforms.find((p) => p.id === sess.platformId);
       const commPct = plat?.commissionPct ?? 25;
       const gross = actualGrossEur ?? sess.grossEstimatedEur;
+
+      const fareAdjustments: TripFareAdjustmentRecord[] = [];
+      if (options?.confirmedAdjustmentEur && options.confirmedAdjustmentEur !== 0) {
+        fareAdjustments.push({
+          id: `adj-conf-${Date.now()}`,
+          recordedAtIso: nowIso,
+          amountEur: round2(options.confirmedAdjustmentEur),
+          reason: options.confirmedAdjustmentReason?.trim() || 'Ajuste confirmado na plataforma',
+          status: 'Confirmado pela plataforma',
+          evidenceNote: 'Registado na conclusão da viagem.',
+        });
+      }
+      if (options?.pendingAdjustmentEur && options.pendingAdjustmentEur !== 0) {
+        fareAdjustments.push({
+          id: `adj-pend-${Date.now() + 1}`,
+          recordedAtIso: nowIso,
+          amountEur: round2(options.pendingAdjustmentEur),
+          reason: options.pendingAdjustmentReason?.trim() || 'Atraso/tempo adicional aguardando confirmação',
+          status: 'Pendente de confirmação',
+          evidenceNote: 'Pendente: não entra nos ganhos reais até confirmação.',
+        });
+      }
+
+      const confirmedAdjTotal = fareAdjustments
+        .filter((a) => a.status === 'Confirmado pela plataforma')
+        .reduce((s, a) => s + a.amountEur, 0);
+
+      const obsPickupKm = sess.observedPickupKm ?? null;
+      const obsTripKm = sess.observedTripKm ?? null;
+      const obsPickupMin = sess.observedPickupMin ?? null;
+      const obsTripMin = sess.observedTripMin ?? null;
+      const hasObservedActuals =
+        obsPickupKm !== null || obsTripKm !== null || obsPickupMin !== null || obsTripMin !== null;
+
+      const finalPickupKm = obsPickupKm ?? sess.pickupDistanceKm;
+      const finalTripKm = obsTripKm ?? sess.tripDistanceKm;
+      const totalEstimatedMin = Math.max(1, sess.pickupTimeEstMin + sess.tripTimeEstMin);
+      const finalDurationMin =
+        obsPickupMin !== null && obsTripMin !== null
+          ? Math.max(1, obsPickupMin + obsTripMin)
+          : obsTripMin !== null
+            ? Math.max(1, sess.pickupTimeEstMin + obsTripMin)
+            : totalEstimatedMin;
+
       const commissionEur = round2(gross * (commPct / 100));
-      const operationalCostEur = round2((sess.pickupDistanceKm + sess.tripDistanceKm) * 0.12 + tollsEur);
+      const operationalCostEur = round2((finalPickupKm + finalTripKm) * 0.12 + tollsEur);
       const netEur = round2(gross + tipEur - commissionEur - operationalCostEur);
       const travelSec = sess.arrivedAtIso
         ? Math.max(0, Math.floor((new Date(sess.arrivedAtIso).getTime() - new Date(sess.acceptedAtIso).getTime()) / 1000))
@@ -1598,6 +1892,10 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         sess.waitStartedAtIso && sess.tripStartedAtIso
           ? Math.max(0, Math.floor((new Date(sess.tripStartedAtIso).getTime() - new Date(sess.waitStartedAtIso).getTime()) / 1000))
           : 0;
+
+      const matchedProposal = sess.proposalId
+        ? state.proposals.find((p) => p.id === sess.proposalId)
+        : undefined;
 
       const trip: TripRecord = {
         id: `trip-${Date.now()}`,
@@ -1608,6 +1906,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         time: nowIso.slice(11, 16),
         grossEur: gross,
         estimatedGrossEur: sess.grossEstimatedEur,
+        initialPresentedGrossEur: sess.grossEstimatedEur,
+        confirmedFinalGrossEur: round2(gross + confirmedAdjTotal),
         chargedTotalEur: round2(gross + tipEur),
         tipEur,
         bonusEur: 0,
@@ -1617,9 +1917,9 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         netEur,
         currency: activeMarket.currency,
         countryCode: sess.countryCode,
-        pickupDistanceKm: sess.pickupDistanceKm,
-        tripDistanceKm: sess.tripDistanceKm,
-        durationMin: Math.max(1, sess.pickupTimeEstMin + sess.tripTimeEstMin),
+        pickupDistanceKm: finalPickupKm,
+        tripDistanceKm: finalTripKm,
+        durationMin: finalDurationMin,
         travelToPickupSeconds: travelSec,
         waitAtPickupSeconds: waitSec,
         pickupZone: sess.pickupZone,
@@ -1635,10 +1935,45 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         isEstimatedBreakdown: actualGrossEur === undefined,
         preDecisionSnapshot: {
           predictedNetEur: sess.netEstimatedEur,
-          predictedDurationMin: sess.pickupTimeEstMin + sess.tripTimeEstMin,
-          predictedClassification: 'verde',
+          predictedDurationMin: totalEstimatedMin,
+          predictedClassification: matchedProposal?.analysis.classification ?? 'verde',
           recommendedAction: sess.aiRecommendation,
         },
+        preAcceptanceEstimate: {
+          pickupDistanceKm: sess.pickupDistanceKm,
+          pickupTimeMin: sess.pickupTimeEstMin,
+          tripDistanceKm: sess.tripDistanceKm,
+          tripTimeMin: sess.tripTimeEstMin,
+          totalDistanceKm: round2(sess.pickupDistanceKm + sess.tripDistanceKm),
+          totalTimeMin: totalEstimatedMin,
+          grossEur: sess.grossEstimatedEur,
+          estimatedNetEur: sess.netEstimatedEur,
+          eurPerKm:
+            sess.pickupDistanceKm + sess.tripDistanceKm > 0
+              ? round2(sess.netEstimatedEur / (sess.pickupDistanceKm + sess.tripDistanceKm))
+              : 0,
+          eurPerHour: totalEstimatedMin > 0 ? round2((sess.netEstimatedEur / totalEstimatedMin) * 60) : 0,
+        },
+        postAcceptanceActual: {
+          hasObservedActuals,
+          pickupDistanceKm: obsPickupKm,
+          tripDistanceKm: obsTripKm,
+          totalDistanceKm:
+            obsPickupKm !== null && obsTripKm !== null ? round2(obsPickupKm + obsTripKm) : null,
+          pickupTimeMin: obsPickupMin,
+          tripTimeMin: obsTripMin,
+          totalTimeMin:
+            obsPickupMin !== null && obsTripMin !== null ? Math.round(obsPickupMin + obsTripMin) : null,
+          navigationTrafficTimeMin: sess.navigationTrafficEstTotalMin ?? null,
+          navigationAppUsed: sess.navigationAppUsed ?? 'Nenhum',
+          navigationStartedAtIso: sess.navigationStartedAtIso,
+          observationSource: hasObservedActuals
+            ? 'Cronómetro AIVAD + motorista'
+            : sess.navigationTrafficEstTotalMin
+              ? 'Registo manual do motorista'
+              : 'Sem dados reais observados',
+        },
+        fareAdjustments: fareAdjustments.length > 0 ? fareAdjustments : undefined,
         source: 'Manual',
         proposalId: sess.proposalId,
         isDemo: Boolean(state.session.isDemoSession),
@@ -1672,6 +2007,13 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 : p
             )
           : prev.proposals,
+        aiPredictions: sess.proposalId
+          ? prev.aiPredictions.map((pr) =>
+              pr.proposalId === sess.proposalId && pr.driverId === prev.activeDriverUserId
+                ? reconcilePredictionOutcome(pr, trip, prev.autoPilot.thresholds)
+                : pr
+            )
+          : prev.aiPredictions,
         campaigns: prev.campaigns.map((c) =>
           c.platformId === trip.platformId && c.status === 'Ativa'
             ? { ...c, completedTrips: Math.min(c.targetTrips, c.completedTrips + 1) }
@@ -1848,14 +2190,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           resolvedRegion,
           prev.countries
         );
-        // PARTE II: pré-selecionar apenas plataformas com operação validada nesta localização
         const validatedPlatforms = getValidatedPlatformsForLocation(
-          prev.platforms,
-          countryCode,
-          resolvedRegion,
-          city
-        );
-        const deactivatedForLoc = computeDriverDeactivatedPlatformsForLocation(
           prev.platforms,
           countryCode,
           resolvedRegion,
@@ -1863,7 +2198,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         );
         return {
           ...prev,
-          driverDeactivatedPlatformIds: deactivatedForLoc,
+          driverDeactivatedPlatformIds: [],
           autoPilot: {
             ...prev.autoPilot,
             thresholds: {
@@ -1885,7 +2220,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             source: 'Localization Selector',
             target: 'Localization Profile (Validated Platforms Preselected)',
             userId: prev.activeDriverUserId,
-            payloadSummary: `Localização definida para ${city} (${country?.name ?? countryCode}). Pré-selecionadas apenas plataformas validadas: ${validatedPlatforms.join(', ') || 'nenhuma'}.`,
+            payloadSummary: `Localização definida para ${city} (${country?.name ?? countryCode}). Operacionais na localização: ${validatedPlatforms.join(', ') || 'nenhuma'}.`,
           }),
         };
       });
@@ -1902,15 +2237,9 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           nextLoc.currentLocation.region,
           nextLoc.currentLocation.city
         );
-        const deactivatedForLoc = computeDriverDeactivatedPlatformsForLocation(
-          prev.platforms,
-          targetCode,
-          nextLoc.currentLocation.region,
-          nextLoc.currentLocation.city
-        );
         return {
           ...prev,
-          driverDeactivatedPlatformIds: deactivatedForLoc,
+          driverDeactivatedPlatformIds: [],
           autoPilot: {
             ...prev.autoPilot,
             thresholds: {
@@ -1959,6 +2288,91 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ),
       })),
 
+    setLanguageCode: (languageCode) => {
+      if (!isSupportedLanguageCode(languageCode)) return;
+      try {
+        localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, languageCode);
+      } catch {
+        // ignore
+      }
+      setState((prev) => ({
+        ...prev,
+        localization: {
+          ...prev.localization,
+          // Idioma altera exclusivamente o texto/direção da UI (nunca país, moeda, fuso ou impostos)
+          languageCode,
+        },
+      }));
+    },
+
+    updateCostsCalculator: (patch) =>
+      setState((prev) => ({
+        ...prev,
+        costsCalculator: {
+          ...prev.costsCalculator,
+          ...patch,
+        },
+      })),
+
+    resetCostsCalculator: () =>
+      setState((prev) => ({
+        ...prev,
+        costsCalculator: createDefaultCostsCalculatorConfig(
+          prev.vehicles.find((v) => v.isActiveDriverVehicle) ?? prev.vehicles[0]
+        ),
+      })),
+
+    publishTachographAuditSnapshot: async (targetSessionId) => {
+      const store = state.tachograph;
+      const targetSession =
+        store.sessions.find((s) => s.id === (targetSessionId ?? store.activeSessionId)) ??
+        store.sessions[0];
+      const summary = consolidateMultiPlatformJornada(
+        store.activities,
+        store.platformIntervals,
+        store.sessions
+      );
+      const clocks = computeLiveTachographClocks(store);
+      const qr = buildTachographQrPayload(
+        targetSession,
+        summary,
+        activeDriver.name,
+        `${activeVehicle.brand} ${activeVehicle.model}`
+      );
+      const sid = targetSession?.id ?? 'RESUMO-PERIODO';
+      try {
+        const res = await fetch('/api/tachograph/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            sessionId: sid,
+            verificationCode: qr.verificationCode,
+            driverAlias: activeDriver.name,
+            vehicleLabel: `${activeVehicle.brand} ${activeVehicle.model} (${activeVehicle.year})`,
+            operatorName: targetSession?.operatorName ?? 'Operador Independente',
+            date: targetSession?.date ?? new Date().toISOString().slice(0, 10),
+            startIso: targetSession?.startIso ?? new Date().toISOString(),
+            endIso: targetSession?.endIso ?? null,
+            odometerStartKm: targetSession?.odometerStartKm ?? 0,
+            odometerEndKm: targetSession?.odometerEndKm ?? targetSession?.odometerCurrentKm ?? 0,
+            distanceKm: summary.totalKmDriven,
+            drivingMinutes: summary.drivingMinutes,
+            effectiveWorkMinutes: Math.round(clocks.effectiveWorkSeconds / 60) || summary.totalWorkdayMinutes,
+            breakMinutes: summary.breakMinutes + summary.mealMinutes,
+            currentState: targetSession?.currentState ?? 'Consolidado',
+            status: targetSession?.status ?? 'Resumo',
+            countryCode: activeMarket.code,
+            city: state.localization.currentLocation.city,
+          }),
+        });
+        const data = await res.json();
+        return { ok: Boolean(data?.ok), verificationPath: data?.verificationPath };
+      } catch {
+        return { ok: false };
+      }
+    },
+
     startTachograph: (odometerStartKm, operatorName, notes) => {
       const res = startTachographShift(state.tachograph, {
         driverId: activeDriver.id,
@@ -1978,12 +2392,51 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         events: pushEvent(prev, {
           idempotencyKey: `tach_start:${res.session?.id}`,
           type: 'TACHOGRAPH_RECORDED',
-          source: 'Registo TVDE',
+          source: 'TACÓGRAFO',
           target: 'Dashboard · Relatórios · Linha Temporal',
           userId: prev.activeDriverUserId,
           payloadSummary: `Turno iniciado (${odometerStartKm} km) em ${state.localization.currentLocation.city}.`,
         }),
       }));
+
+      if (res.session) {
+        const sum = consolidateMultiPlatformJornada(
+          res.store.activities,
+          res.store.platformIntervals,
+          res.store.sessions
+        );
+        const qr = buildTachographQrPayload(
+          res.session,
+          sum,
+          activeDriver.name,
+          `${activeVehicle.brand} ${activeVehicle.model}`
+        );
+        void fetch('/api/tachograph/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            sessionId: res.session.id,
+            verificationCode: qr.verificationCode,
+            driverAlias: activeDriver.name,
+            vehicleLabel: `${activeVehicle.brand} ${activeVehicle.model} (${activeVehicle.year})`,
+            operatorName: res.session.operatorName,
+            date: res.session.date,
+            startIso: res.session.startIso,
+            endIso: res.session.endIso ?? null,
+            odometerStartKm: res.session.odometerStartKm,
+            odometerEndKm: res.session.odometerCurrentKm,
+            distanceKm: 0,
+            drivingMinutes: sum.drivingMinutes,
+            effectiveWorkMinutes: 0,
+            breakMinutes: sum.breakMinutes + sum.mealMinutes,
+            currentState: res.session.currentState,
+            status: res.session.status,
+            countryCode: activeMarket.code,
+            city: state.localization.currentLocation.city,
+          }),
+        }).catch(() => {});
+      }
       return { ok: true };
     },
 
@@ -2003,12 +2456,52 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         events: pushEvent(prev, {
           idempotencyKey: `tach_trans:${res.createdActivity?.id}`,
           type: 'TACHOGRAPH_RECORDED',
-          source: 'Registo TVDE',
+          source: 'TACÓGRAFO',
           target: 'Dashboard · Produtividade · Relatórios',
           userId: prev.activeDriverUserId,
           payloadSummary: `Estado atividade -> ${targetState} (${odometerKm} km).`,
         }),
       }));
+
+      if (res.session) {
+        const sum = consolidateMultiPlatformJornada(
+          res.store.activities,
+          res.store.platformIntervals,
+          res.store.sessions
+        );
+        const clocks = computeLiveTachographClocks(res.store);
+        const qr = buildTachographQrPayload(
+          res.session,
+          sum,
+          activeDriver.name,
+          `${activeVehicle.brand} ${activeVehicle.model}`
+        );
+        void fetch('/api/tachograph/audit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            sessionId: res.session.id,
+            verificationCode: qr.verificationCode,
+            driverAlias: activeDriver.name,
+            vehicleLabel: `${activeVehicle.brand} ${activeVehicle.model} (${activeVehicle.year})`,
+            operatorName: res.session.operatorName,
+            date: res.session.date,
+            startIso: res.session.startIso,
+            endIso: res.session.endIso ?? null,
+            odometerStartKm: res.session.odometerStartKm,
+            odometerEndKm: res.session.odometerEndKm ?? res.session.odometerCurrentKm,
+            distanceKm: Math.max(0, (res.session.odometerEndKm ?? res.session.odometerCurrentKm) - res.session.odometerStartKm),
+            drivingMinutes: sum.drivingMinutes,
+            effectiveWorkMinutes: Math.round(clocks.effectiveWorkSeconds / 60),
+            breakMinutes: sum.breakMinutes + sum.mealMinutes,
+            currentState: res.session.currentState,
+            status: res.session.status,
+            countryCode: activeMarket.code,
+            city: state.localization.currentLocation.city,
+          }),
+        }).catch(() => {});
+      }
       return { ok: true };
     },
 
@@ -2027,12 +2520,12 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         events: pushEvent(prev, {
           idempotencyKey: `tach_corr:${activityId}:${res.record!.revisions.length}`,
           type: 'TACHOGRAPH_CORRECTED',
-          source: 'Registo TVDE',
+          source: 'TACÓGRAFO',
           target: 'Auditoria · Relatórios Atividade',
           userId: prev.activeDriverUserId,
           payloadSummary: `Correção auditável em ${activityId} (${reason}). Histórico preservado.`,
         }),
-        auditLogs: pushAudit(prev, 'Correção Atividade TVDE', activityId, reason, activeDriver.name),
+        auditLogs: pushAudit(prev, 'Correção Atividade TACÓGRAFO', activityId, reason, activeDriver.name),
       }));
       return { ok: true };
     },
@@ -2058,7 +2551,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           idempotencyKey: `tach_sync:${Date.now()}`,
           type: 'TACHOGRAPH_RECORDED',
           source: 'Offline Queue Sync',
-          target: 'Registo TVDE · Auditoria',
+          target: 'TACÓGRAFO · Auditoria',
           userId: prev.activeDriverUserId,
           payloadSummary: `Sincronização offline: ${outcome.syncedCount} aplicados, ${outcome.duplicatesSkipped} duplicados, ${outcome.conflictsResolved} conflitos resolvidos.`,
         }),
@@ -2149,6 +2642,8 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           agentId: 'corridas',
           predictedNetEur: aiPackage.analysis.estimatedNetEur,
           predictedDurationMin: aiPackage.analysis.totalTimeMin,
+          predictedDistanceKm: aiPackage.analysis.totalDistanceKm,
+          predictedClassification: aiPackage.analysis.classification,
           predictedEurPerHour: aiPackage.analysis.eurPerHour,
           status: 'Pendente resultado',
           learningNote: `Recomendação: ${aiPackage.recommendedAction} (confiança: ${confTxt}).`,
@@ -2324,7 +2819,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
           updatedPredictions = prev.aiPredictions.map((pr) =>
             pr.proposalId === proposalId && pr.driverId === prev.activeDriverUserId
-              ? reconcilePredictionOutcome(pr, newTrip)
+              ? reconcilePredictionOutcome(pr, newTrip, prev.autoPilot.thresholds)
               : pr
           );
 
@@ -2476,6 +2971,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
         return {
           ...prev,
+          autoPilotSavedCount: prev.autoPilotSavedCount + 1,
           autoPilot: {
             ...prev.autoPilot,
             savedPresets: [newPreset, ...(prev.autoPilot.savedPresets ?? [])],
@@ -2613,10 +3109,164 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }),
 
-    updateOverlayConfig: (patch) =>
+    updateOverlayConfig: (patch, options) =>
       setState((prev) => ({
         ...prev,
-        overlayConfig: { ...prev.overlayConfig, ...patch },
+        floatingConfigSavedCount: options?.markSaved
+          ? prev.floatingConfigSavedCount + 1
+          : prev.floatingConfigSavedCount,
+        overlayConfig: {
+          ...prev.overlayConfig,
+          ...patch,
+          position: normalizeFloatingCardPosition(patch.position ?? prev.overlayConfig.position),
+          classificationProfiles: patch.classificationProfiles ?? prev.overlayConfig.classificationProfiles,
+        },
+      })),
+
+    updateFloatingTierConfig: (tier, patch, options) =>
+      setState((prev) => {
+        const currentTier = resolveFloatingTierConfig(prev.overlayConfig, tier);
+        const existingProfiles =
+          prev.overlayConfig.classificationProfiles ?? createDefaultClassificationProfiles();
+        const updatedTier: FloatingCardTierStyleConfig = {
+          ...currentTier,
+          ...patch,
+          tierKey: tier,
+          operationalMeaning: currentTier.operationalMeaning,
+          position: normalizeFloatingCardPosition(patch.position ?? currentTier.position),
+          visibleMetrics: Array.isArray(patch.visibleMetrics)
+            ? [...patch.visibleMetrics]
+            : [...currentTier.visibleMetrics],
+        };
+        return {
+          ...prev,
+          floatingConfigSavedCount: options?.markSaved
+            ? prev.floatingConfigSavedCount + 1
+            : prev.floatingConfigSavedCount,
+          overlayConfig: {
+            ...prev.overlayConfig,
+            classificationProfiles: {
+              ...existingProfiles,
+              [tier]: updatedTier,
+            },
+          },
+        };
+      }),
+
+    resetFloatingTierConfigs: () =>
+      setState((prev) => ({
+        ...prev,
+        overlayConfig: {
+          ...SEED_OVERLAY_CONFIG,
+          classificationProfiles: createDefaultClassificationProfiles(),
+        },
+      })),
+
+    updateFloatingDockConfig: (patch) =>
+      setState((prev) => ({
+        ...prev,
+        floatingDockConfig: {
+          ...prev.floatingDockConfig,
+          ...patch,
+        },
+      })),
+
+    updateTripPostAcceptanceActual: (tripId, actualPatch) =>
+      setState((prev) => ({
+        ...prev,
+        trips: prev.trips.map((t) => {
+          if (t.id !== tripId) return t;
+          const prevActual: TripPostAcceptanceActual = t.postAcceptanceActual ?? {
+            hasObservedActuals: false,
+            navigationAppUsed: 'Nenhum',
+            observationSource: 'Sem dados reais observados',
+          };
+          const merged: TripPostAcceptanceActual = {
+            ...prevActual,
+            ...actualPatch,
+          };
+          const hasKm =
+            merged.pickupDistanceKm !== undefined &&
+            merged.pickupDistanceKm !== null &&
+            merged.tripDistanceKm !== undefined &&
+            merged.tripDistanceKm !== null;
+          const hasMin =
+            merged.pickupTimeMin !== undefined &&
+            merged.pickupTimeMin !== null &&
+            merged.tripTimeMin !== undefined &&
+            merged.tripTimeMin !== null;
+          if (merged.totalDistanceKm === undefined || merged.totalDistanceKm === null) {
+            if (hasKm) {
+              merged.totalDistanceKm = round2((merged.pickupDistanceKm ?? 0) + (merged.tripDistanceKm ?? 0));
+            }
+          }
+          if (merged.totalTimeMin === undefined || merged.totalTimeMin === null) {
+            if (hasMin) {
+              merged.totalTimeMin = Math.round((merged.pickupTimeMin ?? 0) + (merged.tripTimeMin ?? 0));
+            }
+          }
+          const anyActual =
+            Boolean(merged.hasObservedActuals) ||
+            merged.pickupDistanceKm != null ||
+            merged.tripDistanceKm != null ||
+            merged.pickupTimeMin != null ||
+            merged.tripTimeMin != null ||
+            merged.totalTimeMin != null ||
+            merged.totalDistanceKm != null;
+          merged.hasObservedActuals = anyActual;
+          if (anyActual && (!merged.observationSource || merged.observationSource === 'Sem dados reais observados')) {
+            merged.observationSource = 'Registo manual do motorista';
+          }
+          return {
+            ...t,
+            postAcceptanceActual: merged,
+          };
+        }),
+      })),
+
+    addTripFareAdjustment: (tripId, adj) =>
+      setState((prev) => ({
+        ...prev,
+        trips: prev.trips.map((t) => {
+          if (t.id !== tripId) return t;
+          const entry: TripFareAdjustmentRecord = {
+            id: `adj-${Date.now()}`,
+            recordedAtIso: new Date().toISOString(),
+            amountEur: round2(adj.amountEur),
+            reason: adj.reason.trim() || 'Ajuste por atraso / tempo adicional',
+            status: adj.status,
+            evidenceNote: adj.evidenceNote,
+          };
+          const list = [...(t.fareAdjustments ?? []), entry];
+          const confirmedExtra = list
+            .filter((a) => a.status === 'Confirmado pela plataforma')
+            .reduce((s, a) => s + a.amountEur, 0);
+          return {
+            ...t,
+            initialPresentedGrossEur: t.initialPresentedGrossEur ?? t.estimatedGrossEur ?? t.grossEur,
+            fareAdjustments: list,
+            confirmedFinalGrossEur: round2(t.grossEur + confirmedExtra),
+          };
+        }),
+      })),
+
+    resolveTripFareAdjustmentStatus: (tripId, adjustmentId, status) =>
+      setState((prev) => ({
+        ...prev,
+        trips: prev.trips.map((t) => {
+          if (t.id !== tripId) return t;
+          const list = (t.fareAdjustments ?? []).map((a) =>
+            a.id === adjustmentId ? { ...a, status } : a
+          );
+          const confirmedExtra = list
+            .filter((a) => a.status === 'Confirmado pela plataforma')
+            .reduce((s, a) => s + a.amountEur, 0);
+          return {
+            ...t,
+            fareAdjustments: list,
+            confirmedFinalGrossEur: round2(t.grossEur + confirmedExtra),
+          };
+        }),
       })),
 
     completeTrip: (trip) => {
@@ -2786,11 +3436,26 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     toggleDriverPlatformActivation: (platformId) =>
       setState((prev) => {
+        const targetPlat = prev.platforms.find((p) => p.id === platformId);
+        const sameCountry =
+          prev.localization.currentLocation.countryCode.toUpperCase() ===
+          prev.localization.selectedMarketCode.toUpperCase();
+        if (
+          !targetPlat ||
+          !isPlatformOperationalInLocation(
+            targetPlat,
+            prev.localization.selectedMarketCode,
+            sameCountry ? prev.localization.currentLocation.region : undefined,
+            sameCountry ? prev.localization.currentLocation.city : undefined
+          )
+        ) {
+          return prev;
+        }
         const exists = prev.driverDeactivatedPlatformIds.includes(platformId);
         const nextIds = exists
           ? prev.driverDeactivatedPlatformIds.filter((id) => id !== platformId)
           : [...prev.driverDeactivatedPlatformIds, platformId];
-        const platName = prev.platforms.find((p) => p.id === platformId)?.name ?? platformId;
+        const platName = targetPlat.name ?? platformId;
         const notif: NotificationRecord = {
           id: `ntf-drv-plat-${Date.now()}`,
           title: exists ? `Plataforma ${platName} reativada` : `Plataforma ${platName} desativada por si`,
@@ -2819,8 +3484,19 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
       }),
 
-    getPlatformLifecycleState: (platformId) =>
-      getPlatformLifecycleStateHelper(platformId, state.platforms, state.driverDeactivatedPlatformIds),
+    getPlatformLifecycleState: (platformId) => {
+      const sameCountry =
+        state.localization.currentLocation.countryCode.toUpperCase() ===
+        state.localization.selectedMarketCode.toUpperCase();
+      return getPlatformLifecycleStateHelper(
+        platformId,
+        state.platforms,
+        state.driverDeactivatedPlatformIds,
+        state.localization.selectedMarketCode,
+        sameCountry ? state.localization.currentLocation.region : undefined,
+        sameCountry ? state.localization.currentLocation.city : undefined
+      );
+    },
 
     captureExternalEvent: (payload) => {
       const outcome = reconcileCapturedEvent(
@@ -3297,13 +3973,19 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         const isCurrentDriverCountry =
           prev.localization.selectedMarketCode.toUpperCase() === countryCode.toUpperCase();
+        const sameCountry =
+          prev.localization.currentLocation.countryCode.toUpperCase() ===
+          prev.localization.selectedMarketCode.toUpperCase();
+        const operationalSet = new Set(
+          getValidatedPlatformsForLocation(
+            nextPlatforms,
+            prev.localization.selectedMarketCode,
+            sameCountry ? prev.localization.currentLocation.region : undefined,
+            sameCountry ? prev.localization.currentLocation.city : undefined
+          )
+        );
         const nextDeactivated = isCurrentDriverCountry
-          ? computeDriverDeactivatedPlatformsForLocation(
-              nextPlatforms,
-              prev.localization.selectedMarketCode,
-              prev.localization.currentLocation.region,
-              prev.localization.currentLocation.city
-            )
+          ? prev.driverDeactivatedPlatformIds.filter((id) => operationalSet.has(id))
           : prev.driverDeactivatedPlatformIds;
 
         return {
@@ -3311,11 +3993,94 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           platforms: nextPlatforms,
           countries: nextCountries,
           driverDeactivatedPlatformIds: nextDeactivated,
+          adminRevalidationCount: prev.adminRevalidationCount + 1,
           auditLogs: pushAudit(
             prev,
             'Operação Plataforma por País',
             `${platformId.toUpperCase()} (${countryCode.toUpperCase()})`,
             `Estado local -> ${patch.operationalStatus} | Fonte: ${patch.validationSource}`
+          ),
+        };
+      }),
+
+    revalidatePlatformCountryOperation: (platformId, countryCode, validationSource) =>
+      setState((prev) => {
+        const target = prev.platforms.find((p) => p.id === platformId);
+        const existingOp = target?.countryOperations?.find(
+          (o) => o.countryCode.toUpperCase() === countryCode.toUpperCase()
+        );
+        if (!target || !existingOp) return prev;
+        const today = new Date().toISOString().slice(0, 10);
+        const nextPlatforms = prev.platforms.map((p) =>
+          p.id === platformId
+            ? upsertPlatformCountryOperation(p, countryCode, {
+                operationalStatus: existingOp.operationalStatus,
+                preselectForDrivers: existingOp.preselectForDrivers,
+                regions: existingOp.regions,
+                cities: existingOp.cities,
+                licensingNote: existingOp.licensingNote,
+                validationSource: validationSource || existingOp.validationSource,
+                verifiedAt: today,
+                nextReviewAt: computeNextReviewDate(today),
+                changeNote: `Revalidação administrativa executada em ${today} (${existingOp.operationalStatus}).`,
+              })
+            : p
+        );
+        const validatedForCountry = getValidatedPlatformsForLocation(nextPlatforms, countryCode);
+        const nextCountries = prev.countries.map((c) =>
+          c.code.toUpperCase() === countryCode.toUpperCase()
+            ? { ...c, activePlatforms: validatedForCountry }
+            : c
+        );
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: nextPlatforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          platforms: nextPlatforms,
+          countries: nextCountries,
+          adminRevalidationCount: prev.adminRevalidationCount + 1,
+          auditLogs: pushAudit(
+            prev,
+            'Revalidação de Operação por País',
+            `${platformId.toUpperCase()} (${countryCode.toUpperCase()})`,
+            `Verificação renovada em ${today} · Próx. revisão ${computeNextReviewDate(today)}`
+          ),
+        };
+      }),
+
+    revalidateCountryMarket: (countryCode, validationSource) =>
+      setState((prev) => {
+        const today = new Date().toISOString().slice(0, 10);
+        const nextReview = computeNextReviewDate(today);
+        const nextCountries = prev.countries.map((c) =>
+          c.code.toUpperCase() === countryCode.toUpperCase()
+            ? {
+                ...c,
+                verifiedAt: today,
+                nextReviewAt: nextReview,
+                validationSource: validationSource || c.validationSource || 'Revisão Administrativa AIVAD',
+              }
+            : c
+        );
+        void fetch('/api/management/catalog', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ countries: nextCountries, platforms: prev.platforms }),
+        }).catch(() => undefined);
+        return {
+          ...prev,
+          countries: nextCountries,
+          adminRevalidationCount: prev.adminRevalidationCount + 1,
+          auditLogs: pushAudit(
+            prev,
+            'Revalidação de Mercado Internacional',
+            countryCode.toUpperCase(),
+            `Verificação renovada em ${today} · Próx. revisão ${nextReview}`
           ),
         };
       }),
@@ -3750,6 +4515,7 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (res.accepted) {
         setState((prev) => ({
           ...prev,
+          voiceTestCount: draft.dedupHash.startsWith('test:') ? prev.voiceTestCount + 1 : prev.voiceTestCount,
           voiceHistory: res.updatedHistory.map((it) =>
             it.id === res.item?.id ? { ...it, deliveredAudio: spoken } : it
           ),
@@ -4107,6 +4873,254 @@ export const EcosystemProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           c.id === couponId ? { ...c, active: !c.active } : c
         ),
       })),
+
+    openAssistantHub: () => setState((prev) => ({ ...prev, assistantHubOpen: true })),
+    closeAssistantHub: () => setState((prev) => ({ ...prev, assistantHubOpen: false })),
+
+    startInteractiveAssistant: (assistantId) =>
+      setState((prev) => {
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === assistantId);
+        if (!def) return prev;
+        const existing = prev.assistantProgress[assistantId];
+        const nextProg =
+          existing && existing.status !== 'Concluído'
+            ? resumeAssistantProgress(existing)
+            : createInitialAssistantProgress(assistantId);
+        const targetStep = def.steps[nextProg.currentStepIndex] ?? def.steps[0];
+        return {
+          ...prev,
+          assistantHubOpen: false,
+          activeAssistantId: assistantId,
+          activeDriverNav:
+            def.scope === 'driver' && targetStep?.targetNav ? targetStep.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && targetStep?.targetNav ? targetStep.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && targetStep?.targetNav ? targetStep.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [assistantId]: nextProg,
+          },
+        };
+      }),
+
+    pauseInteractiveAssistant: () =>
+      setState((prev) => {
+        if (!prev.activeAssistantId) return prev;
+        const cur = prev.assistantProgress[prev.activeAssistantId];
+        if (!cur) return { ...prev, activeAssistantId: null };
+        return {
+          ...prev,
+          activeAssistantId: null,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [prev.activeAssistantId]: pauseAssistantProgress(cur),
+          },
+        };
+      }),
+
+    resumeInteractiveAssistant: (assistantId) =>
+      setState((prev) => {
+        const targetId = assistantId ?? prev.activeAssistantId;
+        if (!targetId) return prev;
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === targetId);
+        if (!def) return prev;
+        const cur = prev.assistantProgress[targetId] ?? createInitialAssistantProgress(targetId);
+        const resumed = resumeAssistantProgress(cur);
+        const step = def.steps[resumed.currentStepIndex] ?? def.steps[0];
+        return {
+          ...prev,
+          assistantHubOpen: false,
+          activeAssistantId: targetId,
+          activeDriverNav:
+            def.scope === 'driver' && step?.targetNav ? step.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && step?.targetNav ? step.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && step?.targetNav ? step.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [targetId]: resumed,
+          },
+        };
+      }),
+
+    resetInteractiveAssistant: (assistantId) =>
+      setState((prev) => {
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === assistantId);
+        if (!def) return prev;
+        const fresh = createInitialAssistantProgress(assistantId);
+        const firstStep = def.steps[0];
+        return {
+          ...prev,
+          assistantHubOpen: false,
+          activeAssistantId: assistantId,
+          activeDriverNav:
+            def.scope === 'driver' && firstStep?.targetNav ? firstStep.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && firstStep?.targetNav ? firstStep.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && firstStep?.targetNav ? firstStep.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [assistantId]: fresh,
+          },
+        };
+      }),
+
+    goToAssistantStep: (stepIndex) =>
+      setState((prev) => {
+        if (!prev.activeAssistantId) return prev;
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === prev.activeAssistantId);
+        if (!def) return prev;
+        const clamped = Math.max(0, Math.min(def.steps.length - 1, stepIndex));
+        const cur = prev.assistantProgress[def.id] ?? createInitialAssistantProgress(def.id);
+        const step = def.steps[clamped];
+        return {
+          ...prev,
+          activeDriverNav:
+            def.scope === 'driver' && step?.targetNav ? step.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && step?.targetNav ? step.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && step?.targetNav ? step.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [def.id]: {
+              ...cur,
+              currentStepIndex: clamped,
+              updatedAt: new Date().toISOString(),
+            },
+          },
+        };
+      }),
+
+    verifyCurrentAssistantStep: () => {
+      if (!state.activeAssistantId) {
+        return { status: 'Falhou', detail: 'Nenhum assistente ativo.' };
+      }
+      const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === state.activeAssistantId);
+      if (!def) return { status: 'Falhou', detail: 'Assistente não encontrado.' };
+      const curProg = state.assistantProgress[def.id] ?? createInitialAssistantProgress(def.id);
+      const step = def.steps[curProg.currentStepIndex] ?? def.steps[0];
+      const voiceSupported =
+        typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
+
+      const evalCtx: AssistantEvaluationContext = {
+        overlayConfig: state.overlayConfig,
+        floatingDockConfig: state.floatingDockConfig,
+        floatingPreviewOpened: state.floatingPreviewOpened,
+        floatingConfigSavedCount: state.floatingConfigSavedCount,
+        voiceConfig: {
+          enabled: state.voiceConfig.enabled,
+          deliveryMode: state.voiceConfig.outputChannel,
+          language: state.voiceConfig.language,
+          speechRate: state.voiceConfig.rate,
+          categories: state.voiceConfig.categories,
+        },
+        voiceSupported,
+        voiceTestCount: state.voiceTestCount,
+        autoPilot: state.autoPilot,
+        autoPilotSavedCount: state.autoPilotSavedCount,
+        connectors: state.connectors,
+        activeDriverNav: state.activeDriverNav,
+        activeAdminNav: state.activeAdminNav,
+        activePortalPage: state.activePortalPage,
+        selectedMarketCode: state.localization.selectedMarketCode,
+        tachographActiveSession: Boolean(state.tachograph.activeSessionId),
+        proposalsCount: state.proposals.length,
+        vehiclesCount: state.vehicles.length,
+        activeVehicleId: activeVehicle.id,
+        zoneObservationsCount: state.zoneObservations.length,
+        countriesCount: state.countries.length,
+        adminRevalidationCount: state.adminRevalidationCount,
+        portalSimulatorTested: state.portalSimulatorTested,
+        portalComparisonViewed: state.portalComparisonViewed,
+      };
+
+      const outcome = evaluateAssistantStepVerification(step, curProg, evalCtx);
+      const nextProg = applyStepConfirmationToProgress(curProg, step, outcome);
+      const nextStep = def.steps[nextProg.currentStepIndex] ?? step;
+      setState((prev) => ({
+        ...prev,
+        activeDriverNav:
+          def.scope === 'driver' && nextStep?.targetNav ? nextStep.targetNav : prev.activeDriverNav,
+        activeAdminNav:
+          def.scope === 'admin' && nextStep?.targetNav ? nextStep.targetNav : prev.activeAdminNav,
+        activePortalPage:
+          def.scope === 'portal' && nextStep?.targetNav ? nextStep.targetNav : prev.activePortalPage,
+        assistantProgress: {
+          ...prev.assistantProgress,
+          [def.id]: nextProg,
+        },
+      }));
+      return { status: outcome.status, detail: outcome.detail };
+    },
+
+    confirmCurrentAssistantStepByUser: () =>
+      setState((prev) => {
+        if (!prev.activeAssistantId) return prev;
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === prev.activeAssistantId);
+        if (!def) return prev;
+        const curProg = prev.assistantProgress[def.id] ?? createInitialAssistantProgress(def.id);
+        const step = def.steps[curProg.currentStepIndex] ?? def.steps[0];
+        const confirmed = confirmAssistantStepByUser(curProg, step.id);
+        const nextProg = applyStepConfirmationToProgress(confirmed, step, {
+          status: 'Concluído',
+          detail: 'Confirmado pelo utilizador.',
+          requiresUserConfirmation: false,
+        });
+        const nextStep = def.steps[nextProg.currentStepIndex] ?? step;
+        return {
+          ...prev,
+          activeDriverNav:
+            def.scope === 'driver' && nextStep?.targetNav ? nextStep.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && nextStep?.targetNav ? nextStep.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && nextStep?.targetNav ? nextStep.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [def.id]: nextProg,
+          },
+        };
+      }),
+
+    skipOptionalCurrentAssistantStep: () =>
+      setState((prev) => {
+        if (!prev.activeAssistantId) return prev;
+        const def = INTERACTIVE_ASSISTANTS.find((a) => a.id === prev.activeAssistantId);
+        if (!def) return prev;
+        const curProg = prev.assistantProgress[def.id] ?? createInitialAssistantProgress(def.id);
+        const step = def.steps[curProg.currentStepIndex] ?? def.steps[0];
+        const skipped = skipOptionalAssistantStep(curProg, step);
+        const nextStep = def.steps[skipped.currentStepIndex] ?? step;
+        return {
+          ...prev,
+          activeDriverNav:
+            def.scope === 'driver' && nextStep?.targetNav ? nextStep.targetNav : prev.activeDriverNav,
+          activeAdminNav:
+            def.scope === 'admin' && nextStep?.targetNav ? nextStep.targetNav : prev.activeAdminNav,
+          activePortalPage:
+            def.scope === 'portal' && nextStep?.targetNav ? nextStep.targetNav : prev.activePortalPage,
+          assistantProgress: {
+            ...prev.assistantProgress,
+            [def.id]: skipped,
+          },
+        };
+      }),
+
+    closeInteractiveAssistant: () =>
+      setState((prev) => ({ ...prev, activeAssistantId: null })),
+
+    markFloatingPreviewOpened: () =>
+      setState((prev) => ({ ...prev, floatingPreviewOpened: true })),
+
+    markPortalSimulatorTested: () =>
+      setState((prev) => ({ ...prev, portalSimulatorTested: true })),
+
+    markPortalComparisonViewed: () =>
+      setState((prev) => ({ ...prev, portalComparisonViewed: true })),
   };
 
   return <EcosystemContext.Provider value={value}>{children}</EcosystemContext.Provider>;

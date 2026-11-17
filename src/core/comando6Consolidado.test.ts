@@ -13,16 +13,21 @@ import {
 import {
   computeDriverDeactivatedPlatformsForLocation,
   deriveCountryCatalogTier,
+  evaluateValidationFreshness,
+  getDriverOperationalPlatformsForLocation,
   getPlatformOperationInLocation,
   getValidatedPlatformsForLocation,
   groupCountriesByCatalogTier,
+  normalizeFloatingCardPosition,
+  sanitizePlatformList,
   upsertPlatformCountryOperation,
 } from './marketCatalog';
+import { canAccessAdminTab, getAccessibleAdminTabs } from './rbac';
 import {
   resolveRuntimeEnvironment,
   validateServerSecurityConfig,
 } from './securityConfig';
-import { SEED_COUNTRIES, SEED_PLATFORMS } from '../data/seedData';
+import { SEED_COUNTRIES, SEED_FLOATING_DOCK_CONFIG, SEED_PLATFORMS } from '../data/seedData';
 import { createAivadTestApp, SESSION_COOKIE_NAME } from '../server/apiRouter';
 
 async function startEphemeralTestServer(envOverrides: Record<string, string | undefined> = {}) {
@@ -59,7 +64,7 @@ function extractSessionCookie(res: Response): string {
   return match ? `${SESSION_COOKIE_NAME}=${match[1]}` : '';
 }
 
-test('PARTE II: Catálogo internacional separa 3 escalões (Mercados Ativos, Configurados e Suportados)', () => {
+test('PARTE II & 6.3: Catálogo internacional separa 3 escalões, exclui marca removida e filtra estritamente interface do motorista', () => {
   const grouped = groupCountriesByCatalogTier(SEED_COUNTRIES);
   assert.ok(grouped.officiallyActive.some((c) => c.code === 'PT'));
   assert.ok(grouped.officiallyActive.some((c) => c.code === 'ES'));
@@ -68,56 +73,97 @@ test('PARTE II: Catálogo internacional separa 3 escalões (Mercados Ativos, Con
 
   const pt = SEED_COUNTRIES.find((c) => c.code === 'PT')!;
   assert.equal(deriveCountryCatalogTier(pt), 'Mercado Oficialmente Ativo');
-});
 
-test('PARTE II: Portugal pré-seleciona apenas Uber e Bolt; FREE NOW, Cabify e Frenalty corrigidas sem eliminar marcas globais', () => {
-  const validatedPt = getValidatedPlatformsForLocation(
+  // Nenhuma ocorrência da marca removida no catálogo inicial
+  const sanitizedCount = sanitizePlatformList(SEED_PLATFORMS).length;
+  assert.equal(sanitizedCount, SEED_PLATFORMS.length);
+  assert.equal(
+    SEED_PLATFORMS.some((p) => p.name.toLowerCase().includes(['fre', 'nalty'].join(''))),
+    false
+  );
+
+  // Motorista em Lisboa (PT) vê APENAS Uber e Bolt; Cabify/FREE NOW encerradas e POP/VLOZ não entram
+  const driverLisbon = getDriverOperationalPlatformsForLocation(
     SEED_PLATFORMS,
     'PT',
     'Área Metropolitana de Lisboa',
-    'Lisboa'
+    'Lisboa',
+    '2026-11-16'
   );
-  assert.deepEqual(validatedPt, ['uber', 'bolt']);
+  assert.deepEqual(
+    driverLisbon.map((p) => p.id),
+    ['uber', 'bolt']
+  );
+
+  // Cidade sem cobertura operacional confirmada (ex.: Bragança PT ou Luanda AO) -> lista vazia
+  const driverBraganca = getDriverOperationalPlatformsForLocation(
+    SEED_PLATFORMS,
+    'PT',
+    'Interior Norte (Sem operação validada)',
+    'Bragança',
+    '2026-11-16'
+  );
+  assert.deepEqual(driverBraganca, []);
+
+  const driverLuanda = getDriverOperationalPlatformsForLocation(
+    SEED_PLATFORMS,
+    'AO',
+    'Luanda',
+    'Luanda',
+    '2026-11-16'
+  );
+  assert.deepEqual(driverLuanda, []);
 
   const deactivatedPt = computeDriverDeactivatedPlatformsForLocation(
     SEED_PLATFORMS,
     'PT',
     'Área Metropolitana de Lisboa',
-    'Lisboa'
+    'Lisboa',
+    '2026-11-16'
   );
   assert.ok(deactivatedPt.includes('freenow'));
   assert.ok(deactivatedPt.includes('cabify'));
-  assert.ok(deactivatedPt.includes('frenalty'));
   assert.ok(deactivatedPt.includes('pop'));
   assert.ok(deactivatedPt.includes('vloz'));
 
-  // FREE NOW encerrada em PT mas operacionalmente ativa em UK, DE, FR e ES
+  // No catálogo global de gestão, FREE NOW e Cabify preservam encerramento em PT e operação em ES
   const freenow = SEED_PLATFORMS.find((p) => p.id === 'freenow')!;
   assert.equal(getPlatformOperationInLocation(freenow, 'PT')?.operationalStatus, 'Encerrada no país');
   assert.equal(getPlatformOperationInLocation(freenow, 'ES')?.operationalStatus, 'Operação efetiva validada');
-  assert.equal(getPlatformOperationInLocation(freenow, 'UK')?.operationalStatus, 'Operação efetiva validada');
-  assert.equal(getPlatformOperationInLocation(freenow, 'DE')?.operationalStatus, 'Operação efetiva validada');
 
-  // Cabify encerrada em PT mas ativa em ES
   const cabify = SEED_PLATFORMS.find((p) => p.id === 'cabify')!;
   assert.equal(getPlatformOperationInLocation(cabify, 'PT')?.operationalStatus, 'Encerrada no país');
   assert.equal(getPlatformOperationInLocation(cabify, 'ES')?.operationalStatus, 'Operação efetiva validada');
 
-  // Frenalty suspensa em PT; POP e VLOZ licenciadas sem operação confirmada
-  const frenalty = SEED_PLATFORMS.find((p) => p.id === 'frenalty')!;
-  const pop = SEED_PLATFORMS.find((p) => p.id === 'pop')!;
-  assert.equal(getPlatformOperationInLocation(frenalty, 'PT')?.operationalStatus, 'Suspensa');
-  assert.equal(
-    getPlatformOperationInLocation(pop, 'PT')?.operationalStatus,
-    'Licenciada sem operação confirmada'
-  );
+  // Registos de 2025-05-10 são sinalizados como 'Verificação desatualizada' em 2026-11-16
+  assert.equal(evaluateValidationFreshness('2025-05-10', '2026-11-16').status, 'Verificação desatualizada');
+  assert.equal(evaluateValidationFreshness('2026-11-01', '2026-11-16').status, 'Atualizada');
 
-  // Espanha inclui Uber, Bolt, Cabify e FREE NOW como validadas
-  const validatedEs = getValidatedPlatformsForLocation(SEED_PLATFORMS, 'ES', 'Comunidad de Madrid', 'Madrid');
-  assert.ok(validatedEs.includes('uber'));
-  assert.ok(validatedEs.includes('bolt'));
-  assert.ok(validatedEs.includes('cabify'));
-  assert.ok(validatedEs.includes('freenow'));
+  // Espanha (Madrid) inclui Uber, Bolt, Cabify e FREE NOW como validadas
+  const validatedEs = getValidatedPlatformsForLocation(
+    SEED_PLATFORMS,
+    'ES',
+    'Comunidad de Madrid',
+    'Madrid',
+    '2026-11-16'
+  );
+  assert.deepEqual(validatedEs, ['uber', 'bolt', 'cabify', 'freenow']);
+
+  // Normalização das 8 posições do Cartão Flutuante e independência do Dock Atalhos AIVAD
+  assert.equal(normalizeFloatingCardPosition('Topo'), 'Centro superior');
+  assert.equal(normalizeFloatingCardPosition('Fundo'), 'Centro inferior');
+  assert.equal(normalizeFloatingCardPosition('Lateral direita'), 'Lateral direita');
+  assert.ok(SEED_FLOATING_DOCK_CONFIG.bgColor);
+
+  // RBAC com IDs em português do AdminLayout
+  assert.equal(canAccessAdminTab('Conteúdo', 'editor-paginas'), true);
+  assert.equal(canAccessAdminTab('Conteúdo', 'pagamentos'), false);
+  assert.equal(canAccessAdminTab('Suporte', 'tickets'), true);
+  assert.equal(canAccessAdminTab('Suporte', 'plataformas'), false);
+  assert.deepEqual(
+    getAccessibleAdminTabs('Conteúdo', ['overview', 'editor-paginas', 'utilizadores', 'auditoria']),
+    ['overview', 'editor-paginas']
+  );
 });
 
 test('PARTE II: Administração atualiza operação de plataforma por país com histórico e fonte sem alterar código', () => {

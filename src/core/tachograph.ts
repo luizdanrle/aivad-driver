@@ -778,11 +778,17 @@ export function buildTachographQrPayload(
   session: TachographShiftSession | undefined,
   summary: ConsolidatedTachographSummary,
   driverName: string,
-  vehiclePlateOrModel: string
-): { qrText: string; verificationCode: string; payloadObject: Record<string, string | number> } {
+  vehiclePlateOrModel: string,
+  origin?: string
+): { qrText: string; verificationCode: string; verificationPath: string; payloadObject: Record<string, string | number> } {
+  const sid = session?.id ?? 'RESUMO-PERIODO';
+  const sig =
+    session?.qrVerificationHash ??
+    computeIntegrityDigest(`${driverName}:${summary.totalKmDriven}:${summary.drivingMinutes}`);
+
   const basePayload = {
     v: 'AIVAD-TAC-1.0',
-    sid: session?.id ?? 'RESUMO-PERIODO',
+    sid,
     drv: driverName,
     veh: vehiclePlateOrModel,
     op: session?.operatorName ?? 'Operador Independ.',
@@ -796,13 +802,22 @@ export function buildTachographQrPayload(
     pausaMin: summary.breakMinutes + summary.mealMinutes,
     descMin: summary.restMinutes,
     onlMin: summary.consolidatedOnlineMinutes,
-    sig: session?.qrVerificationHash ?? computeIntegrityDigest(`${driverName}:${summary.totalKmDriven}:${summary.drivingMinutes}`),
+    sig,
   };
 
-  const qrText = JSON.stringify(basePayload);
+  const verificationPath = `/?mode=tacho-audit&sid=${encodeURIComponent(sid)}&code=${encodeURIComponent(sig)}`;
+  const resolvedOrigin =
+    origin ??
+    (typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://app.aivad.local');
+  const cleanOrigin = resolvedOrigin.replace(/\/+$/, '');
+  const qrText = `${cleanOrigin}${verificationPath}`;
+
   return {
     qrText,
-    verificationCode: basePayload.sig,
+    verificationCode: sig,
+    verificationPath,
     payloadObject: basePayload,
   };
 }
@@ -844,4 +859,259 @@ export function buildTachographPeriodReport(
     legalDisclaimer: TACHOGRAPH_LEGAL_DISCLAIMER,
   };
 }
+
+export const TACHOGRAPH_OPERATIONAL_CATEGORIES = [
+  {
+    id: 'conducao',
+    label: 'Condução',
+    states: ['Condução em serviço'] as TachographState[],
+    countsAsEffectiveWork: true,
+    description: 'Deslocação ao serviço com passageiro ou recolha ativa.',
+  },
+  {
+    id: 'trabalho_sem_conducao',
+    label: 'Trabalho sem condução',
+    states: ['Início de turno', 'Trabalho sem condução', 'Disponibilidade', 'Espera'] as TachographState[],
+    countsAsEffectiveWork: true,
+    description: 'Preparação, inspeção, disponibilidade conectada ou espera em serviço.',
+  },
+  {
+    id: 'pausa',
+    label: 'Pausa',
+    states: ['Pausa'] as TachographState[],
+    countsAsEffectiveWork: false,
+    description: 'Interrupção breve regulamentar. O Relógio 1 (Turno) continua; o Relógio 2 (Efetivo) pausa.',
+  },
+  {
+    id: 'refeicao',
+    label: 'Refeição',
+    states: ['Refeição'] as TachographState[],
+    countsAsEffectiveWork: false,
+    description: 'Intervalo de refeição. O Relógio 1 (Turno) continua; o Relógio 2 (Efetivo) pausa.',
+  },
+  {
+    id: 'descanso',
+    label: 'Descanso',
+    states: ['Descanso'] as TachographState[],
+    countsAsEffectiveWork: false,
+    description: 'Período de repouso. O Relógio 1 (Turno) continua; o Relógio 2 (Efetivo) pausa.',
+  },
+  {
+    id: 'offline',
+    label: 'Estado offline',
+    states: ['Fora de serviço', 'Fim de turno'] as TachographState[],
+    countsAsEffectiveWork: false,
+    description: 'Turno encerrado ou fora de atividade.',
+  },
+] as const;
+
+export function formatDurationHms(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(Number.isFinite(totalSeconds) ? totalSeconds : 0));
+  const hrs = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+export interface TachographOperationalAlert {
+  code: 'BREAK_UPCOMING_30M' | 'PROLONGED_DRIVING' | 'RESUME_WORK_REMINDER' | 'SHIFT_LIMIT_NEAR';
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  message: string;
+}
+
+export interface LiveTachographClocks {
+  hasActiveShift: boolean;
+  sessionId: string | null;
+  operationalStatus: 'Em Turno' | 'Em Pausa' | 'Fora de Serviço';
+  currentState: TachographState;
+  shiftStartIso: string | null;
+  shiftElapsedSeconds: number;
+  shiftRemainingTo10hSeconds: number;
+  shiftLimitSeconds: number;
+  effectiveWorkSeconds: number;
+  effectiveWorkRemainingTo10hSeconds: number;
+  breakElapsedSeconds: number;
+  currentPauseSeconds: number;
+  continuousDrivingMinutesSinceBreak: number;
+  alerts: TachographOperationalAlert[];
+  marketRuleNote: string;
+}
+
+export function computeLiveTachographClocks(
+  store: TachographStateStore,
+  nowMs: number = Date.now(),
+  config?: {
+    maxShiftHours?: number;
+    continuousDrivingLimitMinutes?: number;
+    preBreakLeadMinutes?: number;
+    pauseReminderMinutes?: number;
+    mealReminderMinutes?: number;
+    countryCode?: string;
+  }
+): LiveTachographClocks {
+  const maxShiftHours = config?.maxShiftHours ?? 10;
+  const shiftLimitSeconds = Math.round(maxShiftHours * 3600);
+  const drivingLimitMin = config?.continuousDrivingLimitMinutes ?? 270; // 4h30
+  const preBreakLeadMin = config?.preBreakLeadMinutes ?? 30;
+  const pauseReminderMin = config?.pauseReminderMinutes ?? 15;
+  const mealReminderMin = config?.mealReminderMinutes ?? 30;
+  const countryCode = config?.countryCode ?? 'PT';
+
+  const marketRuleNote =
+    countryCode === 'PT'
+      ? 'Referência PT (Lei n.º 45/2018 & Portaria n.º 7/2022): teto configurado de 10h em janela móvel de 24h e alerta preventivo antes de 4h30 de condução contínua.'
+      : `Limites configuráveis do mercado ${countryCode} (${maxShiftHours}h máx. turno / alerta condução contínua ${Math.round(drivingLimitMin / 60 * 10) / 10}h). Verifique sempre requisitos legais locais vigentes.`;
+
+  const activeSession = store.sessions.find(
+    (s) => s.id === store.activeSessionId && s.status === 'Em curso'
+  );
+
+  if (!activeSession) {
+    return {
+      hasActiveShift: false,
+      sessionId: null,
+      operationalStatus: 'Fora de Serviço',
+      currentState: 'Fora de serviço',
+      shiftStartIso: null,
+      shiftElapsedSeconds: 0,
+      shiftRemainingTo10hSeconds: shiftLimitSeconds,
+      shiftLimitSeconds,
+      effectiveWorkSeconds: 0,
+      effectiveWorkRemainingTo10hSeconds: shiftLimitSeconds,
+      breakElapsedSeconds: 0,
+      currentPauseSeconds: 0,
+      continuousDrivingMinutesSinceBreak: 0,
+      alerts: [],
+      marketRuleNote,
+    };
+  }
+
+  const sessionActs = store.activities
+    .filter((a) => a.shiftSessionId === activeSession.id)
+    .sort((a, b) => new Date(a.startIso).getTime() - new Date(b.startIso).getTime());
+
+  const sessionStartParsed = new Date(activeSession.startIso).getTime();
+  const firstActStart = sessionActs[0] ? new Date(sessionActs[0].startIso).getTime() : NaN;
+  const shiftStartMs = Number.isFinite(sessionStartParsed)
+    ? sessionStartParsed
+    : Number.isFinite(firstActStart)
+      ? firstActStart
+      : nowMs;
+
+  // RELÓGIO 1: Tempo Total do Turno (nunca para em Pausa/Refeição/Descanso enquanto turno está em curso)
+  const shiftElapsedSeconds = Math.max(0, Math.floor((nowMs - shiftStartMs) / 1000));
+  const shiftRemainingTo10hSeconds = Math.max(0, shiftLimitSeconds - shiftElapsedSeconds);
+
+  // RELÓGIO 2: Trabalho Efetivo (soma apenas blocos contáveis e congela durante Pausa/Refeição/Descanso)
+  let effectiveWorkMs = 0;
+  let breakMs = 0;
+  let currentPauseSeconds = 0;
+  let continuousWorkMsSinceBreak = 0;
+
+  for (const act of sessionActs) {
+    const sMs = new Date(act.startIso).getTime();
+    if (!Number.isFinite(sMs)) continue;
+
+    let eMs = sMs;
+    if (act.endIso) {
+      const parsedEnd = new Date(act.endIso).getTime();
+      eMs = Number.isFinite(parsedEnd) && parsedEnd > sMs ? parsedEnd : sMs + Math.max(0, act.durationMinutes) * 60000;
+    } else if (act.status === 'Ativo') {
+      eMs = Math.max(sMs, nowMs);
+    } else {
+      eMs = sMs + Math.max(0, act.durationMinutes) * 60000;
+    }
+
+    const spanMs = Math.max(0, eMs - sMs);
+    const isCountableWork = Boolean(TACHOGRAPH_STATE_REG_ALIASES[act.state]?.legalCountableAsWork);
+    const isBreakState = act.state === 'Pausa' || act.state === 'Refeição' || act.state === 'Descanso';
+
+    if (isCountableWork) {
+      effectiveWorkMs += spanMs;
+      continuousWorkMsSinceBreak += spanMs;
+    } else if (isBreakState) {
+      breakMs += spanMs;
+      if (act.status === 'Ativo') {
+        currentPauseSeconds = Math.floor(spanMs / 1000);
+      }
+      if (spanMs >= 15 * 60000) {
+        continuousWorkMsSinceBreak = 0;
+      }
+    }
+  }
+
+  const isPausedState =
+    activeSession.currentState === 'Pausa' ||
+    activeSession.currentState === 'Refeição' ||
+    activeSession.currentState === 'Descanso';
+
+  const effectiveWorkSeconds = Math.max(0, Math.floor(effectiveWorkMs / 1000));
+  const effectiveWorkRemainingTo10hSeconds = Math.max(0, shiftLimitSeconds - effectiveWorkSeconds);
+  const breakElapsedSeconds = Math.max(0, Math.floor(breakMs / 1000));
+  const continuousDrivingMinutesSinceBreak = Math.round(continuousWorkMsSinceBreak / 60000);
+
+  const alerts: TachographOperationalAlert[] = [];
+
+  if (!isPausedState) {
+    if (continuousDrivingMinutesSinceBreak >= drivingLimitMin) {
+      alerts.push({
+        code: 'PROLONGED_DRIVING',
+        severity: 'critical',
+        title: 'Condução Prolongada Detetada',
+        message: `Acumulou ${continuousDrivingMinutesSinceBreak} min contínuos desde a última pausa >= 15 min (limite ${drivingLimitMin} min). Pare em local seguro para Pausa ou Refeição.`,
+      });
+    } else if (continuousDrivingMinutesSinceBreak >= Math.max(0, drivingLimitMin - preBreakLeadMin)) {
+      const minsLeft = Math.max(0, drivingLimitMin - continuousDrivingMinutesSinceBreak);
+      alerts.push({
+        code: 'BREAK_UPCOMING_30M',
+        severity: 'warning',
+        title: 'Pausa Recomendada em Breve (Aviso 30 min)',
+        message: `Faltam aproximadamente ${minsLeft} min para atingir o limiar de pausa recomendada (${drivingLimitMin} min contínuos). Planeie a sua paragem.`,
+      });
+    }
+  } else {
+    const thresholdMin = activeSession.currentState === 'Refeição' ? mealReminderMin : pauseReminderMin;
+    const pausedMinutes = Math.floor(currentPauseSeconds / 60);
+    if (pausedMinutes >= thresholdMin) {
+      alerts.push({
+        code: 'RESUME_WORK_REMINDER',
+        severity: 'info',
+        title: 'Lembrete para Retomar Serviço',
+        message: `Encontra-se em "${activeSession.currentState}" há ${pausedMinutes} min (Relógio 2 pausado, Relógio 1 em ${formatDurationHms(shiftElapsedSeconds)}). Quando regressar à viatura, retome para "Condução em serviço" ou "Disponibilidade".`,
+      });
+    }
+  }
+
+  if (shiftRemainingTo10hSeconds <= 3600) {
+    alerts.push({
+      code: 'SHIFT_LIMIT_NEAR',
+      severity: shiftRemainingTo10hSeconds === 0 ? 'critical' : 'warning',
+      title: shiftRemainingTo10hSeconds === 0 ? 'Limite de 10h do Turno Atingido' : 'Última Hora do Limite de 10h',
+      message:
+        shiftRemainingTo10hSeconds === 0
+          ? 'O tempo total do turno atingiu o limite de 10h configurado. Encerre o turno ou inicie descanso.'
+          : `Restam ${Math.ceil(shiftRemainingTo10hSeconds / 60)} min no limite total do turno de ${maxShiftHours}h.`,
+    });
+  }
+
+  return {
+    hasActiveShift: true,
+    sessionId: activeSession.id,
+    operationalStatus: isPausedState ? 'Em Pausa' : 'Em Turno',
+    currentState: activeSession.currentState,
+    shiftStartIso: new Date(shiftStartMs).toISOString(),
+    shiftElapsedSeconds,
+    shiftRemainingTo10hSeconds,
+    shiftLimitSeconds,
+    effectiveWorkSeconds,
+    effectiveWorkRemainingTo10hSeconds,
+    breakElapsedSeconds,
+    currentPauseSeconds,
+    continuousDrivingMinutesSinceBreak,
+    alerts,
+    marketRuleNote,
+  };
+}
+
 

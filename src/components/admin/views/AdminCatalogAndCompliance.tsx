@@ -4,6 +4,7 @@ import { evaluateVehicleEligibility } from '../../../core/intelligence';
 import { CURRENCY_META, getTodayIso } from '../../../core/localization';
 import {
   deriveCountryCatalogTier,
+  evaluateValidationFreshness,
   getPlatformOperationInLocation,
   getValidatedPlatformsForLocation,
 } from '../../../core/marketCatalog';
@@ -47,8 +48,10 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
     updatePlatformStatus,
     addPlatform,
     updatePlatformCountryOperation,
+    revalidatePlatformCountryOperation,
     addCountryMarket,
     updateCountryMarketStatus,
+    revalidateCountryMarket,
     addRegionOrCityToCountry,
     updateVehicle,
     validateLegislation,
@@ -278,7 +281,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
         </Card>
 
         {/* Matriz de Operação Efetiva vs Licenciamento por País (PARTE II) */}
-        <Card className="p-5 space-y-4 text-xs">
+        <Card className="p-5 space-y-4 text-xs" data-guide-target="admin-platforms-matrix">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-sm font-bold">
@@ -331,6 +334,7 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                   const preselected =
                     op?.operationalStatus === 'Operação efetiva validada' && Boolean(op.preselectForDrivers);
                   const latestHist = op?.history?.[0];
+                  const freshness = evaluateValidationFreshness(op?.verifiedAt, getTodayIso());
                   return (
                     <tr key={`${pl.id}-${selectedMatrixCountry}`}>
                       <td className="p-2.5 font-bold">{pl.name}</td>
@@ -357,8 +361,36 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                           text={preselected ? 'Pré-selecionada' : 'Não pré-selecionada'}
                         />
                       </td>
-                      <td className="p-2.5 font-mono-tabular text-[11px]">
-                        {op ? `${op.validationSource} · ${op.verifiedAt}` : 'Sem registo explícito'}
+                      <td className="p-2.5 font-mono-tabular text-[11px] space-y-1">
+                        <p>{op ? `${op.validationSource} · ${op.verifiedAt}` : 'Sem registo explícito'}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusLabel
+                            tone={
+                              freshness.status === 'Atualizada'
+                                ? 'success'
+                                : freshness.status === 'A rever em breve'
+                                  ? 'warning'
+                                  : 'danger'
+                            }
+                            text={freshness.status}
+                          />
+                          {op?.nextReviewAt && (
+                            <span className="text-[10px] text-slate-400">Próx: {op.nextReviewAt}</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              revalidatePlatformCountryOperation(
+                                pl.id,
+                                selectedMatrixCountry,
+                                matrixSourceDraft.trim() || 'Administração AIVAD'
+                              )
+                            }
+                            className="px-2 py-0.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-semibold hover:border-blue-500 cursor-pointer"
+                          >
+                            Revalidar Agora
+                          </button>
+                        </div>
                       </td>
                       <td className="p-2.5 text-[11px] text-slate-500 max-w-xs">
                         {latestHist ? `${latestHist.date}: ${latestHist.note}` : op?.licensingNote ?? '—'}
@@ -495,11 +527,12 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
           </form>
         </Card>
 
-        <div className="space-y-4">
+        <div className="space-y-4" data-guide-target="admin-markets-panel">
           {state.countries.map((c) => {
             const rDraft = regionInputs[c.code] ?? { region: c.regions[0]?.name ?? 'Região Centro', city: '' };
             const catalogTier = deriveCountryCatalogTier(c);
             const validatedPlats = getValidatedPlatformsForLocation(state.platforms, c.code);
+            const countryFreshness = evaluateValidationFreshness(c.verifiedAt, getTodayIso());
             return (
               <Card key={c.code} className="p-5 space-y-3 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -519,15 +552,37 @@ export const AdminCatalogAndCompliance: React.FC<{ activeTab: string }> = ({ act
                         }
                         text={catalogTier}
                       />
+                      <StatusLabel
+                        tone={
+                          countryFreshness.status === 'Atualizada'
+                            ? 'success'
+                            : countryFreshness.status === 'A rever em breve'
+                              ? 'warning'
+                              : 'danger'
+                        }
+                        text={countryFreshness.status}
+                      />
                     </div>
                     <p className="text-slate-500 mt-0.5">
                       {c.language} ({c.languageCode}) · Moeda: <strong className="font-mono-tabular">{c.currency}</strong> · Fuso:{' '}
                       <span className="font-mono-tabular">{c.timezone}</span> · IVA {c.vatPct}% · Idade máx. {c.vehicleMaxAgeYears} anos ({c.unitSystem})
                       {' · '}Pré-seleção validada: <strong className="font-mono-tabular">{validatedPlats.join(', ').toUpperCase() || 'Nenhuma'}</strong>
+                      {c.verifiedAt && (
+                        <span className="font-mono-tabular">
+                          {' · '}Validado: {c.verifiedAt}{c.nextReviewAt ? ` (Próx: ${c.nextReviewAt})` : ''}
+                        </span>
+                      )}
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => revalidateCountryMarket(c.code, 'Administração Internacional AIVAD')}
+                      className="px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 font-semibold hover:border-blue-500 cursor-pointer"
+                    >
+                      Revalidar Agora
+                    </button>
                     <label htmlFor={`mkt-status-${c.code}`} className="text-[11px] font-semibold text-slate-500">
                       Estado do Mercado:
                     </label>

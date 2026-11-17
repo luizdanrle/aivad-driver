@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import type {
   CountryMarketConfig,
   OrganizationRecord,
+  PersistedTachographAuditRecord,
   PlatformRecord,
 } from '../models/types';
 import { SEED_ORGANIZATIONS } from '../data/seedData';
@@ -118,6 +119,7 @@ export interface PersistedServerStore {
   globalCms: PersistedCmsBundle;
   demoSandboxCms: PersistedCmsBundle;
   securityAuditLogs: SecurityAuditEntry[];
+  tachographAudits: Record<string, PersistedTachographAuditRecord>;
 }
 
 export function hashPassword(password: string, salt?: string): { salt: string; hash: string } {
@@ -168,6 +170,7 @@ export function createDomainStoreRepository(storePath: string) {
       globalCms: createEmptyCmsBundle(),
       demoSandboxCms: createEmptyCmsBundle(),
       securityAuditLogs: [],
+      tachographAudits: {},
     };
 
     try {
@@ -216,6 +219,10 @@ export function createDomainStoreRepository(storePath: string) {
         securityAuditLogs: Array.isArray(parsed.securityAuditLogs)
           ? parsed.securityAuditLogs
           : [],
+        tachographAudits:
+          parsed.tachographAudits && typeof parsed.tachographAudits === 'object'
+            ? parsed.tachographAudits
+            : {},
       };
     } catch {
       return fallback;

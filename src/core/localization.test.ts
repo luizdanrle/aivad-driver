@@ -128,7 +128,7 @@ test('Country change prompts local adaptation without altering residence, profes
 
   const confirmed = confirmLocalMarketAdaptation(result.nextProfile, 'BR', MOCK_COUNTRIES);
   assert.equal(confirmed.selectedMarketCode, 'BR');
-  assert.equal(confirmed.languageCode, 'pt-BR');
+  assert.equal(confirmed.languageCode, 'pt-PT'); // language MUST stay independent of market country!
   assert.equal(confirmed.primaryProfessionalMarketCode, 'PT'); // still PT!
 
   // Historical EUR trip keeps EUR symbol even when local display is BRL
@@ -145,8 +145,8 @@ test('Currency, unit conversion, and i18n adapt cleanly across countries', () =>
   assert.equal(formatDistance(10, 'metric'), '10.0 km');
   assert.equal(formatDistance(10, 'imperial'), '6.2 mi');
 
-  assert.equal(translateUi('pt-PT', 'nav_tacho'), 'Tacógrafo');
-  assert.equal(translateUi('en-GB', 'nav_tacho'), 'Tachograph');
+  assert.equal(translateUi('pt-PT', 'nav_tacho'), 'TACÓGRAFO');
+  assert.equal(translateUi('en-GB', 'nav_tacho'), 'TACHOGRAPH');
   assert.equal(translateUi('es-ES', 'welcome_title'), '¡Bienvenido a AIVAD!');
 });
 

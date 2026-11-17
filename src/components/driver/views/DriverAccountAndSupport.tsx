@@ -24,7 +24,9 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { PLATFORM_ADAPTERS } from '../../../adapters/platformAdapters';
-import { formatMoney } from '../../../core/localization';
+import { formatMoney, translateUi } from '../../../core/localization';
+import { getLanguageMeta, SUPPORTED_LANGUAGES } from '../../../core/i18n';
+import { getDriverOperationalPlatformsForLocation } from '../../../core/marketCatalog';
 import type { DriverDocument, TicketRecord } from '../../../models/types';
 import { useEcosystem } from '../../../services/EcosystemContext';
 import { PlatformBadge } from '../../ui/ChartsAndVisuals';
@@ -32,6 +34,7 @@ import {
   Card,
   ConfirmModal,
   ContextualHelpBanner,
+  EmptyState,
   StatusLabel,
 } from '../../ui/DesignSystem';
 
@@ -55,6 +58,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
     requestBrowserGeolocation,
     simulateOrSelectLocation,
     setProfessionalMarkets,
+    setLanguageCode,
     addDocument,
     markNotificationRead,
     createTicket,
@@ -122,29 +126,37 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
   // APPS E INTEGRAÇÕES (Gestão Individual de Plataformas)
   // ==========================================================
   if (activeTab === 'apps-integracoes') {
-    const activeCount = state.platforms.filter(
+    const loc = state.localization.currentLocation;
+    const countryCode = state.localization.selectedMarketCode || loc.countryCode;
+    const localOperationalPlatforms = getDriverOperationalPlatformsForLocation(
+      state.platforms,
+      countryCode,
+      loc.region,
+      loc.city
+    );
+    const activeCount = localOperationalPlatforms.filter(
       (pl) => getPlatformLifecycleState(pl.id) === 'Ativa e operacional'
     ).length;
 
     return (
-      <div className="space-y-6">
+      <div className="space-y-6" data-guide-target="driver-operational-platforms">
         <ContextualHelpBanner
-          title="Aplicações & Integrações Multi-Plataforma"
-          description="Ative ou desative individualmente cada plataforma no seu perfil de motorista. Desativar remove a app dos menus operacionais mantendo 100% do seu histórico e relatórios históricos intactos."
+          title={`Aplicações Operacionais em ${loc.city}, ${countryCode}`}
+          description="O AIVAD apresenta apenas plataformas com operação efetiva confirmada e validação atualizada na sua cidade/país atual. Plataformas encerradas, suspensas ou inativas neste local ficam automaticamente ocultas."
           demoNotice="Ligações externas sem API oficial ligada exibem INTEGRAÇÃO A VALIDAR e não armazenam credenciais de terceiros."
         />
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
           <Card className="p-4">
-            <p className="text-slate-500 font-medium">Apps Ativas no Perfil</p>
+            <p className="text-slate-500 font-medium">Apps Ativas em {loc.city}</p>
             <p className="text-2xl font-extrabold font-mono-tabular mt-1 text-blue-700 dark:text-blue-400">
-              {activeCount} / {state.platforms.length}
+              {activeCount} / {localOperationalPlatforms.length}
             </p>
           </Card>
           <Card className="p-4">
-            <p className="text-slate-500 font-medium">Desativadas pelo Motorista</p>
+            <p className="text-slate-500 font-medium">Desativadas no Perfil Local</p>
             <p className="text-2xl font-extrabold font-mono-tabular mt-1">
-              {state.driverDeactivatedPlatformIds.length}
+              {localOperationalPlatforms.filter((pl) => state.driverDeactivatedPlatformIds.includes(pl.id)).length}
             </p>
           </Card>
           <Card className="p-4">
@@ -155,8 +167,16 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
           </Card>
         </div>
 
+        {localOperationalPlatforms.length === 0 ? (
+          <EmptyState
+            title={`Sem plataformas TVDE com operação confirmada em ${loc.city} (${countryCode})`}
+            description="Não foram encontradas aplicações com operação validada e atualizada para esta localização. Altere a cidade/país no seletor de localização ou aguarde validação administrativa no AIVAD Management."
+            actionLabel="Ajustar Localização & Perfil"
+            onAction={() => setDriverNav('perfil')}
+          />
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {state.platforms.map((pl) => {
+          {localOperationalPlatforms.map((pl) => {
             const lifecycle = getPlatformLifecycleState(pl.id);
             const isDriverDeactivated = state.driverDeactivatedPlatformIds.includes(pl.id);
             const isAdminBlocked = pl.status !== 'Ativa';
@@ -235,6 +255,7 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
             );
           })}
         </div>
+        )}
       </div>
     );
   }
@@ -679,18 +700,34 @@ export const DriverAccountAndSupport: React.FC<{ activeTab: string }> = ({ activ
               Adicionais: {loc.additionalProfessionalMarketCodes.join(', ') || 'Nenhum'}
             </p>
           </div>
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1">
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 space-y-1.5">
             <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
-              Adaptação Ativa na UI
+              {translateUi(loc.languageCode, 'lang_selector_label')} (Independente do País)
             </span>
             <p className="font-bold font-mono-tabular">
               {activeMarket.name} · {activeMarket.currency} ({activeMarket.currencySymbol})
             </p>
+            <select
+              aria-label={translateUi(loc.languageCode, 'lang_selector_label')}
+              value={loc.languageCode}
+              onChange={(e) => setLanguageCode(e.target.value)}
+              className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-xs font-semibold"
+            >
+              {SUPPORTED_LANGUAGES.map((lng) => (
+                <option key={lng.code} value={lng.code}>
+                  {lng.nativeName} ({lng.code})
+                </option>
+              ))}
+            </select>
             <p className="text-[11px] text-slate-500">
-              {loc.languageCode} · {loc.unitSystem === 'imperial' ? 'Milhas (imperial)' : 'Quilómetros (métrico)'}
+              {getLanguageMeta(loc.languageCode).dir.toUpperCase()} · {loc.unitSystem === 'imperial' ? 'Milhas (imperial)' : 'Quilómetros (métrico)'}
             </p>
           </div>
         </div>
+
+        <p className="text-[11px] text-blue-700 dark:text-blue-400 font-medium">
+          {translateUi(loc.languageCode, 'lang_independent_note')}
+        </p>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-100 dark:border-slate-800">
           <div className="space-y-2">
